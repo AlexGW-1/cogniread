@@ -1,0 +1,55 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cogniread}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cogniread}
+      POSTGRES_DB: ${POSTGRES_DB:-cogniread}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  qdrant:
+    image: qdrant/qdrant:v1.11.3
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+    volumes:
+      - qdrantdata:/qdrant/storage
+
+  neo4j:
+    image: neo4j:5.23
+    environment:
+      NEO4J_AUTH: ${NEO4J_AUTH:-neo4j/password}
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4jdata:/data
+
+  api:
+    build:
+      context: ./backend/api
+    env_file:
+      - ./backend/api/.env
+    depends_on:
+      - postgres
+    ports:
+      - "${API_PORT:-8080}:8080"
+
+  ai:
+    build:
+      context: ./backend/ai
+    env_file:
+      - ./backend/ai/.env
+    depends_on:
+      - postgres
+      - qdrant
+      - neo4j
+    ports:
+      - "${AI_PORT:-8090}:8090"
+
+volumes:
+  pgdata:
+  qdrantdata:
+  neo4jdata:
