@@ -1,9 +1,23 @@
+import 'dart:io';
+
+import 'package:cogniread/src/core/services/storage_service.dart';
+import 'package:cogniread/src/core/services/storage_service_impl.dart';
 import 'package:cogniread/src/core/utils/logger.dart';
 import 'package:cogniread/src/features/reader/presentation/reader_screen.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 class LibraryScreen extends StatefulWidget {
-  const LibraryScreen({super.key});
+  const LibraryScreen({
+    super.key,
+    this.pickEpubPath,
+    this.storageService,
+    this.stubImport = false,
+  });
+
+  final Future<String?> Function()? pickEpubPath;
+  final StorageService? storageService;
+  final bool stubImport;
 
   @override
   State<LibraryScreen> createState() => _LibraryScreenState();
@@ -11,10 +25,98 @@ class LibraryScreen extends StatefulWidget {
 
 class _LibraryScreenState extends State<LibraryScreen> {
   final List<String> _books = <String>[];
+  late final StorageService _storageService;
 
-  void _importStub() {
-    // Next step: replace with File Picker + ImportEpub usecase.
-    Log.d('Import EPUB pressed (stub).');
+  @override
+  void initState() {
+    super.initState();
+    _storageService = widget.storageService ?? AppStorageService();
+  }
+
+  Future<void> _importEpub() async {
+    Log.d('Import EPUB pressed.');
+    if (widget.stubImport) {
+      _addStubBook();
+      return;
+    }
+    final path = widget.pickEpubPath == null
+        ? await _pickEpubFromFilePicker()
+        : await widget.pickEpubPath!();
+    if (path == null) {
+      _showError('Импорт отменён');
+      return;
+    }
+
+    final validationError = await _validateEpubPath(path);
+    if (validationError != null) {
+      _showError(validationError);
+      return;
+    }
+
+    if (!mounted) {
+      return;
+    }
+
+    try {
+      final storedPath = await _storageService.copyToAppStorage(path);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _books.add('Imported book (stub) — ${DateTime.now()}');
+      });
+      Log.d('EPUB copied to: $storedPath');
+    } catch (e) {
+      _showError('Не удалось сохранить файл: $e');
+    }
+  }
+
+  Future<String?> _pickEpubFromFilePicker() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['epub'],
+      withData: false,
+    );
+    if (result == null || result.files.isEmpty) {
+      return null;
+    }
+    return result.files.single.path;
+  }
+
+  Future<String?> _validateEpubPath(String path) async {
+    final lowerPath = path.toLowerCase();
+    if (!lowerPath.endsWith('.epub')) {
+      return 'Неверное расширение файла (нужен .epub)';
+    }
+
+    final file = File(path);
+    if (!await file.exists()) {
+      return 'Файл не существует';
+    }
+
+    try {
+      final raf = await file.open();
+      await raf.close();
+    } on FileSystemException {
+      return 'Нет доступа к файлу';
+    }
+
+    return null;
+  }
+
+  void _showError(String message) {
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
+  void _addStubBook() {
+    if (!mounted) {
+      return;
+    }
     setState(() {
       _books.add('Imported book (stub) — ${DateTime.now()}');
     });
@@ -45,7 +147,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     ),
                     const SizedBox(height: 12),
                     FilledButton(
-                      onPressed: _importStub,
+                      onPressed: _importEpub,
                       child: const Text('Импортировать EPUB (заглушка)'),
                     ),
                   ],
@@ -63,7 +165,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
               },
             ),
       floatingActionButton: FloatingActionButton(
-        onPressed: _importStub,
+        onPressed: _importEpub,
         child: const Icon(Icons.add),
       ),
     );
