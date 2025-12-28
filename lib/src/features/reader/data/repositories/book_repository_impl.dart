@@ -1,7 +1,7 @@
-import 'package:cogniread_app/src/core/types/result.dart';
-import 'package:cogniread_app/src/features/reader/data/datasources/epub_local_datasource.dart';
-import 'package:cogniread_app/src/features/reader/domain/entities/book.dart';
-import 'package:cogniread_app/src/features/reader/domain/repositories/book_repository.dart';
+import 'package:cogniread/src/core/types/result.dart';
+import 'package:cogniread/src/features/reader/data/datasources/epub_local_datasource.dart';
+import 'package:cogniread/src/features/reader/domain/entities/book.dart';
+import 'package:cogniread/src/features/reader/domain/repositories/book_repository.dart';
 
 class BookRepositoryImpl implements BookRepository {
   BookRepositoryImpl(this._ds);

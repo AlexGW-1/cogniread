@@ -1,4 +1,4 @@
-import 'package:cogniread_app/src/features/library/presentation/library_screen.dart';
+import 'package:cogniread/src/features/library/presentation/library_screen.dart';
 import 'package:flutter/material.dart';
 
 class CogniReadApp extends StatelessWidget {

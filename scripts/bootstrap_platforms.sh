@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "$(dirname "$0")/../app"
+cd "$(dirname "$0")/.."
 
 # Generate platform folders only if they don't exist
 need_create=false

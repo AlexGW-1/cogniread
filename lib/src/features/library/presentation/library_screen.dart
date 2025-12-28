@@ -1,5 +1,5 @@
-import 'package:cogniread_app/src/core/utils/logger.dart';
-import 'package:cogniread_app/src/features/reader/presentation/reader_screen.dart';
+import 'package:cogniread/src/core/utils/logger.dart';
+import 'package:cogniread/src/features/reader/presentation/reader_screen.dart';
 import 'package:flutter/material.dart';
 
 class LibraryScreen extends StatefulWidget {

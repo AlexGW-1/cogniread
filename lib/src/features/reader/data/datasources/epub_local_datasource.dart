@@ -1,5 +1,5 @@
-import 'package:cogniread_app/src/core/error/exceptions.dart';
-import 'package:cogniread_app/src/features/reader/domain/entities/book.dart';
+import 'package:cogniread/src/core/error/exceptions.dart';
+import 'package:cogniread/src/features/reader/domain/entities/book.dart';
 
 /// Stub datasource.
 ///

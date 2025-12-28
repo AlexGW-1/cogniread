@@ -5,21 +5,14 @@
 
 ## Структура
 - `docs/` — проектные документы (DOCX)
-- `app/` — Flutter-приложение (код и конфиги; платформенные папки генерируются командой `flutter create`)
+- `lib/` — код Flutter-приложения (Clean Architecture, Phase 1 skeleton)
+- `assets/` — статические ресурсы (пока пусто)
 - `scripts/` — утилиты для бутстрапа
 - `.vscode/` — настройки для Visual Studio Code
 
 ## Быстрый старт (macOS)
 1) Убедись, что `flutter doctor -v` без ошибок.
-2) Перейди в приложение:
-   ```bash
-   cd app
-   ```
-3) Если платформенные папки ещё не созданы (android/ios/macos/web отсутствуют), сгенерируй их:
-   ```bash
-   flutter create . --platforms=android,ios,macos,web --org com.cogniread
-   ```
-4) Установи зависимости и запусти:
+2) Установи зависимости и запусти:
    ```bash
    flutter pub get
    flutter run -d macos

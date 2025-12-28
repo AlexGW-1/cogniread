@@ -15,8 +15,8 @@
 - `architecture_diagrams.docx`
 - `docs/README.md`
 
-### app/ (Flutter)
-- `pubspec.yaml`, `analysis_options.yaml`
+### Flutter (root)
+- `pubspec.yaml`, `analysis_options.yaml`, `assets/`
 - Минимальная навигация: **LibraryScreen → ReaderScreen**
 - Заглушки домена/данных под импорт EPUB:
   - `Book` entity
@@ -40,23 +40,22 @@
     .vscode/launch.json
     .vscode/settings.json
   README.md
-  app/
-    app/analysis_options.yaml
-    app/assets/
-    app/lib/
-      app/lib/main.dart
-      app/lib/src/
-        app/lib/src/app.dart
-        app/lib/src/core/
-          app/lib/src/core/error/
-          app/lib/src/core/types/
-          app/lib/src/core/utils/
-        app/lib/src/features/
-          app/lib/src/features/library/
-          app/lib/src/features/reader/
-    app/pubspec.yaml
-    app/test/
-      app/test/smoke_test.dart
+  analysis_options.yaml
+  assets/
+  lib/
+    lib/main.dart
+    lib/src/
+      lib/src/app.dart
+      lib/src/core/
+        lib/src/core/error/
+        lib/src/core/types/
+        lib/src/core/utils/
+      lib/src/features/
+        lib/src/features/library/
+        lib/src/features/reader/
+  pubspec.yaml
+  test/
+    test/smoke_test.dart
   docs/
     docs/README.md
     docs/architecture_diagrams.docx
@@ -79,9 +78,9 @@
 
 ## Команды старта
 ```bash
-cd cogniread/app
-# если платформенные папки ещё не созданы
-flutter create . --platforms=android,ios,macos,web --org com.cogniread
+cd cogniread
+# если платформенные папки ещё не созданы, можно выполнить:
+# flutter create . --platforms=android,ios,macos,web --org com.cogniread
 flutter pub get
 flutter run -d macos
 ```
