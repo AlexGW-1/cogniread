@@ -1,33 +1,30 @@
-# CogniRead (MVP skeleton)
+# CogniRead — интеллектуальная читалка (стартовый репозиторий)
 
-Monorepo for:
-- **app/** — Flutter client
-- **backend/api/** — NestJS API
-- **backend/ai/** — FastAPI + LangChain service
-- **infra/** — docker/dev tooling
-- **docs/** — architecture/ADR/diagrams
+Этот архив — **чистый старт**: в репозитории лежат утверждённые документы и подготовленная структура Flutter-приложения
+в стиле Clean Architecture (с заглушками под Phase 1: импорт EPUB + чтение).
 
-## Quick start (local dev)
+## Структура
+- `docs/` — проектные документы (DOCX)
+- `app/` — Flutter-приложение (код и конфиги; платформенные папки генерируются командой `flutter create`)
+- `scripts/` — утилиты для бутстрапа
+- `.vscode/` — настройки для Visual Studio Code
 
-1) Copy env templates:
-```bash
-cp infra/env/.env.example .env
-cp backend/api/.env.example backend/api/.env
-cp backend/ai/.env.example backend/ai/.env
-```
+## Быстрый старт (macOS)
+1) Убедись, что `flutter doctor -v` без ошибок.
+2) Перейди в приложение:
+   ```bash
+   cd app
+   ```
+3) Если платформенные папки ещё не созданы (android/ios/macos/web отсутствуют), сгенерируй их:
+   ```bash
+   flutter create . --platforms=android,ios,macos,web --org com.cogniread
+   ```
+4) Установи зависимости и запусти:
+   ```bash
+   flutter pub get
+   flutter run -d macos
+   ```
 
-2) Start services:
-```bash
-docker compose up --build
-```
-
-3) Endpoints:
-- API health: http://localhost:8080/health
-- API docs:   http://localhost:8080/docs
-- AI health:  http://localhost:8090/health
-- Postgres:   localhost:5432
-- Qdrant:     http://localhost:6333
-- Neo4j:      http://localhost:7474 (bolt: 7687)
-
-## Development
-See **CONTRIBUTING.md** for branch/commit rules and local commands.
+## Примечание
+Этот скелет специально минимальный: без сторонних зависимостей (bloc, DI, file picker, epub parser и т.п.).
+На следующем шаге мы подключим нужные пакеты и реализуем «Импорт EPUB (mac-устойчивый)».
