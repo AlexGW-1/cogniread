@@ -8,7 +8,6 @@
 - `lib/` — код Flutter-приложения (Clean Architecture, Phase 1 skeleton)
 - `assets/` — статические ресурсы (пока пусто)
 - `scripts/` — утилиты для бутстрапа
-- `.vscode/` — настройки для Visual Studio Code
 
 ## Быстрый старт (macOS)
 1) Убедись, что `flutter doctor -v` без ошибок.

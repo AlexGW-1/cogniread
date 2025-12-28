@@ -33,6 +33,14 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# iOS/macOS artifacts
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Flutter/ephemeral/
+**/macos/Pods/
+**/macos/.symlinks/
+**/macos/Flutter/ephemeral/
+
 # Symbolication related
 app.*.symbols
 

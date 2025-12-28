@@ -26,9 +26,6 @@
   - `BookRepositoryImpl` (оборачивает ошибки в Result)
 - Простейший smoke-test: `test/smoke_test.dart`
 
-### .vscode/
-- `settings.json`, `launch.json` (базовая отладка/форматирование)
-
 ### scripts/
 - `bootstrap_platforms.sh` — генерирует платформы через `flutter create` если папки `android/ios/macos/web` отсутствуют
 - `check_env.sh` — запускает `flutter doctor -v`
@@ -36,9 +33,6 @@
 ## Текущее дерево (усечённо)
 ```
   .gitignore
-  .vscode/
-    .vscode/launch.json
-    .vscode/settings.json
   README.md
   analysis_options.yaml
   assets/
