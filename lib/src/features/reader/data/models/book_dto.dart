@@ -5,12 +5,14 @@ class BookDto {
     required this.id,
     required this.title,
     required this.sourcePath,
+    required this.fingerprint,
     this.author,
   });
 
   final String id;
   final String title;
   final String sourcePath;
+  final String fingerprint;
   final String? author;
 
   factory BookDto.fromEntity(Book book) {
@@ -18,6 +20,7 @@ class BookDto {
       id: book.id,
       title: book.title,
       sourcePath: book.sourcePath,
+      fingerprint: book.fingerprint,
       author: book.author,
     );
   }
@@ -26,6 +29,7 @@ class BookDto {
         id: id,
         title: title,
         sourcePath: sourcePath,
+        fingerprint: fingerprint,
         author: author,
       );
 
@@ -35,6 +39,7 @@ class BookDto {
       id: _requireString(map, 'id'),
       title: _requireString(map, 'title'),
       sourcePath: _requireString(map, 'sourcePath'),
+      fingerprint: _requireString(map, 'fingerprint'),
       author: _optionalString(map, 'author'),
     );
   }
@@ -43,6 +48,7 @@ class BookDto {
         'id': id,
         'title': title,
         'sourcePath': sourcePath,
+        'fingerprint': fingerprint,
         'author': author,
       };
 
@@ -50,6 +56,7 @@ class BookDto {
     _requireString(map, 'id');
     _requireString(map, 'title');
     _requireString(map, 'sourcePath');
+    _requireString(map, 'fingerprint');
     _optionalString(map, 'author');
   }
 

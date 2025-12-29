@@ -2,13 +2,18 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:cogniread/src/core/services/storage_service.dart';
+import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 class AppStorageService implements StorageService {
-  AppStorageService({this.booksDirectoryName = 'books'});
+  AppStorageService({
+    this.booksDirectoryName = 'books',
+    this.maxFileSizeBytes = 200 * 1024 * 1024,
+  });
 
   final String booksDirectoryName;
+  final int maxFileSizeBytes;
 
   @override
   Future<String> appStoragePath() async {
@@ -22,56 +27,84 @@ class AppStorageService implements StorageService {
 
   @override
   Future<String> copyToAppStorage(String sourcePath) async {
+    final stored = await copyToAppStorageWithHash(sourcePath);
+    return stored.path;
+  }
+
+  @override
+  Future<StoredFile> copyToAppStorageWithHash(String sourcePath) async {
     final sourceFile = File(sourcePath);
     if (!await sourceFile.exists()) {
       throw FileSystemException('Source file does not exist', sourcePath);
     }
 
+    final resolvedPath = await sourceFile.resolveSymbolicLinks();
+    final resolvedFile = File(resolvedPath);
+    final stat = await resolvedFile.stat();
+    if (stat.type != FileSystemEntityType.file) {
+      throw FileSystemException('Source path is not a file', resolvedPath);
+    }
+
+    final ext = p.extension(resolvedPath).toLowerCase();
+    if (ext != '.epub') {
+      throw FormatException('Unsupported file extension');
+    }
+    if (stat.size == 0) {
+      throw FormatException('File is empty');
+    }
+    if (stat.size > maxFileSizeBytes) {
+      throw FormatException('File is too large');
+    }
+
     final dirPath = await appStoragePath();
-    final ext = p.extension(sourcePath);
-    final base = _sanitize(p.basenameWithoutExtension(sourcePath));
+    final base = _sanitize(p.basenameWithoutExtension(resolvedPath));
     final safeBase = base.isEmpty ? 'book' : base;
 
-    final targetPath = await _uniqueTargetPath(dirPath, safeBase, ext);
     final tempPath = _tempPath(dirPath, safeBase, ext);
+    final hash = await _copyToTempWithHash(resolvedFile, tempPath, stat.size);
 
-    await _copyToTemp(sourceFile, tempPath);
+    final targetPath = _targetPath(dirPath, safeBase, ext, hash);
+    if (await File(targetPath).exists()) {
+      await File(tempPath).delete();
+      return StoredFile(path: targetPath, hash: hash, alreadyExists: true);
+    }
+
     await File(tempPath).rename(targetPath);
-    return targetPath;
+    return StoredFile(path: targetPath, hash: hash, alreadyExists: false);
   }
 
-  Future<void> _copyToTemp(File source, String tempPath) async {
+  Future<String> _copyToTempWithHash(
+    File source,
+    String tempPath,
+    int expectedSize,
+  ) async {
     final tempFile = File(tempPath);
     if (await tempFile.exists()) {
       await tempFile.delete();
     }
     final sink = tempFile.openWrite();
+    final hashSink = _HashSink();
+    final hasher = sha256.startChunkedConversion(hashSink);
+    final input = source.openRead();
+    var bytesRead = 0;
     try {
-      await source.openRead().pipe(sink);
+      await for (final chunk in input) {
+        hasher.add(chunk);
+        sink.add(chunk);
+        bytesRead += chunk.length;
+      }
     } finally {
+      hasher.close();
       await sink.close();
     }
+    if (bytesRead != expectedSize) {
+      throw FileSystemException('Failed to read full file', source.path);
+    }
+    return hashSink.digest.toString();
   }
 
-  Future<String> _uniqueTargetPath(
-    String dirPath,
-    String base,
-    String ext,
-  ) async {
-    final initialPath = p.join(dirPath, '$base$ext');
-    if (!await File(initialPath).exists()) {
-      return initialPath;
-    }
-
-    for (var i = 0; i < 50; i++) {
-      final suffix = _uniqueSuffix();
-      final candidate = p.join(dirPath, '${base}_$suffix$ext');
-      if (!await File(candidate).exists()) {
-        return candidate;
-      }
-    }
-
-    throw FileSystemException('Failed to allocate unique filename', dirPath);
+  String _targetPath(String dirPath, String base, String ext, String hash) {
+    return p.join(dirPath, '${base}_$hash$ext');
   }
 
   String _uniqueSuffix() {
@@ -99,4 +132,16 @@ class AppStorageService implements StorageService {
     }
     return buffer.toString();
   }
+}
+
+class _HashSink implements Sink<Digest> {
+  late Digest digest;
+
+  @override
+  void add(Digest data) {
+    digest = data;
+  }
+
+  @override
+  void close() {}
 }

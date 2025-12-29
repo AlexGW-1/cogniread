@@ -14,12 +14,13 @@ class EpubLocalDatasource {
   final StorageService _storage;
 
   Future<Book> importFromPath(String path) async {
-    final storedPath = await _storage.copyToAppStorage(path);
-    final title = p.basenameWithoutExtension(storedPath);
+    final stored = await _storage.copyToAppStorageWithHash(path);
+    final title = p.basenameWithoutExtension(stored.path);
     return Book(
-      id: storedPath,
+      id: stored.path,
       title: title,
-      sourcePath: storedPath,
+      sourcePath: stored.path,
+      fingerprint: stored.hash,
     );
   }
 }

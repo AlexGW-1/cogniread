@@ -8,6 +8,7 @@ void main() {
       'id': 'book-1',
       'title': 'Test Book',
       'sourcePath': '/tmp/book.epub',
+      'fingerprint': 'hash',
       'author': 'Author',
     };
 
@@ -15,6 +16,7 @@ void main() {
     expect(dto.id, 'book-1');
     expect(dto.title, 'Test Book');
     expect(dto.sourcePath, '/tmp/book.epub');
+    expect(dto.fingerprint, 'hash');
     expect(dto.author, 'Author');
   });
 
@@ -22,6 +24,7 @@ void main() {
     final map = <String, Object?>{
       'id': 'book-1',
       'sourcePath': '/tmp/book.epub',
+      'fingerprint': 'hash',
     };
 
     expect(() => BookDto.fromMap(map), throwsA(isA<FormatException>()));
@@ -32,6 +35,7 @@ void main() {
       'id': '',
       'title': 'Test Book',
       'sourcePath': '/tmp/book.epub',
+      'fingerprint': 'hash',
     };
 
     expect(() => BookRecord.fromMap(map), throwsA(isA<FormatException>()));
@@ -42,6 +46,7 @@ void main() {
       'id': 'book-1',
       'title': 'Test Book',
       'sourcePath': '/tmp/book.epub',
+      'fingerprint': 'hash',
       'author': 123,
     };
 
