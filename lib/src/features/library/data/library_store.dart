@@ -9,6 +9,12 @@ class LibraryEntry {
     required this.addedAt,
     required this.fingerprint,
     required this.sourcePath,
+    required this.readingPosition,
+    required this.progress,
+    required this.lastOpenedAt,
+    required this.notes,
+    required this.highlights,
+    required this.bookmarks,
   });
 
   final String id;
@@ -18,6 +24,12 @@ class LibraryEntry {
   final DateTime addedAt;
   final String fingerprint;
   final String sourcePath;
+  final ReadingPosition readingPosition;
+  final ReadingProgress progress;
+  final DateTime? lastOpenedAt;
+  final List<Note> notes;
+  final List<Highlight> highlights;
+  final List<Bookmark> bookmarks;
 
   Map<String, Object?> toMap() => <String, Object?>{
         'id': id,
@@ -27,6 +39,12 @@ class LibraryEntry {
         'addedAt': addedAt.toIso8601String(),
         'fingerprint': fingerprint,
         'sourcePath': sourcePath,
+        'readingPosition': readingPosition.toMap(),
+        'progress': progress.toMap(),
+        'lastOpenedAt': lastOpenedAt?.toIso8601String(),
+        'notes': notes.map((note) => note.toMap()).toList(),
+        'highlights': highlights.map((highlight) => highlight.toMap()).toList(),
+        'bookmarks': bookmarks.map((bookmark) => bookmark.toMap()).toList(),
       };
 
   static LibraryEntry fromMap(Map<String, Object?> map) {
@@ -38,24 +56,242 @@ class LibraryEntry {
       addedAt: DateTime.parse(map['addedAt'] as String),
       fingerprint: map['fingerprint'] as String,
       sourcePath: map['sourcePath'] as String,
+      readingPosition: ReadingPosition.fromMap(
+        Map<String, Object?>.from(
+          (map['readingPosition'] as Map?) ?? const <String, Object?>{},
+        ),
+      ),
+      progress: ReadingProgress.fromMap(
+        Map<String, Object?>.from(
+          (map['progress'] as Map?) ?? const <String, Object?>{},
+        ),
+      ),
+      lastOpenedAt: map['lastOpenedAt'] == null
+          ? null
+          : DateTime.parse(map['lastOpenedAt'] as String),
+      notes: _readList(map['notes'])
+          .map((item) => Note.fromMap(item))
+          .toList(),
+      highlights: _readList(map['highlights'])
+          .map((item) => Highlight.fromMap(item))
+          .toList(),
+      bookmarks: _readList(map['bookmarks'])
+          .map((item) => Bookmark.fromMap(item))
+          .toList(),
     );
   }
+}
+
+class ReadingPosition {
+  const ReadingPosition({
+    required this.chapterHref,
+    required this.anchor,
+    required this.offset,
+    required this.updatedAt,
+  });
+
+  final String? chapterHref;
+  final String? anchor;
+  final int? offset;
+  final DateTime? updatedAt;
+
+  Map<String, Object?> toMap() => <String, Object?>{
+        'chapterHref': chapterHref,
+        'anchor': anchor,
+        'offset': offset,
+        'updatedAt': updatedAt?.toIso8601String(),
+      };
+
+  static ReadingPosition fromMap(Map<String, Object?> map) {
+    return ReadingPosition(
+      chapterHref: map['chapterHref'] as String?,
+      anchor: map['anchor'] as String?,
+      offset: map['offset'] as int?,
+      updatedAt: map['updatedAt'] == null
+          ? null
+          : DateTime.parse(map['updatedAt'] as String),
+    );
+  }
+}
+
+class ReadingProgress {
+  const ReadingProgress({
+    required this.percent,
+    required this.chapterIndex,
+    required this.totalChapters,
+    required this.updatedAt,
+  });
+
+  final double? percent;
+  final int? chapterIndex;
+  final int? totalChapters;
+  final DateTime? updatedAt;
+
+  Map<String, Object?> toMap() => <String, Object?>{
+        'percent': percent,
+        'chapterIndex': chapterIndex,
+        'totalChapters': totalChapters,
+        'updatedAt': updatedAt?.toIso8601String(),
+      };
+
+  static ReadingProgress fromMap(Map<String, Object?> map) {
+    return ReadingProgress(
+      percent: (map['percent'] as num?)?.toDouble(),
+      chapterIndex: map['chapterIndex'] as int?,
+      totalChapters: map['totalChapters'] as int?,
+      updatedAt: map['updatedAt'] == null
+          ? null
+          : DateTime.parse(map['updatedAt'] as String),
+    );
+  }
+}
+
+class Note {
+  const Note({
+    required this.id,
+    required this.bookId,
+    required this.anchor,
+    required this.excerpt,
+    required this.noteText,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  final String id;
+  final String bookId;
+  final String? anchor;
+  final String excerpt;
+  final String noteText;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  Map<String, Object?> toMap() => <String, Object?>{
+        'id': id,
+        'bookId': bookId,
+        'anchor': anchor,
+        'excerpt': excerpt,
+        'noteText': noteText,
+        'createdAt': createdAt.toIso8601String(),
+        'updatedAt': updatedAt.toIso8601String(),
+      };
+
+  static Note fromMap(Map<String, Object?> map) {
+    return Note(
+      id: map['id'] as String,
+      bookId: map['bookId'] as String,
+      anchor: map['anchor'] as String?,
+      excerpt: map['excerpt'] as String? ?? '',
+      noteText: map['noteText'] as String? ?? '',
+      createdAt: DateTime.parse(map['createdAt'] as String),
+      updatedAt: DateTime.parse(map['updatedAt'] as String),
+    );
+  }
+}
+
+class Highlight {
+  const Highlight({
+    required this.id,
+    required this.bookId,
+    required this.anchor,
+    required this.excerpt,
+    required this.color,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  final String id;
+  final String bookId;
+  final String? anchor;
+  final String excerpt;
+  final String color;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  Map<String, Object?> toMap() => <String, Object?>{
+        'id': id,
+        'bookId': bookId,
+        'anchor': anchor,
+        'excerpt': excerpt,
+        'color': color,
+        'createdAt': createdAt.toIso8601String(),
+        'updatedAt': updatedAt.toIso8601String(),
+      };
+
+  static Highlight fromMap(Map<String, Object?> map) {
+    return Highlight(
+      id: map['id'] as String,
+      bookId: map['bookId'] as String,
+      anchor: map['anchor'] as String?,
+      excerpt: map['excerpt'] as String? ?? '',
+      color: map['color'] as String? ?? '',
+      createdAt: DateTime.parse(map['createdAt'] as String),
+      updatedAt: DateTime.parse(map['updatedAt'] as String),
+    );
+  }
+}
+
+class Bookmark {
+  const Bookmark({
+    required this.id,
+    required this.bookId,
+    required this.anchor,
+    required this.label,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String bookId;
+  final String? anchor;
+  final String label;
+  final DateTime createdAt;
+
+  Map<String, Object?> toMap() => <String, Object?>{
+        'id': id,
+        'bookId': bookId,
+        'anchor': anchor,
+        'label': label,
+        'createdAt': createdAt.toIso8601String(),
+      };
+
+  static Bookmark fromMap(Map<String, Object?> map) {
+    return Bookmark(
+      id: map['id'] as String,
+      bookId: map['bookId'] as String,
+      anchor: map['anchor'] as String?,
+      label: map['label'] as String? ?? '',
+      createdAt: DateTime.parse(map['createdAt'] as String),
+    );
+  }
+}
+
+List<Map<String, Object?>> _readList(Object? value) {
+  if (value is List) {
+    return value.map(_coerceMap).toList();
+  }
+  return const <Map<String, Object?>>[];
+}
+
+Map<String, Object?> _coerceMap(Object? value) {
+  if (value is Map) {
+    return Map<String, Object?>.from(value);
+  }
+  return const <String, Object?>{};
 }
 
 class LibraryStore {
   static const String _boxName = 'library_books';
   static bool _initialized = false;
-  Box<Map>? _box;
+  Box<dynamic>? _box;
 
   Future<void> init() async {
     if (!_initialized) {
       await Hive.initFlutter();
       _initialized = true;
     }
-    _box = await Hive.openBox<Map>(_boxName);
+    _box = await Hive.openBox<dynamic>(_boxName);
   }
 
-  Box<Map> get _requireBox {
+  Box<dynamic> get _requireBox {
     final box = _box;
     if (box == null) {
       throw StateError('LibraryStore not initialized');
@@ -66,7 +302,8 @@ class LibraryStore {
   Future<List<LibraryEntry>> loadAll() async {
     final box = _requireBox;
     return box.values
-        .map((value) => LibraryEntry.fromMap(Map<String, Object?>.from(value)))
+        .whereType<Map<Object?, Object?>>()
+        .map((value) => LibraryEntry.fromMap(_coerceMap(value)))
         .toList();
   }
 
@@ -83,9 +320,170 @@ class LibraryStore {
   }
 
   Future<bool> existsByFingerprint(String fingerprint) async {
-    return _requireBox.values.any((value) {
-      final map = Map<String, Object?>.from(value);
+    return _requireBox.values.whereType<Map<Object?, Object?>>().any((value) {
+      final map = _coerceMap(value);
       return map['fingerprint'] == fingerprint;
     });
+  }
+
+  Future<LibraryEntry?> getById(String id) async {
+    final value = _requireBox.get(id);
+    if (value == null) {
+      return null;
+    }
+    if (value is! Map<Object?, Object?>) {
+      return null;
+    }
+    return LibraryEntry.fromMap(_coerceMap(value));
+  }
+
+  Future<void> updateReadingPosition(
+    String id,
+    ReadingPosition position,
+  ) async {
+    final entry = await getById(id);
+    if (entry == null) {
+      return;
+    }
+    await upsert(
+      LibraryEntry(
+        id: entry.id,
+        title: entry.title,
+        author: entry.author,
+        localPath: entry.localPath,
+        addedAt: entry.addedAt,
+        fingerprint: entry.fingerprint,
+        sourcePath: entry.sourcePath,
+        readingPosition: position,
+        progress: entry.progress,
+        lastOpenedAt: entry.lastOpenedAt,
+        notes: entry.notes,
+        highlights: entry.highlights,
+        bookmarks: entry.bookmarks,
+      ),
+    );
+  }
+
+  Future<void> updateProgress(
+    String id,
+    ReadingProgress progress,
+  ) async {
+    final entry = await getById(id);
+    if (entry == null) {
+      return;
+    }
+    await upsert(
+      LibraryEntry(
+        id: entry.id,
+        title: entry.title,
+        author: entry.author,
+        localPath: entry.localPath,
+        addedAt: entry.addedAt,
+        fingerprint: entry.fingerprint,
+        sourcePath: entry.sourcePath,
+        readingPosition: entry.readingPosition,
+        progress: progress,
+        lastOpenedAt: entry.lastOpenedAt,
+        notes: entry.notes,
+        highlights: entry.highlights,
+        bookmarks: entry.bookmarks,
+      ),
+    );
+  }
+
+  Future<void> updateLastOpenedAt(String id, DateTime timestamp) async {
+    final entry = await getById(id);
+    if (entry == null) {
+      return;
+    }
+    await upsert(
+      LibraryEntry(
+        id: entry.id,
+        title: entry.title,
+        author: entry.author,
+        localPath: entry.localPath,
+        addedAt: entry.addedAt,
+        fingerprint: entry.fingerprint,
+        sourcePath: entry.sourcePath,
+        readingPosition: entry.readingPosition,
+        progress: entry.progress,
+        lastOpenedAt: timestamp,
+        notes: entry.notes,
+        highlights: entry.highlights,
+        bookmarks: entry.bookmarks,
+      ),
+    );
+  }
+
+  Future<void> addNote(String id, Note note) async {
+    final entry = await getById(id);
+    if (entry == null) {
+      return;
+    }
+    await upsert(
+      LibraryEntry(
+        id: entry.id,
+        title: entry.title,
+        author: entry.author,
+        localPath: entry.localPath,
+        addedAt: entry.addedAt,
+        fingerprint: entry.fingerprint,
+        sourcePath: entry.sourcePath,
+        readingPosition: entry.readingPosition,
+        progress: entry.progress,
+        lastOpenedAt: entry.lastOpenedAt,
+        notes: [...entry.notes, note],
+        highlights: entry.highlights,
+        bookmarks: entry.bookmarks,
+      ),
+    );
+  }
+
+  Future<void> addHighlight(String id, Highlight highlight) async {
+    final entry = await getById(id);
+    if (entry == null) {
+      return;
+    }
+    await upsert(
+      LibraryEntry(
+        id: entry.id,
+        title: entry.title,
+        author: entry.author,
+        localPath: entry.localPath,
+        addedAt: entry.addedAt,
+        fingerprint: entry.fingerprint,
+        sourcePath: entry.sourcePath,
+        readingPosition: entry.readingPosition,
+        progress: entry.progress,
+        lastOpenedAt: entry.lastOpenedAt,
+        notes: entry.notes,
+        highlights: [...entry.highlights, highlight],
+        bookmarks: entry.bookmarks,
+      ),
+    );
+  }
+
+  Future<void> addBookmark(String id, Bookmark bookmark) async {
+    final entry = await getById(id);
+    if (entry == null) {
+      return;
+    }
+    await upsert(
+      LibraryEntry(
+        id: entry.id,
+        title: entry.title,
+        author: entry.author,
+        localPath: entry.localPath,
+        addedAt: entry.addedAt,
+        fingerprint: entry.fingerprint,
+        sourcePath: entry.sourcePath,
+        readingPosition: entry.readingPosition,
+        progress: entry.progress,
+        lastOpenedAt: entry.lastOpenedAt,
+        notes: entry.notes,
+        highlights: entry.highlights,
+        bookmarks: [...entry.bookmarks, bookmark],
+      ),
+    );
   }
 }

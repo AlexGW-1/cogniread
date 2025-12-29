@@ -19,8 +19,19 @@ class CogniReadApp extends StatelessWidget {
     return MaterialApp(
       title: 'CogniRead',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFFB3623C),
+          surface: const Color(0xFFF7F2EA),
+        ),
         useMaterial3: true,
+        fontFamily: 'Avenir',
+        scaffoldBackgroundColor: const Color(0xFFF7F2EA),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFFF7F2EA),
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          centerTitle: true,
+        ),
       ),
       home: LibraryScreen(
         pickEpubPath: pickEpubPath,

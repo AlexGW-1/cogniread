@@ -12,6 +12,17 @@
 ## EPUB parsing
 - epubx — парсинг EPUB с извлечением базовых метаданных (title/author) без тяжелого рендеринга.
 
+## EPUB rendering (MVP0/1)
+- epubx + WebView — рендер на основе HTML в WebView с контролем якорей и позиций.
+
+## Формат позиции/заметок (epubx + WebView)
+- `readingPosition`: `chapterId`/`chapterHref`, `anchorId`/`cfi`, `offset` (int), `updatedAt`.
+- `progress`: `percent` (0..1), `chapterIndex`, `totalChapters`, `updatedAt`.
+- `lastOpenedAt`: timestamp для сортировки/“продолжить чтение”.
+- `notes[]`: `id`, `bookId`, `anchorId`/`cfi`, `excerpt`, `noteText`, `createdAt`, `updatedAt`.
+- `highlights[]`: `id`, `bookId`, `anchorId`/`cfi`, `excerpt`, `color`, `createdAt`, `updatedAt`.
+- `bookmarks[]`: `id`, `bookId`, `anchorId`/`cfi`, `label`, `createdAt`.
+
 ## Локальное хранилище (DB/KV)
 - Hive — легковесное key-value хранилище без нативных зависимостей, подходит для локальной библиотеки.
 
