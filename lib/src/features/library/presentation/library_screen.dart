@@ -4,6 +4,7 @@ import 'package:cogniread/src/core/services/storage_service.dart';
 import 'package:cogniread/src/core/services/storage_service_impl.dart';
 import 'package:cogniread/src/core/utils/logger.dart';
 import 'package:cogniread/src/features/reader/presentation/reader_screen.dart';
+import 'package:epubx/epubx.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
@@ -58,7 +59,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
     try {
       final stored = await _storageService.copyToAppStorageWithHash(path);
-      final title = p.basenameWithoutExtension(path);
+      final fallbackTitle = p.basenameWithoutExtension(path);
       if (!mounted) {
         return;
       }
@@ -69,7 +70,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
         setState(() {
           _books.add(
             _BookItem(
-              title: title,
+              title: fallbackTitle,
+              author: null,
               sourcePath: File(path).absolute.path,
               storedPath: stored.path,
               hash: stored.hash,
@@ -82,10 +84,15 @@ class _LibraryScreenState extends State<LibraryScreen> {
         _showError('Эта книга уже в библиотеке');
         return;
       }
+      final metadata = await _readMetadata(stored.path, fallbackTitle);
+      if (!mounted) {
+        return;
+      }
       setState(() {
         _books.add(
           _BookItem(
-            title: title,
+            title: metadata.title,
+            author: metadata.author,
             sourcePath: File(path).absolute.path,
             storedPath: stored.path,
             hash: stored.hash,
@@ -119,6 +126,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         items.add(
           _BookItem(
             title: p.basenameWithoutExtension(path),
+            author: null,
             sourcePath: path,
             storedPath: path,
             hash: '',
@@ -201,6 +209,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
       _books.add(
         _BookItem(
           title: 'Imported book (stub) — ${DateTime.now()}',
+          author: null,
           sourcePath: 'stub',
           storedPath: 'stub',
           hash: 'stub',
@@ -307,6 +316,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
               itemBuilder: (context, i) {
                 return ListTile(
                   title: Text(_books[i].title),
+                  subtitle: _books[i].author == null
+                      ? null
+                      : Text(_books[i].author!),
                   onTap: () => _open(i),
                 );
               },
@@ -322,13 +334,97 @@ class _LibraryScreenState extends State<LibraryScreen> {
 class _BookItem {
   const _BookItem({
     required this.title,
+    required this.author,
     required this.sourcePath,
     required this.storedPath,
     required this.hash,
   });
 
   final String title;
+  final String? author;
   final String sourcePath;
   final String storedPath;
   final String hash;
+}
+
+class _BookMetadata {
+  const _BookMetadata({required this.title, required this.author});
+
+  final String title;
+  final String? author;
+}
+
+Future<_BookMetadata> _readMetadata(String path, String fallbackTitle) async {
+  try {
+    final bytes = await File(path).readAsBytes();
+    try {
+      final book = await EpubReader.readBook(bytes);
+      return _extractMetadata(
+        fallbackTitle: fallbackTitle,
+        title: book.Title,
+        author: book.Author,
+        authorList: book.AuthorList,
+        schema: book.Schema,
+      );
+    } catch (e) {
+      Log.d('Failed to read EPUB metadata: $e');
+      try {
+        final bookRef = await EpubReader.openBook(bytes);
+        return _extractMetadata(
+          fallbackTitle: fallbackTitle,
+          title: bookRef.Title,
+          author: bookRef.Author,
+          authorList: bookRef.AuthorList,
+          schema: bookRef.Schema,
+        );
+      } catch (e) {
+        Log.d('Failed to open EPUB metadata: $e');
+        return _BookMetadata(title: fallbackTitle, author: null);
+      }
+    }
+  } catch (e) {
+    Log.d('Failed to read EPUB bytes: $e');
+    return _BookMetadata(title: fallbackTitle, author: null);
+  }
+}
+
+String? _firstNonEmpty(Iterable<String?> candidates) {
+  for (final candidate in candidates) {
+    final value = candidate?.trim();
+    if (value != null && value.isNotEmpty) {
+      return value;
+    }
+  }
+  return null;
+}
+
+_BookMetadata _extractMetadata({
+  required String fallbackTitle,
+  required String? title,
+  required String? author,
+  required List<String?>? authorList,
+  required EpubSchema? schema,
+}) {
+  final rawTitle = _firstNonEmpty(
+    [
+      title,
+      ...?schema?.Package?.Metadata?.Titles,
+      ...?schema?.Navigation?.DocTitle?.Titles,
+    ],
+  );
+  final rawAuthor = _firstNonEmpty(
+    [
+      author,
+      ...?authorList,
+      ...?schema?.Package?.Metadata?.Creators
+          ?.map((creator) => creator.Creator),
+      ...?schema?.Navigation?.DocAuthors
+          ?.expand((author) => author.Authors ?? const <String>[]),
+    ],
+  );
+  final resolvedTitle =
+      (rawTitle == null || rawTitle.isEmpty) ? fallbackTitle : rawTitle;
+  final resolvedAuthor =
+      (rawAuthor == null || rawAuthor.isEmpty) ? null : rawAuthor;
+  return _BookMetadata(title: resolvedTitle, author: resolvedAuthor);
 }
