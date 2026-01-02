@@ -429,8 +429,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
         decoration: BoxDecoration(
           gradient: LinearGradient(
             colors: [
-              scheme.surfaceVariant.withOpacity(0.6),
-              scheme.surface.withOpacity(0.2),
+              scheme.surfaceContainerHighest.withAlpha(153),
+              scheme.surface.withAlpha(51),
             ],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
@@ -578,12 +578,12 @@ class _LibraryPanel extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: scheme.surface.withOpacity(0.9),
+        color: scheme.surface.withAlpha(230),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: scheme.outlineVariant),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.08),
+            color: Colors.black.withAlpha(20),
             blurRadius: 20,
             offset: const Offset(0, 10),
           ),
@@ -616,7 +616,7 @@ class _LibraryPanel extends StatelessWidget {
               hintText: 'Поиск по библиотеке',
               prefixIcon: const Icon(Icons.search),
               filled: true,
-              fillColor: scheme.surfaceVariant.withOpacity(0.5),
+              fillColor: scheme.surfaceContainerHighest.withAlpha(128),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(14),
                 borderSide: BorderSide(color: scheme.outlineVariant),
@@ -631,7 +631,7 @@ class _LibraryPanel extends StatelessWidget {
                     ? _LibraryEmpty(onImport: onImport)
                     : ListView.separated(
                         itemCount: books.length,
-                        separatorBuilder: (_, __) =>
+                        separatorBuilder: (_, _) =>
                             const SizedBox(height: 12),
                         itemBuilder: (context, index) {
                           final book = books[index];
@@ -670,8 +670,9 @@ class _BookCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final accent = selected ? scheme.primaryContainer : scheme.surface;
+    final accentAlpha = selected ? 217 : 255;
     return Material(
-      color: accent.withOpacity(selected ? 0.85 : 1),
+      color: accent.withAlpha(accentAlpha),
       borderRadius: BorderRadius.circular(16),
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
@@ -743,8 +744,8 @@ class _BookCover extends StatelessWidget {
       decoration: BoxDecoration(
         gradient: LinearGradient(
           colors: [
-            scheme.primaryContainer.withOpacity(0.9),
-            scheme.tertiaryContainer.withOpacity(0.8),
+            scheme.primaryContainer.withAlpha(230),
+            scheme.tertiaryContainer.withAlpha(204),
           ],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
@@ -813,7 +814,7 @@ class _ReaderPanel extends StatelessWidget {
       return Container(
         padding: const EdgeInsets.all(24),
         decoration: BoxDecoration(
-          color: scheme.surface.withOpacity(0.9),
+          color: scheme.surface.withAlpha(230),
           borderRadius: BorderRadius.circular(20),
           border: Border.all(color: scheme.outlineVariant),
         ),

@@ -23,6 +23,13 @@
 - `highlights[]`: `id`, `bookId`, `anchorId`/`cfi`, `excerpt`, `color`, `createdAt`, `updatedAt`.
 - `bookmarks[]`: `id`, `bookId`, `anchorId`/`cfi`, `label`, `createdAt`.
 
+## Позиция чтения (устойчивый формат)
+- `{bookId, chapterHref | chapterIndex, fragmentId?, offsetPx?, progressPct?, updatedAt}`
+  - `chapterHref` (или `chapterIndex` как fallback).
+  - `fragmentId` = якорь в TOC/HTML при наличии.
+  - `offsetPx` = смещение от начала главы в пикселях (fallback).
+  - `progressPct` = общий прогресс по книге (fallback при больших визуальных изменениях).
+
 ## Локальное хранилище (DB/KV)
 - Hive — легковесное key-value хранилище без нативных зависимостей, подходит для локальной библиотеки.
 

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -5,6 +6,7 @@ import 'package:archive/archive.dart';
 import 'package:cogniread/src/core/utils/logger.dart';
 import 'package:cogniread/src/features/library/data/library_store.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:path/path.dart' as p;
 import 'package:xml/xml.dart';
 
@@ -29,10 +31,15 @@ class _ReaderScreenState extends State<ReaderScreen> {
   String? _title;
   String? _error;
   bool _loading = true;
+  ReadingPosition? _initialPosition;
+  Timer? _positionDebounce;
+  bool _didRestore = false;
+  int _restoreAttempts = 0;
 
   @override
   void initState() {
     super.initState();
+    _scrollController.addListener(_onScroll);
     _loadBook();
   }
 
@@ -47,6 +54,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
         });
         return;
       }
+
+      _initialPosition = entry.readingPosition;
 
       final file = File(entry.localPath);
       if (!await file.exists()) {
@@ -68,18 +77,26 @@ class _ReaderScreenState extends State<ReaderScreen> {
       var totalTextLength = 0;
       for (var i = 0; i < chapterSources.length; i++) {
         final source = chapterSources[i];
-        final fallbackTitle =
-            source.fallbackTitle ?? 'Глава ${i + 1}'.trim();
-        final rawTitle = _extractChapterTitle(source.html, fallbackTitle);
-        final title = _normalizeChapterTitle(rawTitle, i + 1, fallbackTitle);
+        final fallbackTitle = source.fallbackTitle ?? '';
+        final rawTitle = source.tocTitle ??
+            _extractChapterTitle(source.html, fallbackTitle);
         final rawText = _toPlainText(source.html);
         final cleanedText = _cleanTextForReading(rawText);
+        final derivedTitle = _deriveTitleFromText(cleanedText);
+        final title = _normalizeChapterTitle(
+          rawTitle,
+          i + 1,
+          fallbackTitle,
+          derivedTitle,
+        );
         totalTextLength += cleanedText.length;
         chapters.add(
           _Chapter(
             key: GlobalKey(),
             title: title,
+            level: source.tocLevel ?? 0,
             paragraphs: _splitParagraphs(cleanedText),
+            href: source.href,
           ),
         );
       }
@@ -93,6 +110,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
         _title = entry.title;
         _loading = false;
       });
+      _scheduleRestorePosition();
     } catch (e) {
       Log.d('Failed to load book: $e');
       if (!mounted) {
@@ -107,8 +125,137 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   @override
   void dispose() {
+    _positionDebounce?.cancel();
+    _persistReadingPosition();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  void _onScroll() {
+    if (_loading || _chapters.isEmpty) {
+      return;
+    }
+    _positionDebounce?.cancel();
+    _positionDebounce = Timer(
+      const Duration(milliseconds: 500),
+      _persistReadingPosition,
+    );
+  }
+
+  void _scheduleRestorePosition() {
+    if (_didRestore || _initialPosition == null) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _restoreReadingPosition();
+    });
+  }
+
+  void _restoreReadingPosition() {
+    if (_didRestore || _initialPosition == null) {
+      return;
+    }
+    if (!_scrollController.hasClients) {
+      _retryRestore();
+      return;
+    }
+    final index = _resolveChapterIndex(_initialPosition!);
+    if (index == null || index < 0 || index >= _chapters.length) {
+      _didRestore = true;
+      return;
+    }
+    final targetKey = _chapters[index].key;
+    final context = targetKey.currentContext;
+    if (context == null) {
+      _retryRestore();
+      return;
+    }
+    final renderObject = context.findRenderObject();
+    final viewport = renderObject == null
+        ? null
+        : RenderAbstractViewport.of(renderObject);
+    if (renderObject == null || viewport == null) {
+      _retryRestore();
+      return;
+    }
+    final baseOffset = viewport.getOffsetToReveal(renderObject, 0.0).offset;
+    final offsetWithin = (_initialPosition?.offset ?? 0).toDouble();
+    final maxOffset = _scrollController.position.maxScrollExtent;
+    final target = (baseOffset + offsetWithin).clamp(0.0, maxOffset);
+    _scrollController.jumpTo(target);
+    _didRestore = true;
+  }
+
+  void _retryRestore() {
+    _restoreAttempts += 1;
+    if (_restoreAttempts > 5) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _restoreReadingPosition();
+    });
+  }
+
+  int? _resolveChapterIndex(ReadingPosition position) {
+    final chapterHref = position.chapterHref;
+    if (chapterHref == null || chapterHref.isEmpty) {
+      return null;
+    }
+    if (chapterHref.startsWith('index:')) {
+      return int.tryParse(chapterHref.substring('index:'.length));
+    }
+    final index =
+        _chapters.indexWhere((chapter) => chapter.href == chapterHref);
+    return index == -1 ? null : index;
+  }
+
+  Future<void> _persistReadingPosition() async {
+    if (_loading || _chapters.isEmpty || !_scrollController.hasClients) {
+      return;
+    }
+    final position = _computeReadingPosition();
+    if (position == null) {
+      return;
+    }
+    await _store.updateReadingPosition(widget.bookId, position);
+  }
+
+  ReadingPosition? _computeReadingPosition() {
+    final scrollOffset = _scrollController.offset;
+    int? currentIndex;
+    double? currentBase;
+    for (var i = 0; i < _chapters.length; i++) {
+      final context = _chapters[i].key.currentContext;
+      if (context == null) {
+        continue;
+      }
+      final renderObject = context.findRenderObject();
+      final viewport = renderObject == null
+          ? null
+          : RenderAbstractViewport.of(renderObject);
+      if (renderObject == null || viewport == null) {
+        continue;
+      }
+      final offset = viewport.getOffsetToReveal(renderObject, 0.0).offset;
+      if (offset <= scrollOffset + 1) {
+        currentIndex = i;
+        currentBase = offset;
+      } else {
+        break;
+      }
+    }
+    if (currentIndex == null) {
+      return null;
+    }
+    final chapter = _chapters[currentIndex];
+    final chapterHref = chapter.href ?? 'index:$currentIndex';
+    final offsetWithin = scrollOffset - (currentBase ?? scrollOffset);
+    return ReadingPosition(
+      chapterHref: chapterHref,
+      anchor: null,
+      offset: offsetWithin.round(),
+      updatedAt: DateTime.now(),
+    );
   }
 
   Future<List<_ChapterSource>> _extractChapters(List<int> bytes) async {
@@ -154,7 +301,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   Widget _buildBody(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final hasToc = _chapters.length > 1;
-    final readerSurface = scheme.surface.withOpacity(0.95);
+    final readerSurface = scheme.surface.withAlpha(242);
     final content = Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 820),
@@ -167,7 +314,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
             border: Border.all(color: scheme.outlineVariant),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.08),
+                color: Colors.black.withAlpha(20),
                 blurRadius: 24,
                 offset: const Offset(0, 12),
               ),
@@ -248,8 +395,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
       decoration: BoxDecoration(
         gradient: LinearGradient(
           colors: [
-            scheme.surfaceVariant.withOpacity(0.25),
-            scheme.surface.withOpacity(0.05),
+            scheme.surfaceContainerHighest.withAlpha(64),
+            scheme.surface.withAlpha(13),
           ],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
@@ -266,10 +413,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
         return SafeArea(
           child: ListView.separated(
             itemCount: _chapters.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
+            separatorBuilder: (_, _) => const Divider(height: 1),
             itemBuilder: (context, index) {
               final chapter = _chapters[index];
+              final indent = 16.0 + (chapter.level * 18.0);
               return ListTile(
+                contentPadding:
+                    EdgeInsets.only(left: indent, right: 16, top: 4, bottom: 4),
                 title: Text(chapter.title),
                 onTap: () {
                   Navigator.of(context).pop();
@@ -306,12 +456,16 @@ class _Chapter {
   const _Chapter({
     required this.key,
     required this.title,
+    required this.level,
     required this.paragraphs,
+    required this.href,
   });
 
   final GlobalKey key;
   final String title;
+  final int level;
   final List<String> paragraphs;
+  final String? href;
 }
 
 class _ChapterHeader extends StatelessWidget {
@@ -369,10 +523,19 @@ class _ReaderHeader extends StatelessWidget {
 }
 
 class _ChapterSource {
-  const _ChapterSource({required this.html, this.fallbackTitle});
+  const _ChapterSource({
+    required this.html,
+    this.fallbackTitle,
+    this.tocTitle,
+    this.tocLevel,
+    this.href,
+  });
 
   final String html;
   final String? fallbackTitle;
+  final String? tocTitle;
+  final int? tocLevel;
+  final String? href;
 }
 
 String _toPlainText(String html) {
@@ -445,23 +608,39 @@ String _stripHtmlToText(String html) {
   return collapsed;
 }
 
-String _normalizeChapterTitle(String title, int index, String fallback) {
+String _normalizeChapterTitle(
+  String title,
+  int index,
+  String fallback,
+  String? derivedTitle,
+) {
   final trimmed = title.trim();
-  if (trimmed.isEmpty) {
-    return fallbackTitleForIndex(index, fallback);
+  final fallbackResolved = fallbackTitleForIndex(index, fallback);
+  if (trimmed.isEmpty || _looksLikeChapterId(trimmed) || trimmed.length <= 3) {
+    if (derivedTitle != null &&
+        derivedTitle.trim().isNotEmpty &&
+        !_looksLikeChapterId(derivedTitle)) {
+      return derivedTitle;
+    }
+    return fallbackResolved;
   }
-  if (_looksLikeChapterId(trimmed)) {
-    return fallbackTitleForIndex(index, fallback);
+  if (_isBareChapterTitle(trimmed)) {
+    if (derivedTitle != null &&
+        derivedTitle.trim().isNotEmpty &&
+        !_looksLikeChapterId(derivedTitle)) {
+      return derivedTitle;
+    }
   }
-  if (trimmed.length <= 3) {
-    return fallbackTitleForIndex(index, fallback);
+  if (_looksLikeChapterId(fallbackResolved)) {
+    return 'Глава $index';
   }
   return trimmed;
 }
 
 String fallbackTitleForIndex(int index, String fallback) {
-  if (fallback.trim().isNotEmpty) {
-    return fallback;
+  final trimmed = fallback.trim();
+  if (trimmed.isNotEmpty && !_looksLikeChapterId(trimmed)) {
+    return trimmed;
   }
   return 'Глава $index';
 }
@@ -476,6 +655,35 @@ bool _looksLikeChapterId(String value) {
   return RegExp(r'^(ch|chapter)\d+(-\d+)?$').hasMatch(compact) ||
       RegExp(r'^\d+(-\d+)?$').hasMatch(compact) ||
       RegExp(r'^ch\d+(\d+)?$').hasMatch(compactNoDash);
+}
+
+String? _deriveTitleFromText(String text) {
+  final lines = text.split('\n');
+  String? markerLine;
+  for (final raw in lines) {
+    final line = raw.trim();
+    if (line.isEmpty) {
+      continue;
+    }
+    if (_looksLikeChapterMarker(line)) {
+      markerLine ??= line;
+      continue;
+    }
+    if (_looksLikeChapterId(line)) {
+      continue;
+    }
+    if (line.length < 4 || line.length > 90) {
+      continue;
+    }
+    if (markerLine != null && !_looksLikeChapterId(line)) {
+      return _combineChapterTitle(markerLine, line);
+    }
+    return line;
+  }
+  if (markerLine != null && markerLine.isNotEmpty) {
+    return markerLine;
+  }
+  return null;
 }
 
 List<String> _splitParagraphs(String text) {
@@ -518,7 +726,7 @@ String _cleanTextForReading(String text) {
       cleaned.add('');
       continue;
     }
-    if (_looksLikeChapterId(line)) {
+    if (_looksLikeChapterId(line) || _looksLikeChapterMarker(line)) {
       continue;
     }
     if (lineIndex <= maxHeadLines && _looksLikeFrontMatter(line)) {
@@ -537,6 +745,42 @@ bool _looksLikeFrontMatter(String line) {
       lower.contains('издательство') ||
       lower.contains('серия') ||
       lower.contains('isbn');
+}
+
+bool _looksLikeChapterMarker(String value) {
+  final trimmed = value.trim();
+  if (trimmed.isEmpty) {
+    return false;
+  }
+  if (_looksLikeChapterId(trimmed)) {
+    return true;
+  }
+  final lower = trimmed.toLowerCase();
+  if (lower.startsWith('глава') && lower.length <= 10) {
+    return true;
+  }
+  return RegExp(r'^[a-z]{1,3}\d{1,3}$').hasMatch(lower);
+}
+
+bool _isBareChapterTitle(String value) {
+  final lower = value.trim().toLowerCase();
+  return RegExp(r'^глава\s*\d+([\-_.]\d+)?$').hasMatch(lower) ||
+      RegExp(r'^chapter\s*\d+([\-_.]\d+)?$').hasMatch(lower);
+}
+
+String _combineChapterTitle(String marker, String title) {
+  final cleanMarker = marker.trim();
+  final cleanTitle = title.trim();
+  if (cleanMarker.isEmpty) {
+    return cleanTitle;
+  }
+  if (cleanTitle.isEmpty) {
+    return cleanMarker;
+  }
+  if (cleanMarker.endsWith('.')) {
+    return '$cleanMarker $cleanTitle';
+  }
+  return '$cleanMarker. $cleanTitle';
 }
 
 String _extractChapterTitle(String html, String fallback) {
@@ -572,6 +816,15 @@ String? _extractFb2Body(String xml) {
 }
 
 List<_ChapterSource> _chaptersFromArchive(Archive archive) {
+  final tocEntries = _tocEntriesFromArchive(archive);
+  if (tocEntries.isNotEmpty) {
+    final chapters = _chaptersFromTocEntries(archive, tocEntries);
+    if (chapters.isNotEmpty) {
+      Log.d('Reader toc order: ${chapters.length} items');
+      return chapters;
+    }
+  }
+
   final spineHrefs = _spineHrefsFromArchive(archive);
   if (spineHrefs.isNotEmpty) {
     Log.d('Reader spine order: ${spineHrefs.length} items');
@@ -596,6 +849,8 @@ List<_ChapterSource> _chaptersFromArchive(Archive archive) {
             _ChapterSource(
               html: fb2Body,
               fallbackTitle: p.basenameWithoutExtension(href),
+              tocLevel: 0,
+              href: href,
             ),
           );
           break;
@@ -609,6 +864,8 @@ List<_ChapterSource> _chaptersFromArchive(Archive archive) {
         _ChapterSource(
           html: decoded,
           fallbackTitle: p.basenameWithoutExtension(href),
+          tocLevel: 0,
+          href: href,
         ),
       );
     }
@@ -709,6 +966,404 @@ String? _findOpfPath(Archive archive) {
     Log.d('Reader failed to parse container.xml: $e');
   }
   return null;
+}
+
+List<_TocEntry> _tocEntriesFromArchive(Archive archive) {
+  final opfPath = _findOpfPath(archive);
+  if (opfPath == null) {
+    return const <_TocEntry>[];
+  }
+  final opfFile = _archiveFileByName(archive, opfPath);
+  if (opfFile == null || opfFile.content is! List<int>) {
+    return const <_TocEntry>[];
+  }
+  final opfDir = p.posix.dirname(opfPath);
+  try {
+    final xml = utf8.decode(opfFile.content as List<int>, allowMalformed: true);
+    final doc = XmlDocument.parse(xml);
+    String? navPath;
+    String? ncxPath;
+    for (final node in doc.descendants.whereType<XmlElement>()) {
+      if (node.name.local != 'item') {
+        continue;
+      }
+      final href = node.getAttribute('href');
+      if (href == null) {
+        continue;
+      }
+      final properties = node.getAttribute('properties') ?? '';
+      final mediaType = node.getAttribute('media-type') ?? '';
+      if (properties.contains('nav')) {
+        navPath = p.posix.normalize(p.posix.join(opfDir, href));
+      } else if (mediaType == 'application/x-dtbncx+xml') {
+        ncxPath = p.posix.normalize(p.posix.join(opfDir, href));
+      }
+    }
+    if (navPath != null) {
+      final toc = _tocEntriesFromNav(archive, navPath);
+      if (toc.isNotEmpty) {
+        return toc;
+      }
+    }
+    if (ncxPath != null) {
+      final toc = _tocEntriesFromNcx(archive, ncxPath);
+      if (toc.isNotEmpty) {
+        return toc;
+      }
+    }
+  } catch (e) {
+    Log.d('Reader failed to parse OPF toc: $e');
+  }
+  return const <_TocEntry>[];
+}
+
+List<_TocEntry> _tocEntriesFromNav(Archive archive, String navPath) {
+  final navFile = _archiveFileByName(archive, navPath);
+  if (navFile == null || navFile.content is! List<int>) {
+    return const <_TocEntry>[];
+  }
+  try {
+    final xml = utf8.decode(navFile.content as List<int>, allowMalformed: true);
+    final doc = XmlDocument.parse(xml);
+    final navDir = p.posix.dirname(navPath);
+    final entries = <_TocEntry>[];
+    XmlElement? tocNav;
+    for (final nav in doc.findAllElements('nav')) {
+      final type = nav.getAttribute('type') ??
+          nav.getAttribute('epub:type') ??
+          '';
+      if (type.contains('toc')) {
+        tocNav = nav;
+        break;
+      }
+    }
+    if (tocNav == null) {
+      return entries;
+    }
+
+    void walkOl(XmlElement ol, int depth) {
+      for (final li in ol.findElements('li')) {
+        XmlElement? link = _firstElement(li.findElements('a'));
+        link ??= _firstWhereOrNull(
+          li.descendants.whereType<XmlElement>(),
+          (node) => node.name.local == 'a',
+        );
+        if (link != null) {
+          final href = link.getAttribute('href');
+          if (href != null && href.trim().isNotEmpty) {
+            final text = _stripHtmlToText(link.innerXml).trim();
+            if (text.isNotEmpty) {
+              final target = _resolveTocTarget(navDir, href);
+              if (target.path.isNotEmpty) {
+                entries.add(
+                  _TocEntry(
+                    title: text,
+                    href: target.path,
+                    level: depth,
+                    fragment: target.fragment,
+                  ),
+                );
+              }
+            }
+          }
+        }
+        for (final childOl in li.findElements('ol')) {
+          walkOl(childOl, depth + 1);
+        }
+      }
+    }
+
+    for (final ol in tocNav.findElements('ol')) {
+      walkOl(ol, 0);
+    }
+    return entries;
+  } catch (e) {
+    Log.d('Reader failed to parse nav toc: $e');
+    return const <_TocEntry>[];
+  }
+}
+
+XmlElement? _firstElement(Iterable<XmlElement> elements) {
+  for (final element in elements) {
+    return element;
+  }
+  return null;
+}
+
+XmlElement? _firstWhereOrNull(
+  Iterable<XmlElement> elements,
+  bool Function(XmlElement) test,
+) {
+  for (final element in elements) {
+    if (test(element)) {
+      return element;
+    }
+  }
+  return null;
+}
+
+List<_TocEntry> _tocEntriesFromNcx(Archive archive, String ncxPath) {
+  final ncxFile = _archiveFileByName(archive, ncxPath);
+  if (ncxFile == null || ncxFile.content is! List<int>) {
+    return const <_TocEntry>[];
+  }
+  try {
+    final xml = utf8.decode(ncxFile.content as List<int>, allowMalformed: true);
+    final doc = XmlDocument.parse(xml);
+    final ncxDir = p.posix.dirname(ncxPath);
+    final entries = <_TocEntry>[];
+    void walk(XmlElement navPoint, int depth) {
+      final textNode = navPoint
+          .findElements('navLabel')
+          .expand((node) => node.findElements('text'))
+          .cast<XmlElement?>()
+          .firstWhere((_) => true, orElse: () => null);
+      final contentNode = navPoint
+          .findElements('content')
+          .cast<XmlElement?>()
+          .firstWhere((_) => true, orElse: () => null);
+      if (textNode != null && contentNode != null) {
+        final label = textNode.innerText.trim();
+        final src = contentNode.getAttribute('src');
+        if (label.isNotEmpty && src != null && src.trim().isNotEmpty) {
+          final target = _resolveTocTarget(ncxDir, src);
+          if (target.path.isNotEmpty) {
+            entries.add(
+              _TocEntry(
+                title: label,
+                href: target.path,
+                level: depth,
+                fragment: target.fragment,
+              ),
+            );
+          }
+        }
+      }
+      for (final child in navPoint.findElements('navPoint')) {
+        walk(child, depth + 1);
+      }
+    }
+
+    final navMaps = doc.findAllElements('navMap');
+    final navMap = navMaps.isNotEmpty ? navMaps.first : null;
+    if (navMap != null) {
+      for (final navPoint in navMap.findElements('navPoint')) {
+        walk(navPoint, 0);
+      }
+    }
+    return entries;
+  } catch (e) {
+    Log.d('Reader failed to parse ncx toc: $e');
+    return const <_TocEntry>[];
+  }
+}
+
+class _TocEntry {
+  const _TocEntry({
+    required this.title,
+    required this.href,
+    required this.level,
+    this.fragment,
+  });
+
+  final String title;
+  final String href;
+  final int level;
+  final String? fragment;
+}
+
+class _TocTarget {
+  const _TocTarget(this.path, this.fragment);
+
+  final String path;
+  final String? fragment;
+}
+
+_TocTarget _resolveTocTarget(String baseDir, String href) {
+  final parts = href.split('#');
+  final path = _resolveHref(baseDir, parts.first);
+  final fragment = parts.length > 1 ? parts[1].trim() : null;
+  return _TocTarget(path, fragment?.isEmpty == true ? null : fragment);
+}
+
+class _ParsedHtml {
+  const _ParsedHtml({
+    required this.fullText,
+    required this.fragments,
+  });
+
+  final String fullText;
+  final Map<String, String> fragments;
+}
+
+List<_ChapterSource> _chaptersFromTocEntries(
+  Archive archive,
+  List<_TocEntry> entries,
+) {
+  final chapters = <_ChapterSource>[];
+  final cache = <String, _ParsedHtml>{};
+
+  for (final entry in entries) {
+    if (entry.title.trim().isEmpty || entry.href.trim().isEmpty) {
+      continue;
+    }
+    final file = _archiveFileByName(archive, entry.href);
+    if (file == null || !file.isFile) {
+      continue;
+    }
+    final content = file.content;
+    if (content is! List<int>) {
+      continue;
+    }
+    final decoded = utf8.decode(content, allowMalformed: true).trim();
+    if (decoded.isEmpty) {
+      continue;
+    }
+    if (_isFictionBookXml(decoded)) {
+      final fb2Body = _extractFb2Body(decoded);
+      if (fb2Body == null || fb2Body.trim().isEmpty) {
+        continue;
+      }
+      chapters.add(
+        _ChapterSource(
+          html: fb2Body,
+          fallbackTitle: p.basenameWithoutExtension(entry.href),
+          tocTitle: entry.title,
+          tocLevel: entry.level,
+          href: entry.href,
+        ),
+      );
+      break;
+    }
+
+    final parsed = cache.putIfAbsent(
+      entry.href,
+      () {
+        final fragments = _extractFragmentTexts(decoded, entries, entry.href);
+        return _ParsedHtml(
+          fullText: _toPlainText(decoded),
+          fragments: fragments,
+        );
+      },
+    );
+
+    String text;
+    if (entry.fragment != null) {
+      final fragmentText = parsed.fragments[entry.fragment!];
+      text = fragmentText?.trim().isNotEmpty == true
+          ? fragmentText!
+          : parsed.fullText;
+    } else {
+      text = parsed.fullText;
+    }
+    if (text.trim().isEmpty) {
+      continue;
+    }
+    chapters.add(
+      _ChapterSource(
+        html: text,
+        fallbackTitle: p.basenameWithoutExtension(entry.href),
+        tocTitle: entry.title,
+        tocLevel: entry.level,
+        href: entry.href,
+      ),
+    );
+  }
+
+  return chapters;
+}
+
+Map<String, String> _extractFragmentTexts(
+  String html,
+  List<_TocEntry> entries,
+  String href,
+) {
+  try {
+    final fragments = <String>{};
+    for (final entry in entries) {
+      if (entry.href == href && entry.fragment != null) {
+        fragments.add(entry.fragment!);
+      }
+    }
+    if (fragments.isEmpty) {
+      return const <String, String>{};
+    }
+    final doc = XmlDocument.parse(html);
+    final buffers = <String, StringBuffer>{
+      for (final fragment in fragments) fragment: StringBuffer(),
+    };
+    String? current;
+
+    void walk(XmlNode node) {
+      if (node is XmlElement) {
+        final name = node.name.local.toLowerCase();
+        if (name == 'script' || name == 'style') {
+          return;
+        }
+        final id = node.getAttribute('id') ?? node.getAttribute('name');
+        final previous = current;
+        if (id != null && fragments.contains(id)) {
+          current = id;
+        }
+        for (final child in node.children) {
+          walk(child);
+        }
+        if (current != null && _isBlockElement(name)) {
+          buffers[current]!.write('\n');
+        }
+        current = previous;
+        return;
+      }
+      if (node is XmlText && current != null) {
+        buffers[current]!.write(node.value);
+      }
+    }
+
+    walk(doc);
+    final result = <String, String>{};
+    for (final entry in buffers.entries) {
+      final text = entry.value
+          .toString()
+          .replaceAll(RegExp(r'\s+\n'), '\n')
+          .replaceAll(RegExp(r'\n\s+'), '\n')
+          .replaceAll(RegExp(r'[ \t]+'), ' ')
+          .trim();
+      if (text.isNotEmpty) {
+        result[entry.key] = text;
+      }
+    }
+    return result;
+  } catch (e) {
+    Log.d('Reader failed to parse fragment text: $e');
+    return const <String, String>{};
+  }
+}
+
+bool _isBlockElement(String name) {
+  switch (name) {
+    case 'p':
+    case 'div':
+    case 'br':
+    case 'li':
+    case 'blockquote':
+    case 'h1':
+    case 'h2':
+    case 'h3':
+    case 'h4':
+    case 'h5':
+    case 'h6':
+      return true;
+    default:
+      return false;
+  }
+}
+
+String _resolveHref(String baseDir, String href) {
+  final clean = href.split('#').first.trim();
+  if (clean.isEmpty) {
+    return '';
+  }
+  return p.posix.normalize(p.posix.join(baseDir, clean));
 }
 
 List<String> _spineHrefsFromArchive(Archive archive) {
