@@ -1,14 +1,7 @@
-import 'dart:io';
-
 import 'package:cogniread/src/core/services/storage_service.dart';
-import 'package:cogniread/src/core/services/storage_service_impl.dart';
-import 'package:cogniread/src/core/utils/logger.dart';
-import 'package:cogniread/src/features/library/data/library_store.dart';
+import 'package:cogniread/src/features/library/presentation/library_controller.dart';
 import 'package:cogniread/src/features/reader/presentation/reader_screen.dart';
-import 'package:epubx/epubx.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:path/path.dart' as p;
 
 class LibraryScreen extends StatefulWidget {
   const LibraryScreen({
@@ -27,235 +20,73 @@ class LibraryScreen extends StatefulWidget {
 }
 
 class _LibraryScreenState extends State<LibraryScreen> {
-  final List<_BookItem> _books = <_BookItem>[];
-  late final StorageService _storageService;
-  late final LibraryStore _store;
-  late final Future<void> _storeReady;
-  bool _loading = true;
+  late final LibraryController _controller;
+  late final VoidCallback _controllerListener;
   String _query = '';
   String? _selectedBookId;
 
   @override
   void initState() {
     super.initState();
-    _storageService = widget.storageService ?? AppStorageService();
-    _store = LibraryStore();
-    _storeReady = widget.stubImport ? Future<void>.value() : _store.init();
-    _loadLibrary();
+    _controller = LibraryController(
+      storageService: widget.storageService,
+      pickEpubPath: widget.pickEpubPath,
+      stubImport: widget.stubImport,
+    );
+    _controllerListener = () {
+      if (!mounted) {
+        return;
+      }
+      setState(_syncSelection);
+    };
+    _controller.addListener(_controllerListener);
+    _controller.init();
+  }
+
+  @override
+  void dispose() {
+    _controller.removeListener(_controllerListener);
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _syncSelection() {
+    if (_controller.books.isEmpty) {
+      _selectedBookId = null;
+      return;
+    }
+    if (_selectedBookId == null ||
+        !_controller.books.any((book) => book.id == _selectedBookId)) {
+      _selectedBookId = _controller.books.first.id;
+    }
   }
 
   Future<void> _importEpub() async {
-    Log.d('Import EPUB pressed.');
-    if (widget.stubImport) {
-      _addStubBook();
-      return;
+    final error = await _controller.importEpub();
+    if (error != null) {
+      _showError(error);
     }
-    final path = widget.pickEpubPath == null
-        ? await _pickEpubFromFilePicker()
-        : await widget.pickEpubPath!();
-    if (path == null) {
-      _showError('Импорт отменён');
-      return;
-    }
-
-    final validationError = await _validateEpubPath(path);
-    if (validationError != null) {
-      _showError(validationError);
-      return;
-    }
-
-    try {
-      if (widget.stubImport) {
-        _addStubBook();
-        return;
-      }
-      await _storeReady;
-      final stored = await _storageService.copyToAppStorageWithHash(path);
-      final fallbackTitle = p.basenameWithoutExtension(path);
-      final exists = await _store.existsByFingerprint(stored.hash);
-      if (!mounted) {
-        return;
-      }
-      if (exists) {
-        _showError('Эта книга уже в библиотеке');
-        return;
-      }
-      final metadata = await _readMetadata(stored.path, fallbackTitle);
-      if (!mounted) {
-        return;
-      }
-      final entry = LibraryEntry(
-        id: stored.hash,
-        title: metadata.title,
-        author: metadata.author,
-        localPath: stored.path,
-        addedAt: DateTime.now(),
-        fingerprint: stored.hash,
-        sourcePath: File(path).absolute.path,
-        readingPosition: const ReadingPosition(
-          chapterHref: null,
-          anchor: null,
-          offset: null,
-          updatedAt: null,
-        ),
-        progress: const ReadingProgress(
-          percent: null,
-          chapterIndex: null,
-          totalChapters: null,
-          updatedAt: null,
-        ),
-        lastOpenedAt: null,
-        notes: const <Note>[],
-        highlights: const <Highlight>[],
-        bookmarks: const <Bookmark>[],
-      );
-      await _store.upsert(entry);
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _books.add(
-          _BookItem(
-            id: entry.id,
-            title: entry.title,
-            author: entry.author,
-            sourcePath: entry.sourcePath,
-            storedPath: entry.localPath,
-            hash: entry.fingerprint,
-            addedAt: entry.addedAt,
-            lastOpenedAt: entry.lastOpenedAt,
-          ),
-        );
-      });
-      Log.d('EPUB copied to: ${stored.path}');
-    } catch (e) {
-      Log.d('EPUB import failed: $e');
-      _showError('Не удалось сохранить файл');
-    }
-  }
-
-  Future<void> _loadLibrary() async {
-    if (widget.stubImport) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _loading = false;
-      });
-      return;
-    }
-    try {
-      await _storeReady;
-      final entries = await _store.loadAll();
-      final items = entries.map(_BookItem.fromEntry).toList();
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _loading = false;
-        _books
-          ..clear()
-          ..addAll(items);
-        _books.sort(_sortByLastOpenedAt);
-        if (_selectedBookId == null && _books.isNotEmpty) {
-          _selectedBookId = _books.first.id;
-        }
-      });
-    } catch (e) {
-      Log.d('Failed to load library: $e');
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _loading = false;
-      });
-    }
-  }
-
-  Future<String?> _pickEpubFromFilePicker() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: const ['epub'],
-      withData: false,
-    );
-    if (result == null || result.files.isEmpty) {
-      return null;
-    }
-    return result.files.single.path;
-  }
-
-  Future<String?> _validateEpubPath(String path) async {
-    final lowerPath = path.toLowerCase();
-    if (!lowerPath.endsWith('.epub')) {
-      return 'Неверное расширение файла (нужен .epub)';
-    }
-
-    final file = File(path);
-    if (!await file.exists()) {
-      return 'Файл не существует';
-    }
-
-    try {
-      final raf = await file.open();
-      await raf.close();
-    } on FileSystemException {
-      return 'Нет доступа к файлу';
-    }
-
-    return null;
-  }
-
-  void _showError(String message) {
-    if (!mounted) {
-      return;
-    }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
-  }
-
-  void _addStubBook() {
-    if (!mounted) {
-      return;
-    }
-    setState(() {
-      _books.add(
-        _BookItem(
-          id: 'stub-${DateTime.now().millisecondsSinceEpoch}',
-          title: 'Imported book (stub) — ${DateTime.now()}',
-          author: null,
-          sourcePath: 'stub',
-          storedPath: 'stub',
-          hash: 'stub',
-          addedAt: DateTime.now(),
-          lastOpenedAt: null,
-        ),
-      );
-    });
   }
 
   void _open(int index) {
-    if (!widget.stubImport) {
-      _storeReady.then((_) {
-        return _store.updateLastOpenedAt(_books[index].id, DateTime.now());
-      });
-    }
+    final book = _controller.books[index];
+    _controller.markOpened(book.id);
     final isDesktop = MediaQuery.of(context).size.width >= 1000;
     if (isDesktop) {
       setState(() {
-        _selectedBookId = _books[index].id;
+        _selectedBookId = book.id;
       });
       return;
     }
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => ReaderScreen(bookId: _books[index].id),
+        builder: (_) => ReaderScreen(bookId: book.id),
       ),
     );
   }
 
   Future<void> _deleteBook(int index) async {
-    final book = _books[index];
+    final book = _controller.books[index];
     final shouldDelete = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -276,27 +107,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
     if (shouldDelete != true) {
       return;
     }
-    try {
-      await _storeReady;
-      await _store.remove(book.id);
-      final file = File(book.storedPath);
-      if (await file.exists()) {
-        await file.delete();
-      }
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _books.removeAt(index);
-        if (_selectedBookId == book.id) {
-          _selectedBookId = _books.isEmpty ? null : _books.first.id;
-        }
-      });
-      _showError('Книга удалена');
-    } catch (e) {
-      Log.d('Failed to delete book: $e');
-      _showError('Не удалось удалить книгу');
+    final error = await _controller.deleteBook(book.id);
+    if (error != null) {
+      _showError(error);
+      return;
     }
+    _showError('Книга удалена');
   }
 
   Future<void> _clearLibrary() async {
@@ -322,34 +138,21 @@ class _LibraryScreenState extends State<LibraryScreen> {
     if (shouldClear != true) {
       return;
     }
-
-    if (mounted) {
-      setState(() {
-        _books.clear();
-      });
+    final error = await _controller.clearLibrary();
+    if (error != null) {
+      _showError(error);
+      return;
     }
+    _showError('Библиотека очищена');
+  }
 
-    try {
-      await _storeReady;
-      await _store.clear();
-      final dirPath = await _storageService.appStoragePath();
-      final dir = Directory(dirPath);
-      if (await dir.exists()) {
-        await for (final entry in dir.list()) {
-          if (entry is File && entry.path.toLowerCase().endsWith('.epub')) {
-            await entry.delete();
-          }
-        }
-      }
-      if (!mounted) {
-        return;
-      }
-      await _loadLibrary();
-      _showError('Библиотека очищена');
-    } catch (e) {
-      Log.d('Failed to clear library: $e');
-      _showError('Не удалось очистить библиотеку');
+  void _showError(String message) {
+    if (!mounted) {
+      return;
     }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
   }
 
   @override
@@ -368,14 +171,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
         actions: [
           IconButton(
             tooltip: 'Очистить библиотеку',
-            onPressed: _books.isEmpty ? null : _clearLibrary,
+            onPressed: _controller.books.isEmpty ? null : _clearLibrary,
             icon: const Icon(Icons.delete_outline),
           ),
         ],
       ),
-      body: _loading
+      body: _controller.loading
           ? const Center(child: CircularProgressIndicator())
-          : _books.isEmpty
+          : _controller.books.isEmpty
               ? Center(
                   child: Padding(
                     padding: const EdgeInsets.all(24),
@@ -388,23 +191,24 @@ class _LibraryScreenState extends State<LibraryScreen> {
                         ),
                         const SizedBox(height: 12),
                         FilledButton(
+                          key: const ValueKey('import-epub-button'),
                           onPressed: _importEpub,
-                          child: const Text('Импортировать EPUB (заглушка)'),
+                          child: const Text('Импортировать EPUB'),
                         ),
                       ],
                     ),
                   ),
                 )
               : ListView.separated(
-                  itemCount: _books.length,
+                  itemCount: _controller.books.length,
                   separatorBuilder: (context, index) =>
                       const Divider(height: 1),
                   itemBuilder: (context, i) {
                     return ListTile(
-                      title: Text(_books[i].title),
-                      subtitle: _books[i].author == null
+                      title: Text(_controller.books[i].title),
+                      subtitle: _controller.books[i].author == null
                           ? null
-                          : Text(_books[i].author!),
+                          : Text(_controller.books[i].author!),
                       trailing: IconButton(
                         icon: const Icon(Icons.delete_outline),
                         onPressed: () => _deleteBook(i),
@@ -415,6 +219,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                   },
                 ),
       floatingActionButton: FloatingActionButton(
+        key: const ValueKey('import-epub-fab'),
         onPressed: _importEpub,
         child: const Icon(Icons.add),
       ),
@@ -490,7 +295,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                       Flexible(
                         flex: 4,
                         child: _LibraryPanel(
-                          loading: _loading,
+                          loading: _controller.loading,
                           books: filtered,
                           query: _query,
                           onQueryChanged: (value) {
@@ -498,13 +303,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
                               _query = value;
                             });
                           },
-                          onClearLibrary: _books.isEmpty ? null : _clearLibrary,
+                          onClearLibrary:
+                              _controller.books.isEmpty ? null : _clearLibrary,
                           onImport: _importEpub,
                           onOpen: (index) => _open(
-                            _books.indexOf(filtered[index]),
+                            _controller.books.indexOf(filtered[index]),
                           ),
                           onDelete: (index) => _deleteBook(
-                            _books.indexOf(filtered[index]),
+                            _controller.books.indexOf(filtered[index]),
                           ),
                           selectedId: _selectedBookId,
                           onSelect: (id) {
@@ -532,12 +338,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
     );
   }
 
-  List<_BookItem> _filteredBooks() {
+  List<LibraryBookItem> _filteredBooks() {
     if (_query.trim().isEmpty) {
-      return _books;
+      return _controller.books;
     }
     final needle = _query.toLowerCase().trim();
-    return _books
+    return _controller.books
         .where(
           (book) =>
               book.title.toLowerCase().contains(needle) ||
@@ -562,7 +368,7 @@ class _LibraryPanel extends StatelessWidget {
   });
 
   final bool loading;
-  final List<_BookItem> books;
+  final List<LibraryBookItem> books;
   final String query;
   final ValueChanged<String> onQueryChanged;
   final VoidCallback? onClearLibrary;
@@ -661,7 +467,7 @@ class _BookCard extends StatelessWidget {
     required this.onDelete,
   });
 
-  final _BookItem book;
+  final LibraryBookItem book;
   final bool selected;
   final VoidCallback onTap;
   final VoidCallback onDelete;
@@ -834,131 +640,4 @@ String _formatDate(DateTime date) {
   return '${date.day.toString().padLeft(2, '0')}.'
       '${date.month.toString().padLeft(2, '0')}.'
       '${date.year}';
-}
-
-class _BookItem {
-  const _BookItem({
-    required this.id,
-    required this.title,
-    required this.author,
-    required this.sourcePath,
-    required this.storedPath,
-    required this.hash,
-    required this.addedAt,
-    required this.lastOpenedAt,
-  });
-
-  factory _BookItem.fromEntry(LibraryEntry entry) {
-    return _BookItem(
-      id: entry.id,
-      title: entry.title,
-      author: entry.author,
-      sourcePath: entry.sourcePath,
-      storedPath: entry.localPath,
-      hash: entry.fingerprint,
-      addedAt: entry.addedAt,
-      lastOpenedAt: entry.lastOpenedAt,
-    );
-  }
-
-  final String id;
-  final String title;
-  final String? author;
-  final String sourcePath;
-  final String storedPath;
-  final String hash;
-  final DateTime addedAt;
-  final DateTime? lastOpenedAt;
-}
-
-int _sortByLastOpenedAt(_BookItem a, _BookItem b) {
-  final aTime = a.lastOpenedAt ?? a.addedAt;
-  final bTime = b.lastOpenedAt ?? b.addedAt;
-  final cmp = bTime.compareTo(aTime);
-  if (cmp != 0) {
-    return cmp;
-  }
-  return a.title.compareTo(b.title);
-}
-
-class _BookMetadata {
-  const _BookMetadata({required this.title, required this.author});
-
-  final String title;
-  final String? author;
-}
-
-Future<_BookMetadata> _readMetadata(String path, String fallbackTitle) async {
-  try {
-    final bytes = await File(path).readAsBytes();
-    try {
-      final book = await EpubReader.readBook(bytes);
-      return _extractMetadata(
-        fallbackTitle: fallbackTitle,
-        title: book.Title,
-        author: book.Author,
-        authorList: book.AuthorList,
-        schema: book.Schema,
-      );
-    } catch (e) {
-      Log.d('Failed to read EPUB metadata: $e');
-      try {
-        final bookRef = await EpubReader.openBook(bytes);
-        return _extractMetadata(
-          fallbackTitle: fallbackTitle,
-          title: bookRef.Title,
-          author: bookRef.Author,
-          authorList: bookRef.AuthorList,
-          schema: bookRef.Schema,
-        );
-      } catch (e) {
-        Log.d('Failed to open EPUB metadata: $e');
-        return _BookMetadata(title: fallbackTitle, author: null);
-      }
-    }
-  } catch (e) {
-    Log.d('Failed to read EPUB bytes: $e');
-    return _BookMetadata(title: fallbackTitle, author: null);
-  }
-}
-
-String? _firstNonEmpty(Iterable<String?> candidates) {
-  for (final candidate in candidates) {
-    final value = candidate?.trim();
-    if (value != null && value.isNotEmpty) {
-      return value;
-    }
-  }
-  return null;
-}
-
-_BookMetadata _extractMetadata({
-  required String fallbackTitle,
-  required String? title,
-  required String? author,
-  required List<String?>? authorList,
-  required EpubSchema? schema,
-}) {
-  final rawTitle = _firstNonEmpty(
-    [
-      title,
-      ...?schema?.Package?.Metadata?.Titles,
-      ...?schema?.Navigation?.DocTitle?.Titles,
-    ],
-  );
-  final rawAuthor = _firstNonEmpty(
-    [
-      author,
-      ...?authorList,
-      ...?schema?.Package?.Metadata?.Creators
-          ?.map((creator) => creator.Creator),
-      ...?schema?.Navigation?.DocAuthors
-          ?.expand((author) => author.Authors ?? const <String>[]),
-    ],
-  );
-  final resolvedTitle =
-      (rawTitle == null || rawTitle.isEmpty) ? fallbackTitle : rawTitle;
-  final resolvedAuthor =
-      (rawAuthor == null || rawAuthor.isEmpty) ? null : rawAuthor;
-  return _BookMetadata(title: resolvedTitle, author: resolvedAuthor);
 }

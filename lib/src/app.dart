@@ -25,6 +25,7 @@ class CogniReadApp extends StatelessWidget {
         ),
         useMaterial3: true,
         fontFamily: 'Avenir',
+        fontFamilyFallback: const ['Helvetica', 'Arial', 'sans-serif'],
         scaffoldBackgroundColor: const Color(0xFFF7F2EA),
         appBarTheme: const AppBarTheme(
           backgroundColor: Color(0xFFF7F2EA),

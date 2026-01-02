@@ -10,48 +10,33 @@ import 'package:flutter/rendering.dart';
 import 'package:path/path.dart' as p;
 import 'package:xml/xml.dart';
 
-class ReaderScreen extends StatefulWidget {
-  const ReaderScreen({
-    super.key,
-    required this.bookId,
-    this.embedded = false,
-  });
+class _ReaderController extends ChangeNotifier {
+  _ReaderController({LibraryStore? store}) : _store = store ?? LibraryStore();
 
-  final String bookId;
-  final bool embedded;
+  final LibraryStore _store;
 
-  @override
-  State<ReaderScreen> createState() => _ReaderScreenState();
-}
-
-class _ReaderScreenState extends State<ReaderScreen> {
-  final LibraryStore _store = LibraryStore();
-  final ScrollController _scrollController = ScrollController();
-  List<_Chapter> _chapters = const <_Chapter>[];
-  String? _title;
-  String? _error;
   bool _loading = true;
+  String? _error;
+  String? _title;
   ReadingPosition? _initialPosition;
-  Timer? _positionDebounce;
-  bool _didRestore = false;
-  int _restoreAttempts = 0;
+  List<_Chapter> _chapters = const <_Chapter>[];
+  List<_ReaderItem> _items = const <_ReaderItem>[];
 
-  @override
-  void initState() {
-    super.initState();
-    _scrollController.addListener(_onScroll);
-    _loadBook();
-  }
+  bool get loading => _loading;
+  String? get error => _error;
+  String? get title => _title;
+  ReadingPosition? get initialPosition => _initialPosition;
+  List<_Chapter> get chapters => _chapters;
+  List<_ReaderItem> get items => _items;
 
-  Future<void> _loadBook() async {
+  Future<void> load(String bookId) async {
     try {
       await _store.init();
-      final entry = await _store.getById(widget.bookId);
+      final entry = await _store.getById(bookId);
       if (entry == null) {
-        setState(() {
-          _error = 'Книга не найдена';
-          _loading = false;
-        });
+        _error = 'Книга не найдена';
+        _loading = false;
+        notifyListeners();
         return;
       }
 
@@ -59,10 +44,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
       final file = File(entry.localPath);
       if (!await file.exists()) {
-        setState(() {
-          _error = 'Файл книги недоступен';
-          _loading = false;
-        });
+        _error = 'Файл книги недоступен';
+        _loading = false;
+        notifyListeners();
         return;
       }
 
@@ -78,8 +62,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
       for (var i = 0; i < chapterSources.length; i++) {
         final source = chapterSources[i];
         final fallbackTitle = source.fallbackTitle ?? '';
-        final rawTitle = source.tocTitle ??
-            _extractChapterTitle(source.html, fallbackTitle);
+        final rawTitle =
+            source.tocTitle ?? _extractChapterTitle(source.html, fallbackTitle);
         final rawText = _toPlainText(source.html);
         final cleanedText = _cleanTextForReading(rawText);
         final derivedTitle = _deriveTitleFromText(cleanedText);
@@ -102,37 +86,99 @@ class _ReaderScreenState extends State<ReaderScreen> {
       }
       Log.d('Reader extracted text length: $totalTextLength');
 
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _chapters = chapters;
-        _title = entry.title;
-        _loading = false;
-      });
-      _scheduleRestorePosition();
+      _chapters = chapters;
+      _items = _flattenChapters(chapters);
+      _title = entry.title;
+      _loading = false;
+      notifyListeners();
     } catch (e) {
       Log.d('Failed to load book: $e');
+      _error = 'Не удалось открыть книгу: $e';
+      _loading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> saveReadingPosition(
+    String bookId,
+    ReadingPosition position,
+  ) async {
+    await _store.init();
+    await _store.updateReadingPosition(bookId, position);
+  }
+
+  Future<List<_ChapterSource>> _extractChapters(List<int> bytes) async {
+    try {
+      final archive = ZipDecoder().decodeBytes(bytes, verify: false);
+      final chapters = _chaptersFromArchive(archive);
+      if (chapters.isNotEmpty) {
+        return chapters;
+      }
+    } catch (e) {
+      Log.d('Failed to decode EPUB archive: $e');
+    }
+    return const <_ChapterSource>[
+      _ChapterSource(
+        html: 'Не удалось извлечь текст книги. См. логи в консоли (CogniRead).',
+        fallbackTitle: 'Ошибка',
+      ),
+    ];
+  }
+}
+
+class ReaderScreen extends StatefulWidget {
+  const ReaderScreen({
+    super.key,
+    required this.bookId,
+    this.embedded = false,
+  });
+
+  final String bookId;
+  final bool embedded;
+
+  @override
+  State<ReaderScreen> createState() => _ReaderScreenState();
+}
+
+class _ReaderScreenState extends State<ReaderScreen> {
+  final ScrollController _scrollController = ScrollController();
+  late final _ReaderController _controller;
+  late final VoidCallback _controllerListener;
+  ReadingPosition? _initialPosition;
+  Timer? _positionDebounce;
+  bool _didRestore = false;
+  int _restoreAttempts = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = _ReaderController();
+    _controllerListener = () {
       if (!mounted) {
         return;
       }
       setState(() {
-        _error = 'Не удалось открыть книгу: $e';
-        _loading = false;
+        _initialPosition ??= _controller.initialPosition;
       });
-    }
+      _scheduleRestorePosition();
+    };
+    _controller.addListener(_controllerListener);
+    _scrollController.addListener(_onScroll);
+    _controller.load(widget.bookId);
   }
 
   @override
   void dispose() {
     _positionDebounce?.cancel();
     _persistReadingPosition();
+    _controller.removeListener(_controllerListener);
+    _controller.dispose();
     _scrollController.dispose();
     super.dispose();
   }
 
   void _onScroll() {
-    if (_loading || _chapters.isEmpty) {
+    if (_controller.loading || _controller.chapters.isEmpty) {
       return;
     }
     _positionDebounce?.cancel();
@@ -160,11 +206,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
       return;
     }
     final index = _resolveChapterIndex(_initialPosition!);
-    if (index == null || index < 0 || index >= _chapters.length) {
+    if (index == null ||
+        index < 0 ||
+        index >= _controller.chapters.length) {
       _didRestore = true;
       return;
     }
-    final targetKey = _chapters[index].key;
+    final targetKey = _controller.chapters[index].key;
     final context = targetKey.currentContext;
     if (context == null) {
       _retryRestore();
@@ -205,27 +253,29 @@ class _ReaderScreenState extends State<ReaderScreen> {
       return int.tryParse(chapterHref.substring('index:'.length));
     }
     final index =
-        _chapters.indexWhere((chapter) => chapter.href == chapterHref);
+        _controller.chapters.indexWhere((chapter) => chapter.href == chapterHref);
     return index == -1 ? null : index;
   }
 
   Future<void> _persistReadingPosition() async {
-    if (_loading || _chapters.isEmpty || !_scrollController.hasClients) {
+    if (_controller.loading ||
+        _controller.chapters.isEmpty ||
+        !_scrollController.hasClients) {
       return;
     }
     final position = _computeReadingPosition();
     if (position == null) {
       return;
     }
-    await _store.updateReadingPosition(widget.bookId, position);
+    await _controller.saveReadingPosition(widget.bookId, position);
   }
 
   ReadingPosition? _computeReadingPosition() {
     final scrollOffset = _scrollController.offset;
     int? currentIndex;
     double? currentBase;
-    for (var i = 0; i < _chapters.length; i++) {
-      final context = _chapters[i].key.currentContext;
+    for (var i = 0; i < _controller.chapters.length; i++) {
+      final context = _controller.chapters[i].key.currentContext;
       if (context == null) {
         continue;
       }
@@ -247,7 +297,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (currentIndex == null) {
       return null;
     }
-    final chapter = _chapters[currentIndex];
+    final chapter = _controller.chapters[currentIndex];
     final chapterHref = chapter.href ?? 'index:$currentIndex';
     final offsetWithin = scrollOffset - (currentBase ?? scrollOffset);
     return ReadingPosition(
@@ -258,34 +308,16 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
-  Future<List<_ChapterSource>> _extractChapters(List<int> bytes) async {
-    try {
-      final archive = ZipDecoder().decodeBytes(bytes, verify: false);
-      final chapters = _chaptersFromArchive(archive);
-      if (chapters.isNotEmpty) {
-        return chapters;
-      }
-    } catch (e) {
-      Log.d('Failed to decode EPUB archive: $e');
-    }
-    return const <_ChapterSource>[
-      _ChapterSource(
-        html: 'Не удалось извлечь текст книги. См. логи в консоли (CogniRead).',
-        fallbackTitle: 'Ошибка',
-      ),
-    ];
-  }
-
   @override
   Widget build(BuildContext context) {
-    final hasToc = _chapters.length > 1;
+    final hasToc = _controller.chapters.length > 1;
     final body = _buildBody(context);
     if (widget.embedded) {
       return body;
     }
     return Scaffold(
       appBar: AppBar(
-        title: Text(_title ?? 'Reader'),
+        title: Text(_controller.title ?? 'Reader'),
         actions: [
           IconButton(
             tooltip: 'Оглавление',
@@ -300,7 +332,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   Widget _buildBody(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final hasToc = _chapters.length > 1;
+    final hasToc = _controller.chapters.length > 1;
     final readerSurface = scheme.surface.withAlpha(242);
     final content = Center(
       child: ConstrainedBox(
@@ -320,72 +352,78 @@ class _ReaderScreenState extends State<ReaderScreen> {
               ),
             ],
           ),
-          child: _loading
+          child: _controller.loading
               ? const Center(child: CircularProgressIndicator())
-              : _error != null
-                  ? Center(child: Text(_error!))
-                  : _chapters.isEmpty
+              : _controller.error != null
+                  ? Center(child: Text(_controller.error!))
+                  : _controller.chapters.isEmpty
                       ? const Center(
                           child: Text('Нет данных для отображения'),
                         )
-                      : LayoutBuilder(
-                          builder: (context, constraints) {
-                            return SizedBox(
-                              height: constraints.maxHeight,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  _ReaderHeader(
-                                    title: _title ?? 'Reader',
-                                    hasToc: hasToc,
-                                    onTocTap: _showToc,
-                                  ),
-                                  const SizedBox(height: 16),
-                                  Expanded(
-                                    child: SelectionArea(
-                                      child: SingleChildScrollView(
-                                        controller: _scrollController,
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            for (final chapter in _chapters)
-                                              ...[
-                                                _ChapterHeader(
-                                                  key: chapter.key,
-                                                  title: chapter.title,
-                                                ),
-                                                const SizedBox(height: 10),
-                                                for (final paragraph
-                                                    in chapter.paragraphs)
-                                                  ...[
-                                                    Text(
-                                                      paragraph,
-                                                      textAlign:
-                                                          TextAlign.justify,
-                                                      style: const TextStyle(
-                                                        fontSize: 17,
-                                                        height: 1.65,
-                                                        fontFamily: 'Georgia',
-                                                      ),
-                                                    ),
-                                                    const SizedBox(height: 12),
-                                                  ],
-                                                const SizedBox(height: 12),
-                                                Divider(
-                                                  height: 32,
-                                                  color: scheme.outlineVariant,
-                                                ),
+                      : Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _ReaderHeader(
+                              title: _controller.title ?? 'Reader',
+                              hasToc: hasToc,
+                              onTocTap: _showToc,
+                            ),
+                            const SizedBox(height: 16),
+                            Expanded(
+                              child: SelectionArea(
+                                child: ListView.builder(
+                                  controller: _scrollController,
+                                  itemCount: _controller.items.length,
+                                  itemBuilder: (context, index) {
+                                    final item = _controller.items[index];
+                                    switch (item.kind) {
+                                      case _ReaderItemKind.header:
+                                        return Padding(
+                                          padding: const EdgeInsets.only(
+                                            top: 6,
+                                            bottom: 10,
+                                          ),
+                                          child: _ChapterHeader(
+                                            key: item.chapter!.key,
+                                            title: item.chapter!.title,
+                                          ),
+                                        );
+                                      case _ReaderItemKind.paragraph:
+                                        return Padding(
+                                          padding: const EdgeInsets.only(
+                                            bottom: 12,
+                                          ),
+                                          child: Text(
+                                            item.text ?? '',
+                                            textAlign: TextAlign.justify,
+                                            style: const TextStyle(
+                                              fontSize: 17,
+                                              height: 1.65,
+                                              fontFamily: 'Georgia',
+                                              fontFamilyFallback: [
+                                                'Times New Roman',
+                                                'Times',
+                                                'serif',
                                               ],
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ],
+                                            ),
+                                          ),
+                                        );
+                                      case _ReaderItemKind.divider:
+                                        return Padding(
+                                          padding: const EdgeInsets.symmetric(
+                                            vertical: 12,
+                                          ),
+                                          child: Divider(
+                                            height: 32,
+                                            color: scheme.outlineVariant,
+                                          ),
+                                        );
+                                    }
+                                  },
+                                ),
                               ),
-                            );
-                          },
+                            ),
+                          ],
                         ),
         ),
       ),
@@ -412,10 +450,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
       builder: (context) {
         return SafeArea(
           child: ListView.separated(
-            itemCount: _chapters.length,
+            itemCount: _controller.chapters.length,
             separatorBuilder: (_, _) => const Divider(height: 1),
             itemBuilder: (context, index) {
-              final chapter = _chapters[index];
+              final chapter = _controller.chapters[index];
               final indent = 16.0 + (chapter.level * 18.0);
               return ListTile(
                 contentPadding:
@@ -434,10 +472,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   void _scrollToChapter(int index) {
-    if (index < 0 || index >= _chapters.length) {
+    if (index < 0 || index >= _controller.chapters.length) {
       return;
     }
-    final key = _chapters[index].key;
+    final key = _controller.chapters[index].key;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final context = key.currentContext;
       if (context != null) {
@@ -466,6 +504,25 @@ class _Chapter {
   final int level;
   final List<String> paragraphs;
   final String? href;
+}
+
+enum _ReaderItemKind { header, paragraph, divider }
+
+class _ReaderItem {
+  const _ReaderItem.header(this.chapter)
+      : kind = _ReaderItemKind.header,
+        text = null;
+  const _ReaderItem.paragraph(this.text)
+      : kind = _ReaderItemKind.paragraph,
+        chapter = null;
+  const _ReaderItem.divider()
+      : kind = _ReaderItemKind.divider,
+        chapter = null,
+        text = null;
+
+  final _ReaderItemKind kind;
+  final _Chapter? chapter;
+  final String? text;
 }
 
 class _ChapterHeader extends StatelessWidget {
@@ -684,6 +741,18 @@ String? _deriveTitleFromText(String text) {
     return markerLine;
   }
   return null;
+}
+
+List<_ReaderItem> _flattenChapters(List<_Chapter> chapters) {
+  final items = <_ReaderItem>[];
+  for (final chapter in chapters) {
+    items.add(_ReaderItem.header(chapter));
+    for (final paragraph in chapter.paragraphs) {
+      items.add(_ReaderItem.paragraph(paragraph));
+    }
+    items.add(_ReaderItem.divider());
+  }
+  return items;
 }
 
 List<String> _splitParagraphs(String text) {

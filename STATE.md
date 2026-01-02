@@ -1,80 +1,35 @@
-# Состояние проекта CogniRead на 2025-12-28
+# Состояние проекта CogniRead на 2025-03-08
 
 ## Ключевое
-- Проект **сброшен** до старта разработки.
-- В репозитории сохранены **проектные документы** и создан **скелет Flutter-приложения** (без реальной логики импорта/рендера EPUB).
-- Среда разработки целевая: **Visual Studio Code**.
-
-## Артефакт
-- ZIP со стартовой структурой: `cogniread_project_skeleton.zip` (в этой же выдаче — обновлённый архив со STATE.md).
+- Локальный клиент Flutter с рабочим импортом EPUB и базовой библиотекой.
+- Экран чтения с разбором EPUB, оглавлением и восстановлением позиции.
+- Облако/синхронизация/AI отсутствуют (следующие этапы).
 
 ## Что уже есть
-### docs/
-- `final_tech_stack.docx`
-- `solution_architecture_doc.docx`
-- `architecture_diagrams.docx`
-- `docs/README.md`
-
 ### Flutter (root)
-- `pubspec.yaml`, `analysis_options.yaml`, `assets/`
-- Минимальная навигация: **LibraryScreen → ReaderScreen**
-- Заглушки домена/данных под импорт EPUB:
-  - `Book` entity
-  - `BookRepository` interface
-  - `ImportEpub` usecase
-  - `EpubLocalDatasource` (NotImplementedYet)
-  - `BookRepositoryImpl` (оборачивает ошибки в Result)
-- Простейший smoke-test: `test/smoke_test.dart`
+- Реальный импорт EPUB (file_picker) с копированием в app-managed storage.
+- Дедупликация по хэшу и сохранение в локальной библиотеке (Hive).
+- Экран чтения: парсинг EPUB/FB2, оглавление, навигация по главам.
+- Сохранение позиции чтения (глава + смещение) и восстановление при открытии.
+- Desktop и mobile UI (адаптивная библиотека, встраиваемый Reader).
+
+### docs/
+- `docs/spec_mvp.md` — scope по MVP.
+- `docs/plan_mvp0.md`, `docs/plan_mvp1.md` — планы итераций.
+- `docs/decisions.md` — технологические решения.
 
 ### scripts/
-- `bootstrap_platforms.sh` — генерирует платформы через `flutter create` если папки `android/ios/macos/web` отсутствуют
-- `check_env.sh` — запускает `flutter doctor -v`
-
-## Текущее дерево (усечённо)
-```
-  .gitignore
-  README.md
-  analysis_options.yaml
-  assets/
-  lib/
-    lib/main.dart
-    lib/src/
-      lib/src/app.dart
-      lib/src/core/
-        lib/src/core/error/
-        lib/src/core/types/
-        lib/src/core/utils/
-      lib/src/features/
-        lib/src/features/library/
-        lib/src/features/reader/
-  pubspec.yaml
-  test/
-    test/smoke_test.dart
-  docs/
-    docs/README.md
-    docs/architecture_diagrams.docx
-    docs/final_tech_stack.docx
-    docs/solution_architecture_doc.docx
-  scripts/
-    scripts/bootstrap_platforms.sh
-    scripts/check_env.sh
-```
+- `scripts/bootstrap_platforms.sh`
+- `scripts/check_env.sh`
 
 ## Что намеренно НЕ сделано (следующий шаг)
-1) Реальный импорт EPUB:
-   - выбор файла (file picker / drag&drop)
-   - копирование в app-managed storage (macOS sandbox-safe)
-   - разбор метаданных EPUB (title/author, cover)
-2) Экран чтения:
-   - рендер страниц/глав
-   - TOC drawer
-   - прогресс, закладки, выделения
+1) Обложки EPUB (извлечение cover + хранение).
+2) Заметки/закладки/выделения и экспорт.
+3) Поиск по библиотеке/книге.
+4) Синхронизация между устройствами и backend.
 
 ## Команды старта
 ```bash
-cd cogniread
-# если платформенные папки ещё не созданы, можно выполнить:
-# flutter create . --platforms=android,ios,macos,web --org com.cogniread
 flutter pub get
 flutter run -d macos
 ```
