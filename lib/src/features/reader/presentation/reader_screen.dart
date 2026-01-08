@@ -5,15 +5,19 @@ import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:cogniread/src/core/utils/logger.dart';
 import 'package:cogniread/src/features/library/data/library_store.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:path/path.dart' as p;
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import 'package:xml/xml.dart';
 
 class _ReaderController extends ChangeNotifier {
-  _ReaderController({LibraryStore? store}) : _store = store ?? LibraryStore();
+  _ReaderController({LibraryStore? store, bool? perfLogsEnabled})
+      : _store = store ?? LibraryStore(),
+        _perfLogsEnabled = perfLogsEnabled ?? kDebugMode;
 
   final LibraryStore _store;
+  final bool _perfLogsEnabled;
 
   bool _loading = true;
   String? _error;
@@ -30,6 +34,8 @@ class _ReaderController extends ChangeNotifier {
   List<_ReaderItem> get items => _items;
 
   Future<void> load(String bookId) async {
+    final totalWatch = Stopwatch()..start();
+    _logPerf('Reader perf: load start ($bookId)');
     try {
       await _store.init();
       final entry = await _store.getById(bookId);
@@ -50,13 +56,26 @@ class _ReaderController extends ChangeNotifier {
         return;
       }
 
+      final readWatch = Stopwatch()..start();
       final bytes = await file.readAsBytes();
+      readWatch.stop();
+      _logPerf(
+        'Reader perf: read bytes ${readWatch.elapsedMilliseconds}ms'
+        ' (${bytes.length} bytes)',
+      );
       Log.d('Reader loading file: ${entry.localPath} (${bytes.length} bytes)');
+      final extractWatch = Stopwatch()..start();
       final chapterSources = await _extractChapters(bytes)
           .timeout(const Duration(seconds: 8), onTimeout: () {
         throw Exception('EPUB parse timeout');
       });
+      extractWatch.stop();
+      _logPerf(
+        'Reader perf: extract chapters ${extractWatch.elapsedMilliseconds}ms'
+        ' (${chapterSources.length})',
+      );
       Log.d('Reader extracted chapters: ${chapterSources.length}');
+      final buildWatch = Stopwatch()..start();
       final chapters = <_Chapter>[];
       var totalTextLength = 0;
       for (var i = 0; i < chapterSources.length; i++) {
@@ -84,18 +103,33 @@ class _ReaderController extends ChangeNotifier {
           ),
         );
       }
+      buildWatch.stop();
+      _logPerf(
+        'Reader perf: build chapters ${buildWatch.elapsedMilliseconds}ms'
+        ' (${chapters.length})',
+      );
       Log.d('Reader extracted text length: $totalTextLength');
 
       _chapters = chapters;
       _items = _flattenChapters(chapters);
       _title = entry.title;
       _loading = false;
+      totalWatch.stop();
+      _logPerf(
+        'Reader perf: time to content ${totalWatch.elapsedMilliseconds}ms',
+      );
       notifyListeners();
     } catch (e) {
       Log.d('Failed to load book: $e');
       _error = 'Не удалось открыть книгу: $e';
       _loading = false;
       notifyListeners();
+    }
+  }
+
+  void _logPerf(String message) {
+    if (_perfLogsEnabled) {
+      Log.d(message);
     }
   }
 
@@ -141,7 +175,9 @@ class ReaderScreen extends StatefulWidget {
 }
 
 class _ReaderScreenState extends State<ReaderScreen> {
-  final ScrollController _scrollController = ScrollController();
+  final ItemScrollController _itemScrollController = ItemScrollController();
+  final ItemPositionsListener _itemPositionsListener =
+      ItemPositionsListener.create();
   late final _ReaderController _controller;
   late final VoidCallback _controllerListener;
   ReadingPosition? _initialPosition;
@@ -163,7 +199,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       _scheduleRestorePosition();
     };
     _controller.addListener(_controllerListener);
-    _scrollController.addListener(_onScroll);
+    _itemPositionsListener.itemPositions.addListener(_onScroll);
     _controller.load(widget.bookId);
   }
 
@@ -173,7 +209,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _persistReadingPosition();
     _controller.removeListener(_controllerListener);
     _controller.dispose();
-    _scrollController.dispose();
+    _itemPositionsListener.itemPositions.removeListener(_onScroll);
     super.dispose();
   }
 
@@ -201,7 +237,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (_didRestore || _initialPosition == null) {
       return;
     }
-    if (!_scrollController.hasClients) {
+    if (!_itemScrollController.isAttached) {
       _retryRestore();
       return;
     }
@@ -212,25 +248,12 @@ class _ReaderScreenState extends State<ReaderScreen> {
       _didRestore = true;
       return;
     }
-    final targetKey = _controller.chapters[index].key;
-    final context = targetKey.currentContext;
-    if (context == null) {
-      _retryRestore();
+    final itemIndex = _itemIndexForChapter(index);
+    if (itemIndex == null) {
+      _didRestore = true;
       return;
     }
-    final renderObject = context.findRenderObject();
-    final viewport = renderObject == null
-        ? null
-        : RenderAbstractViewport.of(renderObject);
-    if (renderObject == null || viewport == null) {
-      _retryRestore();
-      return;
-    }
-    final baseOffset = viewport.getOffsetToReveal(renderObject, 0.0).offset;
-    final offsetWithin = (_initialPosition?.offset ?? 0).toDouble();
-    final maxOffset = _scrollController.position.maxScrollExtent;
-    final target = (baseOffset + offsetWithin).clamp(0.0, maxOffset);
-    _scrollController.jumpTo(target);
+    _itemScrollController.jumpTo(index: itemIndex);
     _didRestore = true;
   }
 
@@ -260,7 +283,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   Future<void> _persistReadingPosition() async {
     if (_controller.loading ||
         _controller.chapters.isEmpty ||
-        !_scrollController.hasClients) {
+        _itemPositionsListener.itemPositions.value.isEmpty) {
       return;
     }
     final position = _computeReadingPosition();
@@ -271,39 +294,35 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   ReadingPosition? _computeReadingPosition() {
-    final scrollOffset = _scrollController.offset;
-    int? currentIndex;
-    double? currentBase;
-    for (var i = 0; i < _controller.chapters.length; i++) {
-      final context = _controller.chapters[i].key.currentContext;
-      if (context == null) {
-        continue;
-      }
-      final renderObject = context.findRenderObject();
-      final viewport = renderObject == null
-          ? null
-          : RenderAbstractViewport.of(renderObject);
-      if (renderObject == null || viewport == null) {
-        continue;
-      }
-      final offset = viewport.getOffsetToReveal(renderObject, 0.0).offset;
-      if (offset <= scrollOffset + 1) {
-        currentIndex = i;
-        currentBase = offset;
-      } else {
+    final positions = _itemPositionsListener.itemPositions.value;
+    if (positions.isEmpty) {
+      return null;
+    }
+    final visible = positions.toList()
+      ..sort((a, b) => a.index.compareTo(b.index));
+    final firstBelowTop = visible.firstWhere(
+      (pos) => pos.itemLeadingEdge >= 0,
+      orElse: () => visible.first,
+    );
+    final currentItemIndex = firstBelowTop.index;
+
+    int? chapterIndex;
+    for (var i = currentItemIndex; i >= 0; i--) {
+      final item = _controller.items[i];
+      if (item.kind == _ReaderItemKind.header) {
+        chapterIndex = _controller.chapters.indexOf(item.chapter!);
         break;
       }
     }
-    if (currentIndex == null) {
+    if (chapterIndex == null || chapterIndex < 0) {
       return null;
     }
-    final chapter = _controller.chapters[currentIndex];
-    final chapterHref = chapter.href ?? 'index:$currentIndex';
-    final offsetWithin = scrollOffset - (currentBase ?? scrollOffset);
+    final chapter = _controller.chapters[chapterIndex];
+    final chapterHref = chapter.href ?? 'index:$chapterIndex';
     return ReadingPosition(
       chapterHref: chapterHref,
       anchor: null,
-      offset: offsetWithin.round(),
+      offset: 0,
       updatedAt: DateTime.now(),
     );
   }
@@ -371,8 +390,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
                             const SizedBox(height: 16),
                             Expanded(
                               child: SelectionArea(
-                                child: ListView.builder(
-                                  controller: _scrollController,
+                                child: ScrollablePositionedList.builder(
+                                  itemScrollController: _itemScrollController,
+                                  itemPositionsListener:
+                                      _itemPositionsListener,
                                   itemCount: _controller.items.length,
                                   itemBuilder: (context, index) {
                                     final item = _controller.items[index];
@@ -475,18 +496,31 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (index < 0 || index >= _controller.chapters.length) {
       return;
     }
-    final key = _controller.chapters[index].key;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final context = key.currentContext;
-      if (context != null) {
-        Scrollable.ensureVisible(
-          context,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeInOut,
-          alignment: 0.1,
-        );
+    final itemIndex = _itemIndexForChapter(index);
+    if (itemIndex == null) {
+      return;
+    }
+    _itemScrollController.scrollTo(
+      index: itemIndex,
+      duration: const Duration(milliseconds: 320),
+      curve: Curves.easeInOut,
+      alignment: 0.1,
+    );
+  }
+
+  int? _itemIndexForChapter(int chapterIndex) {
+    if (chapterIndex < 0 || chapterIndex >= _controller.chapters.length) {
+      return null;
+    }
+    final target = _controller.chapters[chapterIndex];
+    for (var i = 0; i < _controller.items.length; i++) {
+      final item = _controller.items[i];
+      if (item.kind == _ReaderItemKind.header &&
+          identical(item.chapter, target)) {
+        return i;
       }
-    });
+    }
+    return null;
   }
 }
 
@@ -1142,8 +1176,13 @@ List<_TocEntry> _tocEntriesFromNav(Archive archive, String navPath) {
       }
     }
 
-    for (final ol in tocNav.findElements('ol')) {
-      walkOl(ol, 0);
+    final rootOl = _firstElement(
+      tocNav.children.whereType<XmlElement>().where(
+            (node) => node.name.local == 'ol',
+          ),
+    );
+    if (rootOl != null) {
+      walkOl(rootOl, 0);
     }
     return entries;
   } catch (e) {
