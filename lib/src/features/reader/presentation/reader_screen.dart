@@ -19,6 +19,11 @@ class _ReaderController extends ChangeNotifier {
   final LibraryStore _store;
   final bool _perfLogsEnabled;
 
+  static const int _cacheLimit = 3;
+  static final Map<String, List<_Chapter>> _chapterCache =
+      <String, List<_Chapter>>{};
+  static final List<String> _cacheOrder = <String>[];
+
   bool _loading = true;
   String? _error;
   String? _title;
@@ -45,6 +50,7 @@ class _ReaderController extends ChangeNotifier {
       }
 
       _initialPosition = entry.readingPosition;
+      _title = entry.title;
 
       final file = File(entry.localPath);
       if (!await file.exists()) {
@@ -53,6 +59,21 @@ class _ReaderController extends ChangeNotifier {
         notifyListeners();
         return;
       }
+
+      final cached = _chapterCache[bookId];
+      if (cached != null) {
+        _logCache('Reader cache hit ($bookId, chapters=${cached.length})');
+        _touchCache(bookId);
+        _chapters = cached;
+        _loading = false;
+        totalWatch.stop();
+        _logPerf(
+          'Reader perf: time to content ${totalWatch.elapsedMilliseconds}ms',
+        );
+        notifyListeners();
+        return;
+      }
+      _logCache('Reader cache miss ($bookId)');
 
       final readWatch = Stopwatch()..start();
       final bytes = await file.readAsBytes();
@@ -93,7 +114,6 @@ class _ReaderController extends ChangeNotifier {
         totalTextLength += cleanedText.length;
         chapters.add(
           _Chapter(
-            key: GlobalKey(),
             title: title,
             level: source.tocLevel ?? 0,
             paragraphs: _splitParagraphs(cleanedText),
@@ -109,7 +129,7 @@ class _ReaderController extends ChangeNotifier {
       Log.d('Reader extracted text length: $totalTextLength');
 
       _chapters = chapters;
-      _title = entry.title;
+      _storeCache(bookId, chapters);
       _loading = false;
       totalWatch.stop();
       _logPerf(
@@ -128,6 +148,27 @@ class _ReaderController extends ChangeNotifier {
     if (_perfLogsEnabled) {
       Log.d(message);
     }
+  }
+
+  void _logCache(String message) {
+    if (kDebugMode) {
+      Log.d(message);
+    }
+  }
+
+  void _storeCache(String bookId, List<_Chapter> chapters) {
+    _chapterCache[bookId] = List<_Chapter>.from(chapters);
+    _touchCache(bookId);
+    if (_cacheOrder.length <= _cacheLimit) {
+      return;
+    }
+    final evicted = _cacheOrder.removeAt(0);
+    _chapterCache.remove(evicted);
+  }
+
+  void _touchCache(String bookId) {
+    _cacheOrder.remove(bookId);
+    _cacheOrder.add(bookId);
   }
 
   Future<void> saveReadingPosition(
@@ -494,14 +535,12 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
 class _Chapter {
   const _Chapter({
-    required this.key,
     required this.title,
     required this.level,
     required this.paragraphs,
     required this.href,
   });
 
-  final GlobalKey key;
   final String title;
   final int level;
   final List<String> paragraphs;
@@ -544,7 +583,6 @@ class _ChapterContent extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(top: 6, bottom: 10),
             child: _ChapterHeader(
-              key: chapter.key,
               title: chapter.title,
             ),
           ),
