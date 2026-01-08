@@ -24,14 +24,12 @@ class _ReaderController extends ChangeNotifier {
   String? _title;
   ReadingPosition? _initialPosition;
   List<_Chapter> _chapters = const <_Chapter>[];
-  List<_ReaderItem> _items = const <_ReaderItem>[];
 
   bool get loading => _loading;
   String? get error => _error;
   String? get title => _title;
   ReadingPosition? get initialPosition => _initialPosition;
   List<_Chapter> get chapters => _chapters;
-  List<_ReaderItem> get items => _items;
 
   Future<void> load(String bookId) async {
     final totalWatch = Stopwatch()..start();
@@ -111,7 +109,6 @@ class _ReaderController extends ChangeNotifier {
       Log.d('Reader extracted text length: $totalTextLength');
 
       _chapters = chapters;
-      _items = _flattenChapters(chapters);
       _title = entry.title;
       _loading = false;
       totalWatch.stop();
@@ -178,12 +175,15 @@ class _ReaderScreenState extends State<ReaderScreen> {
   final ItemScrollController _itemScrollController = ItemScrollController();
   final ItemPositionsListener _itemPositionsListener =
       ItemPositionsListener.create();
+  final ScrollOffsetController _scrollOffsetController =
+      ScrollOffsetController();
   late final _ReaderController _controller;
   late final VoidCallback _controllerListener;
   ReadingPosition? _initialPosition;
   Timer? _positionDebounce;
   bool _didRestore = false;
   int _restoreAttempts = 0;
+  double _viewportExtent = 0;
 
   @override
   void initState() {
@@ -254,6 +254,16 @@ class _ReaderScreenState extends State<ReaderScreen> {
       return;
     }
     _itemScrollController.jumpTo(index: itemIndex);
+    final offsetWithin = _initialPosition?.offset ?? 0;
+    if (offsetWithin > 0) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _scrollOffsetController.animateScroll(
+          offset: offsetWithin.toDouble(),
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeInOut,
+        );
+      });
+    }
     _didRestore = true;
   }
 
@@ -300,29 +310,25 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
     final visible = positions.toList()
       ..sort((a, b) => a.index.compareTo(b.index));
-    final firstBelowTop = visible.firstWhere(
-      (pos) => pos.itemLeadingEdge >= 0,
+    final active = visible.firstWhere(
+      (pos) => pos.itemLeadingEdge <= 0 && pos.itemTrailingEdge > 0,
       orElse: () => visible.first,
     );
-    final currentItemIndex = firstBelowTop.index;
+    final currentItemIndex = active.index;
 
-    int? chapterIndex;
-    for (var i = currentItemIndex; i >= 0; i--) {
-      final item = _controller.items[i];
-      if (item.kind == _ReaderItemKind.header) {
-        chapterIndex = _controller.chapters.indexOf(item.chapter!);
-        break;
-      }
-    }
-    if (chapterIndex == null || chapterIndex < 0) {
+    final chapterIndex = currentItemIndex;
+    if (chapterIndex < 0 || chapterIndex >= _controller.chapters.length) {
       return null;
     }
     final chapter = _controller.chapters[chapterIndex];
     final chapterHref = chapter.href ?? 'index:$chapterIndex';
+    final offsetWithin = _viewportExtent <= 0
+        ? 0
+        : (-active.itemLeadingEdge * _viewportExtent).round();
     return ReadingPosition(
       chapterHref: chapterHref,
       anchor: null,
-      offset: 0,
+      offset: offsetWithin < 0 ? 0 : offsetWithin,
       updatedAt: DateTime.now(),
     );
   }
@@ -389,59 +395,29 @@ class _ReaderScreenState extends State<ReaderScreen> {
                             ),
                             const SizedBox(height: 16),
                             Expanded(
-                              child: SelectionArea(
-                                child: ScrollablePositionedList.builder(
-                                  itemScrollController: _itemScrollController,
-                                  itemPositionsListener:
-                                      _itemPositionsListener,
-                                  itemCount: _controller.items.length,
-                                  itemBuilder: (context, index) {
-                                    final item = _controller.items[index];
-                                    switch (item.kind) {
-                                      case _ReaderItemKind.header:
-                                        return Padding(
-                                          padding: const EdgeInsets.only(
-                                            top: 6,
-                                            bottom: 10,
-                                          ),
-                                          child: _ChapterHeader(
-                                            key: item.chapter!.key,
-                                            title: item.chapter!.title,
-                                          ),
+                              child: LayoutBuilder(
+                                builder: (context, constraints) {
+                                  _viewportExtent = constraints.maxHeight;
+                                  return SelectionArea(
+                                    child: ScrollablePositionedList.builder(
+                                      itemScrollController:
+                                          _itemScrollController,
+                                      itemPositionsListener:
+                                          _itemPositionsListener,
+                                      scrollOffsetController:
+                                          _scrollOffsetController,
+                                      itemCount: _controller.chapters.length,
+                                      itemBuilder: (context, index) {
+                                        final chapter =
+                                            _controller.chapters[index];
+                                        return _ChapterContent(
+                                          chapter: chapter,
+                                          dividerColor: scheme.outlineVariant,
                                         );
-                                      case _ReaderItemKind.paragraph:
-                                        return Padding(
-                                          padding: const EdgeInsets.only(
-                                            bottom: 12,
-                                          ),
-                                          child: Text(
-                                            item.text ?? '',
-                                            textAlign: TextAlign.justify,
-                                            style: const TextStyle(
-                                              fontSize: 17,
-                                              height: 1.65,
-                                              fontFamily: 'Georgia',
-                                              fontFamilyFallback: [
-                                                'Times New Roman',
-                                                'Times',
-                                                'serif',
-                                              ],
-                                            ),
-                                          ),
-                                        );
-                                      case _ReaderItemKind.divider:
-                                        return Padding(
-                                          padding: const EdgeInsets.symmetric(
-                                            vertical: 12,
-                                          ),
-                                          child: Divider(
-                                            height: 32,
-                                            color: scheme.outlineVariant,
-                                          ),
-                                        );
-                                    }
-                                  },
-                                ),
+                                      },
+                                    ),
+                                  );
+                                },
                               ),
                             ),
                           ],
@@ -512,15 +488,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (chapterIndex < 0 || chapterIndex >= _controller.chapters.length) {
       return null;
     }
-    final target = _controller.chapters[chapterIndex];
-    for (var i = 0; i < _controller.items.length; i++) {
-      final item = _controller.items[i];
-      if (item.kind == _ReaderItemKind.header &&
-          identical(item.chapter, target)) {
-        return i;
-      }
-    }
-    return null;
+    return chapterIndex;
   }
 }
 
@@ -540,25 +508,6 @@ class _Chapter {
   final String? href;
 }
 
-enum _ReaderItemKind { header, paragraph, divider }
-
-class _ReaderItem {
-  const _ReaderItem.header(this.chapter)
-      : kind = _ReaderItemKind.header,
-        text = null;
-  const _ReaderItem.paragraph(this.text)
-      : kind = _ReaderItemKind.paragraph,
-        chapter = null;
-  const _ReaderItem.divider()
-      : kind = _ReaderItemKind.divider,
-        chapter = null,
-        text = null;
-
-  final _ReaderItemKind kind;
-  final _Chapter? chapter;
-  final String? text;
-}
-
 class _ChapterHeader extends StatelessWidget {
   const _ChapterHeader({super.key, required this.title});
 
@@ -572,6 +521,60 @@ class _ChapterHeader extends StatelessWidget {
             fontWeight: FontWeight.w600,
             letterSpacing: 0.2,
           ),
+    );
+  }
+}
+
+class _ChapterContent extends StatelessWidget {
+  const _ChapterContent({
+    required this.chapter,
+    required this.dividerColor,
+  });
+
+  final _Chapter chapter;
+  final Color dividerColor;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 6, bottom: 10),
+            child: _ChapterHeader(
+              key: chapter.key,
+              title: chapter.title,
+            ),
+          ),
+          for (final paragraph in chapter.paragraphs)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text(
+                paragraph,
+                textAlign: TextAlign.justify,
+                style: const TextStyle(
+                  fontSize: 17,
+                  height: 1.65,
+                  fontFamily: 'Georgia',
+                  fontFamilyFallback: [
+                    'Times New Roman',
+                    'Times',
+                    'serif',
+                  ],
+                ),
+              ),
+            ),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Divider(
+              height: 32,
+              color: dividerColor,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -775,18 +778,6 @@ String? _deriveTitleFromText(String text) {
     return markerLine;
   }
   return null;
-}
-
-List<_ReaderItem> _flattenChapters(List<_Chapter> chapters) {
-  final items = <_ReaderItem>[];
-  for (final chapter in chapters) {
-    items.add(_ReaderItem.header(chapter));
-    for (final paragraph in chapter.paragraphs) {
-      items.add(_ReaderItem.paragraph(paragraph));
-    }
-    items.add(_ReaderItem.divider());
-  }
-  return items;
 }
 
 List<String> _splitParagraphs(String text) {
