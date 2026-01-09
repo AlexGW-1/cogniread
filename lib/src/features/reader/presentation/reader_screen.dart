@@ -8,6 +8,7 @@ import 'package:cogniread/src/features/library/data/library_store.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import 'package:xml/xml.dart';
 
@@ -29,6 +30,7 @@ class _ReaderController extends ChangeNotifier {
   String? _title;
   ReadingPosition? _initialPosition;
   List<_Chapter> _chapters = const <_Chapter>[];
+  String? _activeBookId;
 
   bool get loading => _loading;
   String? get error => _error;
@@ -39,6 +41,8 @@ class _ReaderController extends ChangeNotifier {
   Future<void> load(String bookId) async {
     final totalWatch = Stopwatch()..start();
     _logPerf('Reader perf: load start ($bookId)');
+    _activeBookId = bookId;
+    _setLoading();
     try {
       await _store.init();
       final entry = await _store.getById(bookId);
@@ -142,6 +146,20 @@ class _ReaderController extends ChangeNotifier {
       _loading = false;
       notifyListeners();
     }
+  }
+
+  void retry() {
+    final bookId = _activeBookId;
+    if (bookId == null) {
+      return;
+    }
+    load(bookId);
+  }
+
+  void _setLoading() {
+    _loading = true;
+    _error = null;
+    notifyListeners();
   }
 
   void _logPerf(String message) {
@@ -421,7 +439,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
           child: _controller.loading
               ? const Center(child: CircularProgressIndicator())
               : _controller.error != null
-                  ? Center(child: Text(_controller.error!))
+                  ? _ReaderErrorPanel(
+                      message: _controller.error!,
+                      onRetry: _controller.retry,
+                    )
                   : _controller.chapters.isEmpty
                       ? const Center(
                           child: Text('Нет данных для отображения'),
@@ -487,26 +508,118 @@ class _ReaderScreenState extends State<ReaderScreen> {
       context: context,
       builder: (context) {
         return SafeArea(
-          child: ListView.separated(
-            itemCount: _controller.chapters.length,
-            separatorBuilder: (_, _) => const Divider(height: 1),
-            itemBuilder: (context, index) {
-              final chapter = _controller.chapters[index];
-              final indent = 16.0 + (chapter.level * 18.0);
-              return ListTile(
-                contentPadding:
-                    EdgeInsets.only(left: indent, right: 16, top: 4, bottom: 4),
-                title: Text(chapter.title),
-                onTap: () {
-                  Navigator.of(context).pop();
-                  _scrollToChapter(index);
-                },
-              );
-            },
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Оглавление',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: _exportToc,
+                      child: const Text('Экспорт'),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: ListView.separated(
+                  itemCount: _controller.chapters.length,
+                  separatorBuilder: (_, _) => const Divider(height: 1),
+                  itemBuilder: (context, index) {
+                    final chapter = _controller.chapters[index];
+                    final indent = 16.0 + (chapter.level * 18.0);
+                    return ListTile(
+                      contentPadding: EdgeInsets.only(
+                        left: indent,
+                        right: 16,
+                        top: 4,
+                        bottom: 4,
+                      ),
+                      title: Text(chapter.title),
+                      onTap: () {
+                        Navigator.of(context).pop();
+                        _scrollToChapter(index);
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
           ),
         );
       },
     );
+  }
+
+  Future<void> _exportToc() async {
+    if (_controller.chapters.isEmpty) {
+      return;
+    }
+    final buffer = StringBuffer();
+    for (final chapter in _controller.chapters) {
+      final indent = '  ' * chapter.level;
+      buffer.writeln('$indent${chapter.title}');
+    }
+    final safeTitle = _sanitizeFileName(_controller.title ?? 'toc');
+    final fileName = 'cogniread_toc_$safeTitle.txt';
+    final appSupport = await getApplicationSupportDirectory();
+    var writtenPath = '';
+    Future<bool> tryWrite(String path) async {
+      try {
+        await File(path).writeAsString(buffer.toString());
+        return true;
+      } catch (e) {
+        Log.d('TOC export failed: $path ($e)');
+        return false;
+      }
+    }
+
+    final candidates = <String>[
+      p.join(appSupport.path, fileName),
+      p.join(Directory.systemTemp.path, fileName),
+    ];
+
+    for (final candidate in candidates) {
+      if (await tryWrite(candidate)) {
+        writtenPath = candidate;
+        break;
+      }
+    }
+
+    if (writtenPath.isEmpty) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Не удалось экспортировать оглавление.')),
+      );
+      return;
+    }
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Оглавление экспортировано: $writtenPath')),
+    );
+  }
+
+  String _sanitizeFileName(String value) {
+    final cleaned =
+        value.replaceAll(RegExp(r'[^A-Za-z0-9._-]+'), '_').trim();
+    return cleaned.isEmpty ? 'toc' : cleaned;
   }
 
   void _scrollToChapter(int index) {
@@ -560,6 +673,40 @@ class _ChapterHeader extends StatelessWidget {
             fontWeight: FontWeight.w600,
             letterSpacing: 0.2,
           ),
+    );
+  }
+}
+
+class _ReaderErrorPanel extends StatelessWidget {
+  const _ReaderErrorPanel({
+    required this.message,
+    required this.onRetry,
+  });
+
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodyLarge,
+            ),
+            const SizedBox(height: 12),
+            FilledButton(
+              onPressed: onRetry,
+              child: const Text('Повторить'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -947,19 +1094,170 @@ String? _extractFb2Body(String xml) {
   return xml.substring(start, end + '</body>'.length);
 }
 
+List<_ChapterSource> _chaptersFromFb2(String xml) {
+  try {
+    final doc = XmlDocument.parse(xml);
+    XmlElement? body;
+    for (final candidate in doc.findAllElements('body')) {
+      final name = candidate.getAttribute('name');
+      if (name == null || name.toLowerCase() != 'notes') {
+        body = candidate;
+        break;
+      }
+    }
+    if (body == null) {
+      return const <_ChapterSource>[];
+    }
+    final chapters = <_ChapterSource>[];
+    var chapterCounter = 0;
+    String? lastTitle;
+    for (final section in body.findElements('section')) {
+      final rawTitle = _extractFb2SectionTitle(section);
+      if (_shouldSkipFb2Title(rawTitle)) {
+        continue;
+      }
+      var isSpecial = _isFb2Prologue(rawTitle) || _isFb2Epilogue(rawTitle);
+      if (!isSpecial) {
+        chapterCounter += 1;
+      }
+      final normalized =
+          _normalizeFb2ChapterTitle(rawTitle, chapterCounter, isSpecial);
+      if (normalized.isEmpty || normalized == lastTitle) {
+        continue;
+      }
+      lastTitle = normalized;
+      chapters.add(
+        _ChapterSource(
+          html: section.toXmlString(),
+          fallbackTitle: normalized,
+          tocTitle: normalized,
+          tocLevel: 0,
+          href: null,
+        ),
+      );
+    }
+
+    return chapters;
+  } catch (e) {
+    Log.d('Reader failed to parse FB2 sections: $e');
+    return const <_ChapterSource>[];
+  }
+}
+
+String _extractFb2SectionTitle(XmlElement section) {
+  final titleNode = _firstElement(section.findElements('title'));
+  var titleText = titleNode == null
+      ? ''
+      : _stripHtmlToText(titleNode.innerXml).trim();
+  if (titleText.isNotEmpty) {
+    return _normalizeFb2Title(titleText);
+  }
+  final firstPara = _firstElement(section.findElements('p'));
+  if (firstPara == null) {
+    return '';
+  }
+  titleText = _stripHtmlToText(firstPara.innerXml).trim();
+  return _normalizeFb2Title(titleText);
+}
+
+String _normalizeFb2Title(String title) {
+  var value = title.replaceAll(RegExp(r'\s+'), ' ').trim();
+  if (value.length > 80) {
+    value = '${value.substring(0, 77)}...';
+  }
+  return value;
+}
+
+bool _shouldSkipFb2Title(String title) {
+  if (title.isEmpty) {
+    return true;
+  }
+  final lower = title.toLowerCase();
+  return lower.contains('от автора') ||
+      lower.contains('предисловие') ||
+      lower.contains('содержание') ||
+      lower.contains('copyright') ||
+      lower.contains('правооблад') ||
+      lower.contains('издательство');
+}
+
+bool _isFb2Prologue(String title) {
+  final lower = title.toLowerCase().trim();
+  return lower == 'пролог' || lower.startsWith('пролог ');
+}
+
+bool _isFb2Epilogue(String title) {
+  final lower = title.toLowerCase().trim();
+  return lower == 'эпилог' || lower.startsWith('эпилог ');
+}
+
+bool _looksLikeChapterLabel(String title) {
+  final lower = title.toLowerCase().trim();
+  if (_isFb2Prologue(lower) || _isFb2Epilogue(lower)) {
+    return true;
+  }
+  if (RegExp(r'^глава\\s*\\d+').hasMatch(lower)) {
+    return true;
+  }
+  if (RegExp(r'^chapter\\s*\\d+').hasMatch(lower)) {
+    return true;
+  }
+  return RegExp(r'^\\d+$').hasMatch(lower);
+}
+
+String _normalizeFb2ChapterTitle(
+  String title,
+  int chapterIndex,
+  bool isSpecial,
+) {
+  if (isSpecial) {
+    if (_isFb2Prologue(title)) {
+      return 'Пролог';
+    }
+    if (_isFb2Epilogue(title)) {
+      return 'Эпилог';
+    }
+  }
+  final lower = title.toLowerCase();
+  final match = RegExp(r'глава\\s*(\\d+)', caseSensitive: false).firstMatch(lower);
+  if (match != null) {
+    return 'Глава ${match.group(1)}';
+  }
+  if (RegExp(r'^\\d+$').hasMatch(title.trim())) {
+    return 'Глава ${title.trim()}';
+  }
+  if (chapterIndex > 0) {
+    return 'Глава $chapterIndex';
+  }
+  return title;
+}
+
 List<_ChapterSource> _chaptersFromArchive(Archive archive) {
+  final fb2Chapters = _fb2ChaptersFromArchive(archive);
+  if (fb2Chapters.isNotEmpty) {
+    Log.d('Reader fb2 sections: ${fb2Chapters.length} items');
+    return fb2Chapters;
+  }
   final tocEntries = _tocEntriesFromArchive(archive);
   if (tocEntries.isNotEmpty) {
     final chapters = _chaptersFromTocEntries(archive, tocEntries);
-    if (chapters.isNotEmpty) {
+    if (chapters.isNotEmpty && !_isTocQualityPoor(tocEntries, chapters)) {
       Log.d('Reader toc order: ${chapters.length} items');
       return chapters;
     }
+    Log.d(
+      'Reader toc quality poor: entries=${tocEntries.length}, chapters=${chapters.length}',
+    );
   }
 
   final spineHrefs = _spineHrefsFromArchive(archive);
   if (spineHrefs.isNotEmpty) {
     Log.d('Reader spine order: ${spineHrefs.length} items');
+    final headingChapters = _chaptersFromHeadings(archive, spineHrefs);
+    if (headingChapters.isNotEmpty) {
+      Log.d('Reader headings order: ${headingChapters.length} items');
+      return headingChapters;
+    }
     final chapters = <_ChapterSource>[];
     for (final href in spineHrefs) {
       final file = _archiveFileByName(archive, href);
@@ -975,6 +1273,11 @@ List<_ChapterSource> _chaptersFromArchive(Archive archive) {
         continue;
       }
       if (_isFictionBookXml(decoded)) {
+        final fb2Chapters = _chaptersFromFb2(decoded);
+        if (fb2Chapters.isNotEmpty) {
+          chapters.addAll(fb2Chapters);
+          break;
+        }
         final fb2Body = _extractFb2Body(decoded);
         if (fb2Body != null && fb2Body.trim().isNotEmpty) {
           chapters.add(
@@ -1055,6 +1358,308 @@ List<_ChapterSource> _chaptersFromArchive(Archive archive) {
   return const <_ChapterSource>[];
 }
 
+bool _isTocQualityPoor(
+  List<_TocEntry> tocEntries,
+  List<_ChapterSource> chapters,
+) {
+  if (tocEntries.isEmpty) {
+    return true;
+  }
+  if (chapters.isEmpty) {
+    return true;
+  }
+  final ratio = chapters.length / tocEntries.length;
+  return tocEntries.length >= 8 && ratio < 0.4;
+}
+
+List<_ChapterSource> _chaptersFromHeadings(
+  Archive archive,
+  List<String> spineHrefs,
+) {
+  final chapters = <_ChapterSource>[];
+  for (final href in spineHrefs) {
+    final file = _archiveFileByName(archive, href);
+    if (file == null || !file.isFile) {
+      continue;
+    }
+    final content = file.content;
+    if (content is! List<int>) {
+      continue;
+    }
+    final decoded = utf8.decode(content, allowMalformed: true).trim();
+    if (decoded.isEmpty) {
+      continue;
+    }
+    final fallback = p.basenameWithoutExtension(href);
+    final heading = _extractChapterTitle(decoded, fallback);
+    if (heading.trim().isEmpty) {
+      continue;
+    }
+    chapters.add(
+      _ChapterSource(
+        html: decoded,
+        fallbackTitle: fallback,
+        tocTitle: heading,
+        tocLevel: 0,
+        href: href,
+      ),
+    );
+  }
+  return chapters;
+}
+
+List<_ChapterSource> _fb2ChaptersFromArchive(Archive archive) {
+  for (final file in archive.files) {
+    if (!file.isFile) {
+      continue;
+    }
+    final name = file.name.toLowerCase();
+    if (!name.endsWith('.fb2') && !name.endsWith('.xml')) {
+      continue;
+    }
+    final content = file.content;
+    if (content is! List<int>) {
+      continue;
+    }
+    final decoded = _decodeFb2Bytes(content);
+    if (!_isFictionBookXml(decoded)) {
+      continue;
+    }
+    final chapters = _chaptersFromFb2(decoded);
+    if (chapters.isNotEmpty) {
+      return chapters;
+    }
+  }
+  return const <_ChapterSource>[];
+}
+
+String _decodeFb2Bytes(List<int> bytes) {
+  final header = utf8.decode(
+    bytes.take(200).toList(),
+    allowMalformed: true,
+  ).toLowerCase();
+  final match = RegExp(r'''encoding\s*=\s*['"]([^'"]+)['"]''')
+      .firstMatch(header);
+  final encoding = match?.group(1) ?? '';
+  if (encoding.contains('1251') || encoding.contains('cp1251')) {
+    Log.d('Reader fb2 encoding: $encoding');
+    return _decodeCp1251(bytes);
+  }
+  if (encoding.contains('utf-8') || encoding.contains('utf8')) {
+    return utf8.decode(bytes, allowMalformed: true);
+  }
+  return utf8.decode(bytes, allowMalformed: true);
+}
+
+String _decodeCp1251(List<int> bytes) {
+  final buffer = StringBuffer();
+  for (final byte in bytes) {
+    if (byte <= 0x7F) {
+      buffer.writeCharCode(byte);
+      continue;
+    }
+    if (byte >= 0xC0) {
+      buffer.writeCharCode(0x0410 + (byte - 0xC0));
+      continue;
+    }
+    switch (byte) {
+      case 0x80:
+        buffer.writeCharCode(0x0402);
+        break;
+      case 0x81:
+        buffer.writeCharCode(0x0403);
+        break;
+      case 0x82:
+        buffer.writeCharCode(0x201A);
+        break;
+      case 0x83:
+        buffer.writeCharCode(0x0453);
+        break;
+      case 0x84:
+        buffer.writeCharCode(0x201E);
+        break;
+      case 0x85:
+        buffer.writeCharCode(0x2026);
+        break;
+      case 0x86:
+        buffer.writeCharCode(0x2020);
+        break;
+      case 0x87:
+        buffer.writeCharCode(0x2021);
+        break;
+      case 0x88:
+        buffer.writeCharCode(0x20AC);
+        break;
+      case 0x89:
+        buffer.writeCharCode(0x2030);
+        break;
+      case 0x8A:
+        buffer.writeCharCode(0x0409);
+        break;
+      case 0x8B:
+        buffer.writeCharCode(0x2039);
+        break;
+      case 0x8C:
+        buffer.writeCharCode(0x040A);
+        break;
+      case 0x8D:
+        buffer.writeCharCode(0x040C);
+        break;
+      case 0x8E:
+        buffer.writeCharCode(0x040B);
+        break;
+      case 0x8F:
+        buffer.writeCharCode(0x040F);
+        break;
+      case 0x90:
+        buffer.writeCharCode(0x0452);
+        break;
+      case 0x91:
+        buffer.writeCharCode(0x2018);
+        break;
+      case 0x92:
+        buffer.writeCharCode(0x2019);
+        break;
+      case 0x93:
+        buffer.writeCharCode(0x201C);
+        break;
+      case 0x94:
+        buffer.writeCharCode(0x201D);
+        break;
+      case 0x95:
+        buffer.writeCharCode(0x2022);
+        break;
+      case 0x96:
+        buffer.writeCharCode(0x2013);
+        break;
+      case 0x97:
+        buffer.writeCharCode(0x2014);
+        break;
+      case 0x99:
+        buffer.writeCharCode(0x2122);
+        break;
+      case 0x9A:
+        buffer.writeCharCode(0x0459);
+        break;
+      case 0x9B:
+        buffer.writeCharCode(0x203A);
+        break;
+      case 0x9C:
+        buffer.writeCharCode(0x045A);
+        break;
+      case 0x9D:
+        buffer.writeCharCode(0x045C);
+        break;
+      case 0x9E:
+        buffer.writeCharCode(0x045B);
+        break;
+      case 0x9F:
+        buffer.writeCharCode(0x045F);
+        break;
+      case 0xA0:
+        buffer.writeCharCode(0x00A0);
+        break;
+      case 0xA1:
+        buffer.writeCharCode(0x040E);
+        break;
+      case 0xA2:
+        buffer.writeCharCode(0x045E);
+        break;
+      case 0xA3:
+        buffer.writeCharCode(0x0408);
+        break;
+      case 0xA4:
+        buffer.writeCharCode(0x00A4);
+        break;
+      case 0xA5:
+        buffer.writeCharCode(0x0490);
+        break;
+      case 0xA6:
+        buffer.writeCharCode(0x00A6);
+        break;
+      case 0xA7:
+        buffer.writeCharCode(0x00A7);
+        break;
+      case 0xA8:
+        buffer.writeCharCode(0x0401);
+        break;
+      case 0xA9:
+        buffer.writeCharCode(0x00A9);
+        break;
+      case 0xAA:
+        buffer.writeCharCode(0x0404);
+        break;
+      case 0xAB:
+        buffer.writeCharCode(0x00AB);
+        break;
+      case 0xAC:
+        buffer.writeCharCode(0x00AC);
+        break;
+      case 0xAD:
+        buffer.writeCharCode(0x00AD);
+        break;
+      case 0xAE:
+        buffer.writeCharCode(0x00AE);
+        break;
+      case 0xAF:
+        buffer.writeCharCode(0x0407);
+        break;
+      case 0xB0:
+        buffer.writeCharCode(0x00B0);
+        break;
+      case 0xB1:
+        buffer.writeCharCode(0x00B1);
+        break;
+      case 0xB2:
+        buffer.writeCharCode(0x0406);
+        break;
+      case 0xB3:
+        buffer.writeCharCode(0x0456);
+        break;
+      case 0xB4:
+        buffer.writeCharCode(0x0491);
+        break;
+      case 0xB5:
+        buffer.writeCharCode(0x00B5);
+        break;
+      case 0xB6:
+        buffer.writeCharCode(0x00B6);
+        break;
+      case 0xB7:
+        buffer.writeCharCode(0x00B7);
+        break;
+      case 0xB8:
+        buffer.writeCharCode(0x0451);
+        break;
+      case 0xB9:
+        buffer.writeCharCode(0x2116);
+        break;
+      case 0xBA:
+        buffer.writeCharCode(0x0454);
+        break;
+      case 0xBB:
+        buffer.writeCharCode(0x00BB);
+        break;
+      case 0xBC:
+        buffer.writeCharCode(0x0458);
+        break;
+      case 0xBD:
+        buffer.writeCharCode(0x0405);
+        break;
+      case 0xBE:
+        buffer.writeCharCode(0x0455);
+        break;
+      case 0xBF:
+        buffer.writeCharCode(0x0457);
+        break;
+      default:
+        buffer.writeCharCode(0xFFFD);
+        break;
+    }
+  }
+  return buffer.toString();
+}
+
 bool _shouldSkipSpineItem(String href, int textLength) {
   if (textLength >= 120) {
     return false;
@@ -1131,22 +1736,155 @@ List<_TocEntry> _tocEntriesFromArchive(Archive archive) {
         ncxPath = p.posix.normalize(p.posix.join(opfDir, href));
       }
     }
-    if (navPath != null) {
-      final toc = _tocEntriesFromNav(archive, navPath);
-      if (toc.isNotEmpty) {
-        return toc;
-      }
+    final navToc = navPath == null
+        ? const <_TocEntry>[]
+        : _tocEntriesFromNav(archive, navPath);
+    final ncxToc = ncxPath == null
+        ? const <_TocEntry>[]
+        : _tocEntriesFromNcx(archive, ncxPath);
+    if (navToc.isEmpty && ncxToc.isEmpty) {
+      return const <_TocEntry>[];
     }
-    if (ncxPath != null) {
-      final toc = _tocEntriesFromNcx(archive, ncxPath);
-      if (toc.isNotEmpty) {
-        return toc;
-      }
+    if (navToc.isEmpty) {
+      Log.d('Reader toc source: ncx (${ncxToc.length})');
+      return _normalizeTocEntries(ncxToc);
     }
+    if (ncxToc.isEmpty) {
+      Log.d('Reader toc source: nav (${navToc.length})');
+      return _normalizeTocEntries(navToc);
+    }
+    final navScore = _tocQualityScore(navToc);
+    final ncxScore = _tocQualityScore(ncxToc);
+    final chosen = navScore >= ncxScore ? navToc : ncxToc;
+    Log.d(
+      'Reader toc source: ${navScore >= ncxScore ? 'nav' : 'ncx'} '
+      '(nav=$navScore, ncx=$ncxScore)',
+    );
+    return _normalizeTocEntries(chosen);
   } catch (e) {
     Log.d('Reader failed to parse OPF toc: $e');
   }
   return const <_TocEntry>[];
+}
+
+List<_TocEntry> _normalizeTocEntries(List<_TocEntry> entries) {
+  if (entries.isEmpty) {
+    return entries;
+  }
+  final filtered = <_TocEntry>[];
+  for (final entry in entries) {
+    final label = entry.title.trim();
+    if (_shouldSkipTocLabel(label)) {
+      continue;
+    }
+    filtered.add(entry);
+  }
+  final normalized = _maybeNormalizeChapterLabels(filtered);
+  if (normalized != null) {
+    Log.d('Reader toc normalized labels');
+    return normalized;
+  }
+  return filtered;
+}
+
+bool _shouldSkipTocLabel(String label) {
+  if (label.isEmpty) {
+    return true;
+  }
+  final lower = label.toLowerCase();
+  return lower.contains('от автора') ||
+      lower.contains('содержание') ||
+      lower.contains('предисловие') ||
+      lower.contains('copyright') ||
+      lower.contains('правооблад') ||
+      lower.contains('издательство');
+}
+
+List<_TocEntry>? _maybeNormalizeChapterLabels(List<_TocEntry> entries) {
+  if (entries.length < 5) {
+    return null;
+  }
+  var sentenceLike = 0;
+  var hasEpilogue = false;
+  var hasPrologue = false;
+  var chapterLike = 0;
+  for (final entry in entries) {
+    final label = entry.title;
+    if (RegExp(r'[.!?]|—|…').hasMatch(label) && label.length > 30) {
+      sentenceLike += 1;
+    }
+    if (_isFb2Epilogue(label)) {
+      hasEpilogue = true;
+    }
+    if (_isFb2Prologue(label)) {
+      hasPrologue = true;
+    }
+    if (_looksLikeChapterLabel(label)) {
+      chapterLike += 1;
+    }
+  }
+  final ratio = sentenceLike / entries.length;
+  final chapterRatio = chapterLike / entries.length;
+  if (ratio < 0.2 && chapterRatio >= 0.4) {
+    return null;
+  }
+  var chapterCounter = 0;
+  final normalized = <_TocEntry>[];
+  for (var i = 0; i < entries.length; i++) {
+    final entry = entries[i];
+    final raw = entry.title.trim();
+    String label;
+    final isFirst = i == 0;
+    final isLast = i == entries.length - 1;
+    if (_isFb2Prologue(raw) || (isFirst && !hasPrologue)) {
+      label = 'Пролог';
+    } else if (_isFb2Epilogue(raw) || (isLast && hasEpilogue)) {
+      label = 'Эпилог';
+    } else {
+      chapterCounter += 1;
+      label = 'Глава $chapterCounter';
+    }
+    normalized.add(
+      _TocEntry(
+        title: label,
+        href: entry.href,
+        level: entry.level,
+        fragment: entry.fragment,
+      ),
+    );
+  }
+  return normalized;
+}
+
+double _tocQualityScore(List<_TocEntry> entries) {
+  if (entries.isEmpty) {
+    return 0;
+  }
+  var empty = 0;
+  var long = 0;
+  var sentence = 0;
+  for (final entry in entries) {
+    final label = entry.title.trim();
+    if (label.isEmpty) {
+      empty += 1;
+      continue;
+    }
+    if (label.length > 50) {
+      long += 1;
+    }
+    if (RegExp(r'[.!?]|—|…').hasMatch(label)) {
+      sentence += 1;
+    }
+  }
+  final total = entries.length.toDouble();
+  final emptyRatio = empty / total;
+  final longRatio = long / total;
+  final sentenceRatio = sentence / total;
+  var score = 1.0 - (emptyRatio * 0.6) - (longRatio * 0.3) - (sentenceRatio * 0.2);
+  if (score < 0) {
+    score = 0;
+  }
+  return double.parse(score.toStringAsFixed(2));
 }
 
 List<_TocEntry> _tocEntriesFromNav(Archive archive, String navPath) {
@@ -1357,6 +2095,11 @@ List<_ChapterSource> _chaptersFromTocEntries(
       continue;
     }
     if (_isFictionBookXml(decoded)) {
+      final fb2Chapters = _chaptersFromFb2(decoded);
+      if (fb2Chapters.isNotEmpty) {
+        chapters.addAll(fb2Chapters);
+        break;
+      }
       final fb2Body = _extractFb2Body(decoded);
       if (fb2Body == null || fb2Body.trim().isEmpty) {
         continue;

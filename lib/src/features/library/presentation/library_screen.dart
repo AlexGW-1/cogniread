@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:cogniread/src/core/services/storage_service.dart';
 import 'package:cogniread/src/features/library/presentation/library_controller.dart';
 import 'package:cogniread/src/features/reader/presentation/reader_screen.dart';
@@ -68,8 +70,20 @@ class _LibraryScreenState extends State<LibraryScreen> {
     }
   }
 
-  void _open(int index) {
+  Future<void> _open(int index) async {
     final book = _controller.books[index];
+    if (book.isMissing) {
+      _showError('Файл книги недоступен');
+      return;
+    }
+    if (book.sourcePath != 'stub') {
+      final exists = await File(book.storedPath).exists();
+      if (!exists) {
+        _controller.markMissing(book.id);
+        _showError('Файл книги недоступен');
+        return;
+      }
+    }
     _controller.markOpened(book.id);
     final isDesktop = MediaQuery.of(context).size.width >= 1000;
     if (isDesktop) {
@@ -165,6 +179,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   Widget _buildMobileScaffold() {
+    final scheme = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Library'),
@@ -204,11 +219,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
                   separatorBuilder: (context, index) =>
                       const Divider(height: 1),
                   itemBuilder: (context, i) {
+                    final book = _controller.books[i];
                     return ListTile(
-                      title: Text(_controller.books[i].title),
-                      subtitle: _controller.books[i].author == null
-                          ? null
-                          : Text(_controller.books[i].author!),
+                      title: Text(book.title),
+                      subtitle: _buildBookSubtitle(book, scheme),
                       trailing: IconButton(
                         icon: const Icon(Icons.delete_outline),
                         onPressed: () => _deleteBook(i),
@@ -350,6 +364,22 @@ class _LibraryScreenState extends State<LibraryScreen> {
               (book.author?.toLowerCase().contains(needle) ?? false),
         )
         .toList();
+  }
+
+  Widget? _buildBookSubtitle(LibraryBookItem book, ColorScheme scheme) {
+    if (book.isMissing) {
+      final text = book.author == null
+          ? 'Файл отсутствует'
+          : '${book.author} · файл отсутствует';
+      return Text(
+        text,
+        style: TextStyle(color: scheme.error),
+      );
+    }
+    if (book.author == null) {
+      return null;
+    }
+    return Text(book.author!);
   }
 }
 
@@ -508,6 +538,15 @@ class _BookCard extends StatelessWidget {
                         book.author!,
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                               color: scheme.onSurfaceVariant,
+                            ),
+                      ),
+                    ],
+                    if (book.isMissing) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        'Файл отсутствует',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              color: scheme.error,
                             ),
                       ),
                     ],
