@@ -1,3 +1,4 @@
+import 'package:cogniread/src/core/types/toc.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 class LibraryEntry {
@@ -15,6 +16,9 @@ class LibraryEntry {
     required this.notes,
     required this.highlights,
     required this.bookmarks,
+    this.tocOfficial = const <TocNode>[],
+    this.tocGenerated = const <TocNode>[],
+    this.tocMode = TocMode.official,
   });
 
   final String id;
@@ -30,6 +34,9 @@ class LibraryEntry {
   final List<Note> notes;
   final List<Highlight> highlights;
   final List<Bookmark> bookmarks;
+  final List<TocNode> tocOfficial;
+  final List<TocNode> tocGenerated;
+  final TocMode tocMode;
 
   Map<String, Object?> toMap() => <String, Object?>{
         'id': id,
@@ -45,6 +52,9 @@ class LibraryEntry {
         'notes': notes.map((note) => note.toMap()).toList(),
         'highlights': highlights.map((highlight) => highlight.toMap()).toList(),
         'bookmarks': bookmarks.map((bookmark) => bookmark.toMap()).toList(),
+        'tocOfficial': tocOfficial.map((node) => node.toMap()).toList(),
+        'tocGenerated': tocGenerated.map((node) => node.toMap()).toList(),
+        'tocMode': tocMode.name,
       };
 
   static LibraryEntry fromMap(Map<String, Object?> map) {
@@ -78,6 +88,9 @@ class LibraryEntry {
       bookmarks: _readList(map['bookmarks'])
           .map((item) => Bookmark.fromMap(item))
           .toList(),
+      tocOfficial: _readTocList(map['tocOfficial']),
+      tocGenerated: _readTocList(map['tocGenerated']),
+      tocMode: _parseTocMode(map['tocMode']),
     );
   }
 }
@@ -271,6 +284,26 @@ List<Map<String, Object?>> _readList(Object? value) {
   return const <Map<String, Object?>>[];
 }
 
+List<TocNode> _readTocList(Object? value) {
+  if (value is List) {
+    return value
+        .map(_coerceMap)
+        .map((item) => TocNode.fromMap(item))
+        .toList();
+  }
+  return const <TocNode>[];
+}
+
+TocMode _parseTocMode(Object? value) {
+  if (value is String) {
+    return TocMode.values.firstWhere(
+      (mode) => mode.name == value,
+      orElse: () => TocMode.official,
+    );
+  }
+  return TocMode.official;
+}
+
 Map<String, Object?> _coerceMap(Object? value) {
   if (value is Map) {
     return Map<String, Object?>.from(value);
@@ -360,6 +393,9 @@ class LibraryStore {
         notes: entry.notes,
         highlights: entry.highlights,
         bookmarks: entry.bookmarks,
+        tocOfficial: entry.tocOfficial,
+        tocGenerated: entry.tocGenerated,
+        tocMode: entry.tocMode,
       ),
     );
   }
@@ -387,6 +423,9 @@ class LibraryStore {
         notes: entry.notes,
         highlights: entry.highlights,
         bookmarks: entry.bookmarks,
+        tocOfficial: entry.tocOfficial,
+        tocGenerated: entry.tocGenerated,
+        tocMode: entry.tocMode,
       ),
     );
   }
@@ -411,6 +450,9 @@ class LibraryStore {
         notes: entry.notes,
         highlights: entry.highlights,
         bookmarks: entry.bookmarks,
+        tocOfficial: entry.tocOfficial,
+        tocGenerated: entry.tocGenerated,
+        tocMode: entry.tocMode,
       ),
     );
   }
@@ -435,6 +477,9 @@ class LibraryStore {
         notes: [...entry.notes, note],
         highlights: entry.highlights,
         bookmarks: entry.bookmarks,
+        tocOfficial: entry.tocOfficial,
+        tocGenerated: entry.tocGenerated,
+        tocMode: entry.tocMode,
       ),
     );
   }
@@ -459,6 +504,9 @@ class LibraryStore {
         notes: entry.notes,
         highlights: [...entry.highlights, highlight],
         bookmarks: entry.bookmarks,
+        tocOfficial: entry.tocOfficial,
+        tocGenerated: entry.tocGenerated,
+        tocMode: entry.tocMode,
       ),
     );
   }
@@ -483,6 +531,9 @@ class LibraryStore {
         notes: entry.notes,
         highlights: entry.highlights,
         bookmarks: [...entry.bookmarks, bookmark],
+        tocOfficial: entry.tocOfficial,
+        tocGenerated: entry.tocGenerated,
+        tocMode: entry.tocMode,
       ),
     );
   }

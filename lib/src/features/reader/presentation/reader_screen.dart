@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:archive/archive.dart';
+import 'package:cogniread/src/core/types/toc.dart';
 import 'package:cogniread/src/core/utils/logger.dart';
 import 'package:cogniread/src/features/library/data/library_store.dart';
 import 'package:flutter/foundation.dart';
@@ -24,6 +25,7 @@ class _ReaderController extends ChangeNotifier {
   static final Map<String, List<_Chapter>> _chapterCache =
       <String, List<_Chapter>>{};
   static final List<String> _cacheOrder = <String>[];
+  static final Map<String, TocMode> _cacheMode = <String, TocMode>{};
 
   bool _loading = true;
   String? _error;
@@ -31,12 +33,20 @@ class _ReaderController extends ChangeNotifier {
   ReadingPosition? _initialPosition;
   List<_Chapter> _chapters = const <_Chapter>[];
   String? _activeBookId;
+  TocMode _tocMode = TocMode.official;
+  List<_TocEntry> _officialTocEntries = const <_TocEntry>[];
+  List<_TocEntry> _generatedTocEntries = const <_TocEntry>[];
+  List<TocNode> _tocOfficialNodes = const <TocNode>[];
+  List<TocNode> _tocGeneratedNodes = const <TocNode>[];
+  Archive? _lastArchive;
 
   bool get loading => _loading;
   String? get error => _error;
   String? get title => _title;
   ReadingPosition? get initialPosition => _initialPosition;
   List<_Chapter> get chapters => _chapters;
+  TocMode get tocMode => _tocMode;
+  bool get hasGeneratedToc => _tocGeneratedNodes.isNotEmpty;
 
   Future<void> load(String bookId) async {
     final totalWatch = Stopwatch()..start();
@@ -55,6 +65,9 @@ class _ReaderController extends ChangeNotifier {
 
       _initialPosition = entry.readingPosition;
       _title = entry.title;
+      _tocMode = entry.tocMode;
+      _tocOfficialNodes = entry.tocOfficial;
+      _tocGeneratedNodes = entry.tocGenerated;
 
       final file = File(entry.localPath);
       if (!await file.exists()) {
@@ -65,7 +78,10 @@ class _ReaderController extends ChangeNotifier {
       }
 
       final cached = _chapterCache[bookId];
-      if (cached != null) {
+      final cachedMode = _cacheMode[bookId];
+      final hasStoredToc =
+          entry.tocOfficial.isNotEmpty || entry.tocGenerated.isNotEmpty;
+      if (cached != null && cachedMode == _tocMode && hasStoredToc) {
         _logCache('Reader cache hit ($bookId, chapters=${cached.length})');
         _touchCache(bookId);
         _chapters = cached;
@@ -88,7 +104,7 @@ class _ReaderController extends ChangeNotifier {
       );
       Log.d('Reader loading file: ${entry.localPath} (${bytes.length} bytes)');
       final extractWatch = Stopwatch()..start();
-      final chapterSources = await _extractChapters(bytes)
+      final chapterSources = await _extractChapters(bytes, entry)
           .timeout(const Duration(seconds: 8), onTimeout: () {
         throw Exception('EPUB parse timeout');
       });
@@ -99,39 +115,12 @@ class _ReaderController extends ChangeNotifier {
       );
       Log.d('Reader extracted chapters: ${chapterSources.length}');
       final buildWatch = Stopwatch()..start();
-      final chapters = <_Chapter>[];
-      var totalTextLength = 0;
-      for (var i = 0; i < chapterSources.length; i++) {
-        final source = chapterSources[i];
-        final fallbackTitle = source.fallbackTitle ?? '';
-        final rawTitle =
-            source.tocTitle ?? _extractChapterTitle(source.html, fallbackTitle);
-        final rawText = _toPlainText(source.html);
-        final cleanedText = _cleanTextForReading(rawText);
-        final derivedTitle = _deriveTitleFromText(cleanedText);
-        final title = _normalizeChapterTitle(
-          rawTitle,
-          i + 1,
-          fallbackTitle,
-          derivedTitle,
-        );
-        totalTextLength += cleanedText.length;
-        chapters.add(
-          _Chapter(
-            title: title,
-            level: source.tocLevel ?? 0,
-            paragraphs: _splitParagraphs(cleanedText),
-            href: source.href,
-          ),
-        );
-      }
+      final chapters = _buildChapters(chapterSources);
       buildWatch.stop();
       _logPerf(
         'Reader perf: build chapters ${buildWatch.elapsedMilliseconds}ms'
         ' (${chapters.length})',
       );
-      Log.d('Reader extracted text length: $totalTextLength');
-
       _chapters = chapters;
       _storeCache(bookId, chapters);
       _loading = false;
@@ -177,16 +166,82 @@ class _ReaderController extends ChangeNotifier {
   void _storeCache(String bookId, List<_Chapter> chapters) {
     _chapterCache[bookId] = List<_Chapter>.from(chapters);
     _touchCache(bookId);
+    _cacheMode[bookId] = _tocMode;
     if (_cacheOrder.length <= _cacheLimit) {
       return;
     }
     final evicted = _cacheOrder.removeAt(0);
     _chapterCache.remove(evicted);
+    _cacheMode.remove(evicted);
   }
 
   void _touchCache(String bookId) {
     _cacheOrder.remove(bookId);
     _cacheOrder.add(bookId);
+  }
+
+  Future<void> setTocMode(TocMode mode) async {
+    if (_tocMode == mode) {
+      return;
+    }
+    _tocMode = mode;
+    Archive? archive = _lastArchive;
+    final bookId = _activeBookId;
+    if (archive == null && bookId != null) {
+      await _store.init();
+      final entry = await _store.getById(bookId);
+      if (entry != null) {
+        try {
+          final bytes = await File(entry.localPath).readAsBytes();
+          archive = ZipDecoder().decodeBytes(bytes, verify: false);
+          _lastArchive = archive;
+        } catch (e) {
+          Log.d('Failed to reload archive for toc mode: $e');
+        }
+      }
+    }
+    if (archive != null) {
+      final entries = _entriesForMode();
+      if (entries.isNotEmpty) {
+        final chapters = _chaptersFromTocEntries(
+          archive,
+          entries,
+          preferTocTitle: true,
+        );
+        if (chapters.isNotEmpty) {
+          _chapters = _buildChapters(chapters);
+          _storeCache(_activeBookId ?? 'unknown', _chapters);
+          notifyListeners();
+        }
+      }
+    }
+    if (bookId != null) {
+      await _store.init();
+      final entry = await _store.getById(bookId);
+      if (entry != null) {
+        await _store.upsert(
+          LibraryEntry(
+            id: entry.id,
+            title: entry.title,
+            author: entry.author,
+            localPath: entry.localPath,
+            addedAt: entry.addedAt,
+            fingerprint: entry.fingerprint,
+            sourcePath: entry.sourcePath,
+            readingPosition: entry.readingPosition,
+            progress: entry.progress,
+            lastOpenedAt: entry.lastOpenedAt,
+            notes: entry.notes,
+            highlights: entry.highlights,
+            bookmarks: entry.bookmarks,
+            tocOfficial: entry.tocOfficial,
+            tocGenerated: entry.tocGenerated,
+            tocMode: _tocMode,
+          ),
+        );
+      }
+    }
+    notifyListeners();
   }
 
   Future<void> saveReadingPosition(
@@ -197,22 +252,160 @@ class _ReaderController extends ChangeNotifier {
     await _store.updateReadingPosition(bookId, position);
   }
 
-  Future<List<_ChapterSource>> _extractChapters(List<int> bytes) async {
+  Future<List<_ChapterSource>> _extractChapters(
+    List<int> bytes,
+    LibraryEntry entry,
+  ) async {
     try {
       final archive = ZipDecoder().decodeBytes(bytes, verify: false);
+      _lastArchive = archive;
+      final tocResult = _buildTocResult(archive);
+      _officialTocEntries = tocResult.officialEntries;
+      _generatedTocEntries = tocResult.generatedEntries;
+      _tocOfficialNodes = tocResult.officialNodes;
+      _tocGeneratedNodes = tocResult.generatedNodes;
+      final resolvedMode = _resolveTocMode(
+        entry,
+        tocResult,
+      );
+      _tocMode = resolvedMode;
+      await _storeToc(entry, resolvedMode);
+      final entries = _entriesForMode();
+      final chapterSources = entries.isNotEmpty
+          ? _chaptersFromTocEntries(
+              archive,
+              entries,
+              preferTocTitle: true,
+            )
+          : const <_ChapterSource>[];
+      if (chapterSources.isNotEmpty) {
+        return chapterSources;
+      }
       final chapters = _chaptersFromArchive(archive);
       if (chapters.isNotEmpty) {
         return chapters;
       }
+      throw Exception('Не удалось извлечь главы');
     } catch (e) {
       Log.d('Failed to decode EPUB archive: $e');
+      throw Exception('Ошибка парсинга EPUB');
     }
-    return const <_ChapterSource>[
-      _ChapterSource(
-        html: 'Не удалось извлечь текст книги. См. логи в консоли (CogniRead).',
-        fallbackTitle: 'Ошибка',
+  }
+
+  List<_Chapter> _buildChapters(List<_ChapterSource> chapterSources) {
+    final chapters = <_Chapter>[];
+    var totalTextLength = 0;
+    for (var i = 0; i < chapterSources.length; i++) {
+      final source = chapterSources[i];
+      final fallbackTitle = source.fallbackTitle ?? '';
+      final rawTitle =
+          source.tocTitle ?? _extractChapterTitle(source.html, fallbackTitle);
+      final rawText = _toPlainText(source.html);
+      final cleanedText = _cleanTextForReading(rawText);
+      final derivedTitle = _deriveTitleFromText(cleanedText);
+      final title = _normalizeChapterTitle(
+        rawTitle,
+        i + 1,
+        fallbackTitle,
+        derivedTitle,
+        source.preferTocTitle,
+      );
+      totalTextLength += cleanedText.length;
+      chapters.add(
+        _Chapter(
+          title: title,
+          level: source.tocLevel ?? 0,
+          paragraphs: _splitParagraphs(cleanedText),
+          href: source.href,
+        ),
+      );
+    }
+    Log.d('Reader extracted text length: $totalTextLength');
+    return chapters;
+  }
+
+  List<_TocEntry> _entriesForMode() {
+    if (_tocMode == TocMode.generated && _generatedTocEntries.isNotEmpty) {
+      return _generatedTocEntries;
+    }
+    if (_officialTocEntries.isNotEmpty) {
+      return _officialTocEntries;
+    }
+    return _generatedTocEntries;
+  }
+
+  TocMode _resolveTocMode(
+    LibraryEntry entry,
+    _TocParseResult result,
+  ) {
+    final hasStored =
+        entry.tocOfficial.isNotEmpty || entry.tocGenerated.isNotEmpty;
+    if (!hasStored) {
+      return result.defaultMode;
+    }
+    if (entry.tocMode == TocMode.generated &&
+        result.generatedEntries.isEmpty &&
+        result.officialEntries.isNotEmpty) {
+      return TocMode.official;
+    }
+    if (entry.tocMode == TocMode.official &&
+        result.officialEntries.isEmpty &&
+        result.generatedEntries.isNotEmpty) {
+      return TocMode.generated;
+    }
+    return entry.tocMode;
+  }
+
+  Future<void> _storeToc(
+    LibraryEntry entry,
+    TocMode mode,
+  ) async {
+    final needsUpdate = !_tocListsEqual(entry.tocOfficial, _tocOfficialNodes) ||
+        !_tocListsEqual(entry.tocGenerated, _tocGeneratedNodes) ||
+        entry.tocMode != mode;
+    if (!needsUpdate) {
+      return;
+    }
+    await _store.upsert(
+      LibraryEntry(
+        id: entry.id,
+        title: entry.title,
+        author: entry.author,
+        localPath: entry.localPath,
+        addedAt: entry.addedAt,
+        fingerprint: entry.fingerprint,
+        sourcePath: entry.sourcePath,
+        readingPosition: entry.readingPosition,
+        progress: entry.progress,
+        lastOpenedAt: entry.lastOpenedAt,
+        notes: entry.notes,
+        highlights: entry.highlights,
+        bookmarks: entry.bookmarks,
+        tocOfficial: _tocOfficialNodes,
+        tocGenerated: _tocGeneratedNodes,
+        tocMode: mode,
       ),
-    ];
+    );
+  }
+
+  bool _tocListsEqual(List<TocNode> first, List<TocNode> second) {
+    if (first.length != second.length) {
+      return false;
+    }
+    for (var i = 0; i < first.length; i++) {
+      final a = first[i];
+      final b = second[i];
+      if (a.label != b.label ||
+          a.href != b.href ||
+          a.fragment != b.fragment ||
+          a.level != b.level ||
+          a.parentId != b.parentId ||
+          a.order != b.order ||
+          a.source != b.source) {
+        return false;
+      }
+    }
+    return true;
   }
 }
 
@@ -507,58 +700,98 @@ class _ReaderScreenState extends State<ReaderScreen> {
     showModalBottomSheet<void>(
       context: context,
       builder: (context) {
-        return SafeArea(
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 12,
-                ),
-                child: Row(
-                  children: [
-                    const Expanded(
-                      child: Text(
-                        'Оглавление',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
+        return AnimatedBuilder(
+          animation: _controller,
+          builder: (context, _) {
+            final hasGenerated = _controller.hasGeneratedToc;
+            final mode = _controller.tocMode;
+            return SafeArea(
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                    child: Row(
+                      children: [
+                        const Expanded(
+                          child: Text(
+                            'Оглавление',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
                         ),
+                        TextButton(
+                          onPressed: _exportToc,
+                          child: const Text('Экспорт'),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (hasGenerated)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 8,
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SegmentedButton<TocMode>(
+                            segments: const [
+                              ButtonSegment(
+                                value: TocMode.official,
+                                label: Text('Официальное'),
+                              ),
+                              ButtonSegment(
+                                value: TocMode.generated,
+                                label: Text('Сгенерированное'),
+                              ),
+                            ],
+                            selected: {mode},
+                            onSelectionChanged: (selection) {
+                              _controller.setTocMode(selection.first);
+                            },
+                          ),
+                          const SizedBox(height: 6),
+                          const Text(
+                            'Режим может быть убран в будущем.',
+                            style: TextStyle(fontSize: 12),
+                          ),
+                        ],
                       ),
                     ),
-                    TextButton(
-                      onPressed: _exportToc,
-                      child: const Text('Экспорт'),
-                    ),
-                  ],
-                ),
-              ),
-              const Divider(height: 1),
-              Expanded(
-                child: ListView.separated(
-                  itemCount: _controller.chapters.length,
-                  separatorBuilder: (_, _) => const Divider(height: 1),
-                  itemBuilder: (context, index) {
-                    final chapter = _controller.chapters[index];
-                    final indent = 16.0 + (chapter.level * 18.0);
-                    return ListTile(
-                      contentPadding: EdgeInsets.only(
-                        left: indent,
-                        right: 16,
-                        top: 4,
-                        bottom: 4,
-                      ),
-                      title: Text(chapter.title),
-                      onTap: () {
-                        Navigator.of(context).pop();
-                        _scrollToChapter(index);
+                  const Divider(height: 1),
+                  Expanded(
+                    child: ListView.separated(
+                      itemCount: _controller.chapters.length,
+                      separatorBuilder: (_, _) => const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        final chapter = _controller.chapters[index];
+                        final indent = 16.0 + (chapter.level * 18.0);
+                        return ListTile(
+                          contentPadding: EdgeInsets.only(
+                            left: indent,
+                            right: 16,
+                            top: 4,
+                            bottom: 4,
+                          ),
+                          title: Text(chapter.title),
+                          onTap: () {
+                            Navigator.of(context).pop();
+                            _scrollToChapter(index);
+                          },
+                        );
                       },
-                    );
-                  },
-                ),
+                    ),
+                  ),
+                ],
               ),
-            ],
-          ),
+            );
+          },
         );
       },
     );
@@ -808,6 +1041,7 @@ class _ChapterSource {
     this.tocTitle,
     this.tocLevel,
     this.href,
+    this.preferTocTitle = false,
   });
 
   final String html;
@@ -815,6 +1049,7 @@ class _ChapterSource {
   final String? tocTitle;
   final int? tocLevel;
   final String? href;
+  final bool preferTocTitle;
 }
 
 String _toPlainText(String html) {
@@ -892,9 +1127,18 @@ String _normalizeChapterTitle(
   int index,
   String fallback,
   String? derivedTitle,
+  bool preferTocTitle,
 ) {
   final trimmed = title.trim();
   final fallbackResolved = fallbackTitleForIndex(index, fallback);
+  if (preferTocTitle && trimmed.isNotEmpty) {
+    if (_isNormalizedChapterLabel(trimmed)) {
+      return trimmed;
+    }
+    if (!_looksLikeChapterId(trimmed)) {
+      return trimmed;
+    }
+  }
   if (trimmed.isEmpty || _looksLikeChapterId(trimmed) || trimmed.length <= 3) {
     if (derivedTitle != null &&
         derivedTitle.trim().isNotEmpty &&
@@ -904,6 +1148,9 @@ String _normalizeChapterTitle(
     return fallbackResolved;
   }
   if (_isBareChapterTitle(trimmed)) {
+    if (preferTocTitle) {
+      return trimmed;
+    }
     if (derivedTitle != null &&
         derivedTitle.trim().isNotEmpty &&
         !_looksLikeChapterId(derivedTitle)) {
@@ -1041,6 +1288,13 @@ bool _looksLikeChapterMarker(String value) {
   return RegExp(r'^[a-z]{1,3}\d{1,3}$').hasMatch(lower);
 }
 
+bool _isNormalizedChapterLabel(String value) {
+  final lower = value.trim().toLowerCase();
+  return lower == 'пролог' ||
+      lower == 'эпилог' ||
+      RegExp(r'^глава\s+\d+([\-_.]\d+)?$').hasMatch(lower);
+}
+
 bool _isBareChapterTitle(String value) {
   final lower = value.trim().toLowerCase();
   return RegExp(r'^глава\s*\d+([\-_.]\d+)?$').hasMatch(lower) ||
@@ -1111,31 +1365,39 @@ List<_ChapterSource> _chaptersFromFb2(String xml) {
     final chapters = <_ChapterSource>[];
     var chapterCounter = 0;
     String? lastTitle;
-    for (final section in body.findElements('section')) {
-      final rawTitle = _extractFb2SectionTitle(section);
-      if (_shouldSkipFb2Title(rawTitle)) {
-        continue;
+    void walkSections(Iterable<XmlElement> sections, int depth) {
+      for (final section in sections) {
+        final rawTitle = _extractFb2SectionTitle(section);
+        if (_shouldSkipFb2Title(rawTitle)) {
+          walkSections(section.findElements('section'), depth);
+          continue;
+        }
+        final isSpecial = _isFb2Prologue(rawTitle) || _isFb2Epilogue(rawTitle);
+        if (!isSpecial) {
+          chapterCounter += 1;
+        }
+        final normalized =
+            _normalizeFb2ChapterTitle(rawTitle, chapterCounter, isSpecial);
+        if (normalized.isEmpty || normalized == lastTitle) {
+          walkSections(section.findElements('section'), depth);
+          continue;
+        }
+        lastTitle = normalized;
+        chapters.add(
+          _ChapterSource(
+            html: section.toXmlString(),
+            fallbackTitle: normalized,
+            tocTitle: normalized,
+            tocLevel: depth,
+            href: null,
+            preferTocTitle: true,
+          ),
+        );
+        walkSections(section.findElements('section'), depth + 1);
       }
-      var isSpecial = _isFb2Prologue(rawTitle) || _isFb2Epilogue(rawTitle);
-      if (!isSpecial) {
-        chapterCounter += 1;
-      }
-      final normalized =
-          _normalizeFb2ChapterTitle(rawTitle, chapterCounter, isSpecial);
-      if (normalized.isEmpty || normalized == lastTitle) {
-        continue;
-      }
-      lastTitle = normalized;
-      chapters.add(
-        _ChapterSource(
-          html: section.toXmlString(),
-          fallbackTitle: normalized,
-          tocTitle: normalized,
-          tocLevel: 0,
-          href: null,
-        ),
-      );
     }
+
+    walkSections(body.findElements('section'), 0);
 
     return chapters;
   } catch (e) {
@@ -1238,25 +1500,21 @@ List<_ChapterSource> _chaptersFromArchive(Archive archive) {
     Log.d('Reader fb2 sections: ${fb2Chapters.length} items');
     return fb2Chapters;
   }
-  final tocEntries = _tocEntriesFromArchive(archive);
-  if (tocEntries.isNotEmpty) {
-    final chapters = _chaptersFromTocEntries(archive, tocEntries);
-    if (chapters.isNotEmpty && !_isTocQualityPoor(tocEntries, chapters)) {
-      Log.d('Reader toc order: ${chapters.length} items');
-      return chapters;
-    }
-    Log.d(
-      'Reader toc quality poor: entries=${tocEntries.length}, chapters=${chapters.length}',
-    );
-  }
 
   final spineHrefs = _spineHrefsFromArchive(archive);
   if (spineHrefs.isNotEmpty) {
     Log.d('Reader spine order: ${spineHrefs.length} items');
-    final headingChapters = _chaptersFromHeadings(archive, spineHrefs);
-    if (headingChapters.isNotEmpty) {
-      Log.d('Reader headings order: ${headingChapters.length} items');
-      return headingChapters;
+    final headingEntries = _tocEntriesFromHeadings(archive, spineHrefs);
+    if (headingEntries.isNotEmpty) {
+      Log.d('Reader toc source: headings (${headingEntries.length})');
+      final sources = _chaptersFromTocEntries(
+        archive,
+        headingEntries,
+        preferTocTitle: true,
+      );
+      if (sources.isNotEmpty) {
+        return sources;
+      }
     }
     final chapters = <_ChapterSource>[];
     for (final href in spineHrefs) {
@@ -1358,25 +1616,11 @@ List<_ChapterSource> _chaptersFromArchive(Archive archive) {
   return const <_ChapterSource>[];
 }
 
-bool _isTocQualityPoor(
-  List<_TocEntry> tocEntries,
-  List<_ChapterSource> chapters,
-) {
-  if (tocEntries.isEmpty) {
-    return true;
-  }
-  if (chapters.isEmpty) {
-    return true;
-  }
-  final ratio = chapters.length / tocEntries.length;
-  return tocEntries.length >= 8 && ratio < 0.4;
-}
-
-List<_ChapterSource> _chaptersFromHeadings(
+List<_TocEntry> _tocEntriesFromHeadings(
   Archive archive,
   List<String> spineHrefs,
 ) {
-  final chapters = <_ChapterSource>[];
+  final entries = <_TocEntry>[];
   for (final href in spineHrefs) {
     final file = _archiveFileByName(archive, href);
     if (file == null || !file.isFile) {
@@ -1395,17 +1639,16 @@ List<_ChapterSource> _chaptersFromHeadings(
     if (heading.trim().isEmpty) {
       continue;
     }
-    chapters.add(
-      _ChapterSource(
-        html: decoded,
-        fallbackTitle: fallback,
-        tocTitle: heading,
-        tocLevel: 0,
+    entries.add(
+      _TocEntry(
+        title: heading,
         href: href,
+        level: 0,
+        fragment: null,
       ),
     );
   }
-  return chapters;
+  return entries;
 }
 
 List<_ChapterSource> _fb2ChaptersFromArchive(Archive archive) {
@@ -1705,14 +1948,113 @@ String? _findOpfPath(Archive archive) {
   return null;
 }
 
-List<_TocEntry> _tocEntriesFromArchive(Archive archive) {
+enum _TocSource {
+  nav,
+  ncx,
+  headings,
+  spine,
+  fb2,
+  none,
+}
+
+class _TocQuality {
+  const _TocQuality({
+    required this.total,
+    required this.emptyRatio,
+    required this.longRatio,
+    required this.sentenceRatio,
+    required this.chapterRatio,
+    required this.hasPrologue,
+    required this.hasEpilogue,
+  });
+
+  final int total;
+  final double emptyRatio;
+  final double longRatio;
+  final double sentenceRatio;
+  final double chapterRatio;
+  final bool hasPrologue;
+  final bool hasEpilogue;
+
+  double get score {
+    var value =
+        1.0 - (emptyRatio * 0.6) - (longRatio * 0.3) - (sentenceRatio * 0.2);
+    if (value < 0) {
+      value = 0;
+    }
+    return double.parse(value.toStringAsFixed(2));
+  }
+
+  bool get preferGenerated =>
+      total >= 8 && sentenceRatio >= 0.35 && chapterRatio < 0.35;
+}
+
+class _TocCandidate {
+  const _TocCandidate({
+    required this.source,
+    required this.entries,
+    required this.quality,
+    this.preferTocTitle = false,
+  });
+
+  final _TocSource source;
+  final List<_TocEntry> entries;
+  final _TocQuality quality;
+  final bool preferTocTitle;
+
+  static const empty = _TocCandidate(
+    source: _TocSource.none,
+    entries: <_TocEntry>[],
+    quality: _TocQuality(
+      total: 0,
+      emptyRatio: 0,
+      longRatio: 0,
+      sentenceRatio: 0,
+      chapterRatio: 0,
+      hasPrologue: false,
+      hasEpilogue: false,
+    ),
+  );
+}
+
+class _TocParseResult {
+  const _TocParseResult({
+    required this.officialEntries,
+    required this.generatedEntries,
+    required this.officialNodes,
+    required this.generatedNodes,
+    required this.defaultMode,
+    required this.officialSource,
+    required this.generatedSource,
+  });
+
+  final List<_TocEntry> officialEntries;
+  final List<_TocEntry> generatedEntries;
+  final List<TocNode> officialNodes;
+  final List<TocNode> generatedNodes;
+  final TocMode defaultMode;
+  final _TocSource officialSource;
+  final _TocSource generatedSource;
+}
+
+class _GeneratedToc {
+  const _GeneratedToc({
+    required this.entries,
+    required this.source,
+  });
+
+  final List<_TocEntry> entries;
+  final _TocSource source;
+}
+
+_TocCandidate _buildEpubTocCandidate(Archive archive) {
   final opfPath = _findOpfPath(archive);
   if (opfPath == null) {
-    return const <_TocEntry>[];
+    return _TocCandidate.empty;
   }
   final opfFile = _archiveFileByName(archive, opfPath);
   if (opfFile == null || opfFile.content is! List<int>) {
-    return const <_TocEntry>[];
+    return _TocCandidate.empty;
   }
   final opfDir = p.posix.dirname(opfPath);
   try {
@@ -1736,35 +2078,299 @@ List<_TocEntry> _tocEntriesFromArchive(Archive archive) {
         ncxPath = p.posix.normalize(p.posix.join(opfDir, href));
       }
     }
-    final navToc = navPath == null
+
+    final navEntries = navPath == null
         ? const <_TocEntry>[]
-        : _tocEntriesFromNav(archive, navPath);
-    final ncxToc = ncxPath == null
+        : _normalizeTocEntries(_tocEntriesFromNav(archive, navPath));
+    final ncxEntries = ncxPath == null
         ? const <_TocEntry>[]
-        : _tocEntriesFromNcx(archive, ncxPath);
-    if (navToc.isEmpty && ncxToc.isEmpty) {
-      return const <_TocEntry>[];
+        : _normalizeTocEntries(_tocEntriesFromNcx(archive, ncxPath));
+    if (navEntries.isEmpty && ncxEntries.isEmpty) {
+      return _TocCandidate.empty;
     }
-    if (navToc.isEmpty) {
-      Log.d('Reader toc source: ncx (${ncxToc.length})');
-      return _normalizeTocEntries(ncxToc);
+
+    if (navEntries.isEmpty) {
+      final quality = _evaluateTocQuality(ncxEntries);
+      if (quality.preferGenerated) {
+        Log.d('Reader toc source rejected: ncx (prefer headings)');
+        return _TocCandidate.empty;
+      }
+      Log.d('Reader toc source: ncx (${ncxEntries.length})');
+      return _TocCandidate(
+        source: _TocSource.ncx,
+        entries: ncxEntries,
+        quality: quality,
+        preferTocTitle: true,
+      );
     }
-    if (ncxToc.isEmpty) {
-      Log.d('Reader toc source: nav (${navToc.length})');
-      return _normalizeTocEntries(navToc);
+    if (ncxEntries.isEmpty) {
+      final quality = _evaluateTocQuality(navEntries);
+      if (quality.preferGenerated) {
+        Log.d('Reader toc source rejected: nav (prefer headings)');
+        return _TocCandidate.empty;
+      }
+      Log.d('Reader toc source: nav (${navEntries.length})');
+      return _TocCandidate(
+        source: _TocSource.nav,
+        entries: navEntries,
+        quality: quality,
+        preferTocTitle: true,
+      );
     }
-    final navScore = _tocQualityScore(navToc);
-    final ncxScore = _tocQualityScore(ncxToc);
-    final chosen = navScore >= ncxScore ? navToc : ncxToc;
+
+    final navQuality = _evaluateTocQuality(navEntries);
+    final ncxQuality = _evaluateTocQuality(ncxEntries);
+    final useNav = navQuality.score >= ncxQuality.score;
+    final chosen = useNav ? navEntries : ncxEntries;
+    final chosenQuality = useNav ? navQuality : ncxQuality;
+    if (chosenQuality.preferGenerated) {
+      Log.d(
+        'Reader toc source rejected: ${useNav ? 'nav' : 'ncx'} '
+        '(prefer headings)',
+      );
+      return _TocCandidate.empty;
+    }
     Log.d(
-      'Reader toc source: ${navScore >= ncxScore ? 'nav' : 'ncx'} '
-      '(nav=$navScore, ncx=$ncxScore)',
+      'Reader toc source: ${useNav ? 'nav' : 'ncx'} '
+      '(nav=${navQuality.score}, ncx=${ncxQuality.score})',
     );
-    return _normalizeTocEntries(chosen);
+    return _TocCandidate(
+      source: useNav ? _TocSource.nav : _TocSource.ncx,
+      entries: chosen,
+      quality: chosenQuality,
+      preferTocTitle: true,
+    );
   } catch (e) {
     Log.d('Reader failed to parse OPF toc: $e');
   }
-  return const <_TocEntry>[];
+  return _TocCandidate.empty;
+}
+
+_TocParseResult _buildTocResult(Archive archive) {
+  final fb2Nodes = _tocNodesFromFb2Archive(archive);
+  if (fb2Nodes.isNotEmpty) {
+    return _TocParseResult(
+      officialEntries: const <_TocEntry>[],
+      generatedEntries: const <_TocEntry>[],
+      officialNodes: fb2Nodes,
+      generatedNodes: const <TocNode>[],
+      defaultMode: TocMode.official,
+      officialSource: _TocSource.fb2,
+      generatedSource: _TocSource.none,
+    );
+  }
+
+  final tocCandidate = _buildEpubTocCandidate(archive);
+  final officialEntries = tocCandidate.entries;
+  final generated = _buildGeneratedEntries(archive);
+  final generatedEntries = generated.entries;
+  final officialNodes = _tocNodesFromEntries(
+    officialEntries,
+    _mapTocSource(tocCandidate.source),
+  );
+  final generatedNodes = _tocNodesFromEntries(
+    generatedEntries,
+    _mapTocSource(generated.source),
+  );
+  final defaultMode = officialEntries.isEmpty
+      ? TocMode.generated
+      : tocCandidate.quality.preferGenerated && generatedEntries.isNotEmpty
+          ? TocMode.generated
+          : TocMode.official;
+  return _TocParseResult(
+    officialEntries: officialEntries,
+    generatedEntries: generatedEntries,
+    officialNodes: officialNodes,
+    generatedNodes: generatedNodes,
+    defaultMode: defaultMode,
+    officialSource: tocCandidate.source,
+    generatedSource: generated.source,
+  );
+}
+
+_GeneratedToc _buildGeneratedEntries(Archive archive) {
+  final spineHrefs = _spineHrefsFromArchive(archive);
+  if (spineHrefs.isEmpty) {
+    return const _GeneratedToc(
+      entries: <_TocEntry>[],
+      source: _TocSource.none,
+    );
+  }
+  final headingEntries = _tocEntriesFromHeadings(archive, spineHrefs);
+  if (headingEntries.isNotEmpty) {
+    return _GeneratedToc(
+      entries: headingEntries,
+      source: _TocSource.headings,
+    );
+  }
+  final entries = <_TocEntry>[];
+  var order = 0;
+  for (final href in spineHrefs) {
+    final file = _archiveFileByName(archive, href);
+    if (file == null || !file.isFile) {
+      continue;
+    }
+    final title = p.basenameWithoutExtension(href);
+    entries.add(
+      _TocEntry(
+        title: title.isEmpty ? 'Section ${order + 1}' : title,
+        href: href,
+        level: 0,
+        fragment: null,
+      ),
+    );
+    order += 1;
+  }
+  return _GeneratedToc(entries: entries, source: _TocSource.spine);
+}
+
+TocSource _mapTocSource(_TocSource source) {
+  switch (source) {
+    case _TocSource.nav:
+      return TocSource.nav;
+    case _TocSource.ncx:
+      return TocSource.ncx;
+    case _TocSource.headings:
+      return TocSource.headings;
+    case _TocSource.spine:
+      return TocSource.spine;
+    case _TocSource.fb2:
+      return TocSource.fb2;
+    case _TocSource.none:
+      return TocSource.nav;
+  }
+}
+
+List<TocNode> _tocNodesFromEntries(
+  List<_TocEntry> entries,
+  TocSource source,
+) {
+  if (entries.isEmpty) {
+    return const <TocNode>[];
+  }
+  final nodes = <TocNode>[];
+  final parentStack = <String>[];
+  final counters = <String?, int>{};
+
+  for (var index = 0; index < entries.length; index++) {
+    final entry = entries[index];
+    var level = entry.level;
+    if (level < 0) {
+      level = 0;
+    }
+    if (level > parentStack.length) {
+      level = parentStack.length;
+    }
+    while (parentStack.length > level) {
+      parentStack.removeLast();
+    }
+    final parentId = parentStack.isEmpty ? null : parentStack.last;
+    final order = counters[parentId] ?? 0;
+    counters[parentId] = order + 1;
+    final id = '${source.name}-$index';
+    nodes.add(
+      TocNode(
+        id: id,
+        parentId: parentId,
+        label: entry.title,
+        href: entry.href,
+        fragment: entry.fragment,
+        level: level,
+        order: order,
+        source: source,
+      ),
+    );
+    parentStack.add(id);
+  }
+  return nodes;
+}
+
+List<TocNode> _tocNodesFromFb2Archive(Archive archive) {
+  for (final file in archive.files) {
+    if (!file.isFile) {
+      continue;
+    }
+    final name = file.name.toLowerCase();
+    if (!name.endsWith('.fb2') && !name.endsWith('.xml')) {
+      continue;
+    }
+    final content = file.content;
+    if (content is! List<int>) {
+      continue;
+    }
+    final decoded = _decodeFb2Bytes(content);
+    if (!_isFictionBookXml(decoded)) {
+      continue;
+    }
+    try {
+      final doc = XmlDocument.parse(decoded);
+      XmlElement? body;
+      for (final candidate in doc.findAllElements('body')) {
+        final name = candidate.getAttribute('name');
+        if (name == null || name.toLowerCase() != 'notes') {
+          body = candidate;
+          break;
+        }
+      }
+      if (body == null) {
+        return const <TocNode>[];
+      }
+      final nodes = <TocNode>[];
+      var idCounter = 0;
+      var chapterCounter = 0;
+      String? lastTitle;
+
+      void walkSections(
+        Iterable<XmlElement> sections,
+        String? parentId,
+        int depth,
+      ) {
+        var order = 0;
+        for (final section in sections) {
+          final rawTitle = _extractFb2SectionTitle(section);
+          if (_shouldSkipFb2Title(rawTitle)) {
+            walkSections(section.findElements('section'), parentId, depth);
+            continue;
+          }
+          final isSpecial = _isFb2Prologue(rawTitle) || _isFb2Epilogue(rawTitle);
+          if (!isSpecial) {
+            chapterCounter += 1;
+          }
+          final normalized =
+              _normalizeFb2ChapterTitle(rawTitle, chapterCounter, isSpecial);
+          if (normalized.isEmpty || normalized == lastTitle) {
+            walkSections(section.findElements('section'), parentId, depth);
+            continue;
+          }
+          lastTitle = normalized;
+          final id = 'fb2-$idCounter';
+          idCounter += 1;
+          final fragment = section.getAttribute('id');
+          nodes.add(
+            TocNode(
+              id: id,
+              parentId: parentId,
+              label: normalized,
+              href: null,
+              fragment: fragment,
+              level: depth,
+              order: order,
+              source: TocSource.fb2,
+            ),
+          );
+          order += 1;
+          walkSections(section.findElements('section'), id, depth + 1);
+        }
+      }
+
+      walkSections(body.findElements('section'), null, 0);
+      return nodes;
+    } catch (e) {
+      Log.d('Reader failed to parse FB2 toc: $e');
+      return const <TocNode>[];
+    }
+  }
+  return const <TocNode>[];
 }
 
 List<_TocEntry> _normalizeTocEntries(List<_TocEntry> entries) {
@@ -1825,7 +2431,10 @@ List<_TocEntry>? _maybeNormalizeChapterLabels(List<_TocEntry> entries) {
   }
   final ratio = sentenceLike / entries.length;
   final chapterRatio = chapterLike / entries.length;
-  if (ratio < 0.2 && chapterRatio >= 0.4) {
+  if (ratio < 0.25) {
+    return null;
+  }
+  if (chapterRatio >= 0.4) {
     return null;
   }
   var chapterCounter = 0;
@@ -1856,13 +2465,24 @@ List<_TocEntry>? _maybeNormalizeChapterLabels(List<_TocEntry> entries) {
   return normalized;
 }
 
-double _tocQualityScore(List<_TocEntry> entries) {
+_TocQuality _evaluateTocQuality(List<_TocEntry> entries) {
   if (entries.isEmpty) {
-    return 0;
+    return const _TocQuality(
+      total: 0,
+      emptyRatio: 0,
+      longRatio: 0,
+      sentenceRatio: 0,
+      chapterRatio: 0,
+      hasPrologue: false,
+      hasEpilogue: false,
+    );
   }
   var empty = 0;
   var long = 0;
   var sentence = 0;
+  var chapterLike = 0;
+  var hasPrologue = false;
+  var hasEpilogue = false;
   for (final entry in entries) {
     final label = entry.title.trim();
     if (label.isEmpty) {
@@ -1875,16 +2495,26 @@ double _tocQualityScore(List<_TocEntry> entries) {
     if (RegExp(r'[.!?]|—|…').hasMatch(label)) {
       sentence += 1;
     }
+    if (_looksLikeChapterLabel(label)) {
+      chapterLike += 1;
+    }
+    if (_isFb2Prologue(label)) {
+      hasPrologue = true;
+    }
+    if (_isFb2Epilogue(label)) {
+      hasEpilogue = true;
+    }
   }
   final total = entries.length.toDouble();
-  final emptyRatio = empty / total;
-  final longRatio = long / total;
-  final sentenceRatio = sentence / total;
-  var score = 1.0 - (emptyRatio * 0.6) - (longRatio * 0.3) - (sentenceRatio * 0.2);
-  if (score < 0) {
-    score = 0;
-  }
-  return double.parse(score.toStringAsFixed(2));
+  return _TocQuality(
+    total: entries.length,
+    emptyRatio: empty / total,
+    longRatio: long / total,
+    sentenceRatio: sentence / total,
+    chapterRatio: chapterLike / total,
+    hasPrologue: hasPrologue,
+    hasEpilogue: hasEpilogue,
+  );
 }
 
 List<_TocEntry> _tocEntriesFromNav(Archive archive, String navPath) {
@@ -2073,8 +2703,9 @@ class _ParsedHtml {
 
 List<_ChapterSource> _chaptersFromTocEntries(
   Archive archive,
-  List<_TocEntry> entries,
-) {
+  List<_TocEntry> entries, {
+  required bool preferTocTitle,
+}) {
   final chapters = <_ChapterSource>[];
   final cache = <String, _ParsedHtml>{};
 
@@ -2111,6 +2742,7 @@ List<_ChapterSource> _chaptersFromTocEntries(
           tocTitle: entry.title,
           tocLevel: entry.level,
           href: entry.href,
+          preferTocTitle: preferTocTitle,
         ),
       );
       break;
@@ -2146,6 +2778,7 @@ List<_ChapterSource> _chaptersFromTocEntries(
         tocTitle: entry.title,
         tocLevel: entry.level,
         href: entry.href,
+        preferTocTitle: preferTocTitle,
       ),
     );
   }

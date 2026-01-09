@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:cogniread/src/core/services/storage_service.dart';
 import 'package:cogniread/src/core/services/storage_service_impl.dart';
+import 'package:cogniread/src/core/types/toc.dart';
 import 'package:cogniread/src/core/utils/logger.dart';
 import 'package:cogniread/src/features/library/data/library_store.dart';
 import 'package:epubx/epubx.dart';
@@ -128,6 +129,9 @@ class LibraryController extends ChangeNotifier {
             notes: existing.notes,
             highlights: existing.highlights,
             bookmarks: existing.bookmarks,
+            tocOfficial: existing.tocOfficial,
+            tocGenerated: existing.tocGenerated,
+            tocMode: existing.tocMode,
           );
           if (existingMissing) {
             await _store.upsert(repaired);
@@ -171,6 +175,9 @@ class LibraryController extends ChangeNotifier {
         notes: const <Note>[],
         highlights: const <Highlight>[],
         bookmarks: const <Bookmark>[],
+        tocOfficial: const <TocNode>[],
+        tocGenerated: const <TocNode>[],
+        tocMode: TocMode.official,
       );
       await _store.upsert(entry);
       _books.add(LibraryBookItem.fromEntry(entry, isMissing: false));
