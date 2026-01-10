@@ -47,7 +47,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('import-epub-button')));
     await tester.pump(const Duration(milliseconds: 50));
 
-    await tester.tap(find.byType(ListTile).first);
+    await tester.tap(find.byKey(const ValueKey('library-book-tile-0')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 

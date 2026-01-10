@@ -204,6 +204,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
           IconButton(
             tooltip: 'Оглавление',
             onPressed: hasToc ? _showToc : null,
+            key: const ValueKey('reader-toc-button'),
             icon: const Icon(Icons.list),
           ),
         ],
@@ -620,6 +621,7 @@ class _ReaderHeader extends StatelessWidget {
         IconButton(
           tooltip: 'Оглавление',
           onPressed: hasToc ? onTocTap : null,
+          key: const ValueKey('reader-toc-button-inline'),
           icon: Icon(Icons.list, color: scheme.primary),
         ),
       ],

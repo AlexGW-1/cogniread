@@ -207,6 +207,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
           IconButton(
             tooltip: _showSearch ? 'Скрыть поиск' : 'Поиск',
             onPressed: _controller.books.isEmpty ? null : _toggleSearch,
+            key: const ValueKey('library-search-toggle'),
             icon: Icon(_showSearch ? Icons.close : Icons.search),
           ),
         ],
@@ -240,6 +241,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                       Padding(
                         padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
                         child: TextField(
+                          key: const ValueKey('library-search-field'),
                           controller: _searchController,
                           onChanged: _controller.setQuery,
                           decoration: InputDecoration(
@@ -268,9 +270,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
                               itemBuilder: (context, i) {
                                 final book = filtered[i];
                                 return ListTile(
+                                  key: ValueKey('library-book-tile-$i'),
                                   title: Text(book.title),
                                   subtitle: _buildBookSubtitle(book, scheme),
                                   trailing: IconButton(
+                                    key: ValueKey('library-delete-$i'),
                                     icon: const Icon(Icons.delete_outline),
                                     onPressed: () => _deleteBook(i),
                                     tooltip: 'Удалить книгу',
@@ -486,6 +490,7 @@ class _LibraryPanel extends StatelessWidget {
               IconButton(
                 tooltip: showSearch ? 'Скрыть поиск' : 'Поиск',
                 onPressed: onToggleSearch,
+                key: const ValueKey('library-search-toggle'),
                 icon: Icon(showSearch ? Icons.close : Icons.search),
               ),
             ],
@@ -493,6 +498,7 @@ class _LibraryPanel extends StatelessWidget {
           const SizedBox(height: 16),
           if (showSearch) ...[
             TextField(
+              key: const ValueKey('library-search-field'),
               controller: searchController,
               onChanged: onQueryChanged,
               decoration: InputDecoration(
@@ -520,7 +526,9 @@ class _LibraryPanel extends StatelessWidget {
                         itemBuilder: (context, index) {
                           final book = books[index];
                           return _BookCard(
+                            key: ValueKey('library-book-card-$index'),
                             book: book,
+                            index: index,
                             selected: book.id == selectedId,
                             onTap: () {
                               onSelect(book.id);
@@ -539,13 +547,16 @@ class _LibraryPanel extends StatelessWidget {
 
 class _BookCard extends StatelessWidget {
   const _BookCard({
+    super.key,
     required this.book,
+    required this.index,
     required this.selected,
     required this.onTap,
     required this.onDelete,
   });
 
   final LibraryBookItem book;
+  final int index;
   final bool selected;
   final VoidCallback onTap;
   final VoidCallback onDelete;
@@ -609,6 +620,7 @@ class _BookCard extends StatelessWidget {
                 ),
               ),
               IconButton(
+                key: ValueKey('library-delete-$index'),
                 onPressed: onDelete,
                 icon: const Icon(Icons.delete_outline),
                 tooltip: 'Удалить книгу',
