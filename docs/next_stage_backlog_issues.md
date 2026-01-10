@@ -184,9 +184,9 @@
 Тесты на строках ломаются при правках локализации/текста. Нужны стабильные `Key`.
 
 ### Checklist
-- [ ] Проставить `Key` на критические элементы:
+- [x] Проставить `Key` на критические элементы:
   - import button / open reader / toc / search / delete / notes list / bookmarks (по мере появления).
-- [ ] Обновить widget-tests на поиск по `Key`.
+- [x] Обновить widget-tests на поиск по `Key`.
 
 ### Acceptance Criteria
 - Widget-тесты не зависят от текстов на русском.
