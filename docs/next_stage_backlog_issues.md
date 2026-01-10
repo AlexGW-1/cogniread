@@ -161,9 +161,9 @@
 Библиотека уже имеет операции загрузки/поиска/удаления. UI должен стать отображающим слоем.
 
 ### Checklist
-- [ ] Создать `LibraryController` со state: `loading`, `items`, `filteredItems`, `error`.
-- [ ] Вынести: load, search, remove, clear в контроллер.
-- [ ] UI работает через state (и вызывает методы контроллера).
+- [x] Создать `LibraryController` со state: `loading`, `items`, `filteredItems`, `error`.
+- [x] Вынести: load, search, remove, clear в контроллер.
+- [x] UI работает через state (и вызывает методы контроллера).
 
 ### Acceptance Criteria
 - `LibraryScreen` не содержит бизнес-логики (кроме привязки к виджетам).
@@ -667,4 +667,3 @@
 2) **EPIC 2:** 10 → 11 → 12 → 13 → 14 → 17 → 15 → 16 → 18 → 19  
 3) **EPIC 3:** 20 → 21 → 22 (→ 23 опционально)  
 4) **EPIC 4:** 24 → 25 → 27 → 28 → 26 → 29
-
