@@ -249,9 +249,9 @@
 Нужен устойчивый минимальный anchor, чтобы привязать highlights/notes/bookmarks и уметь прыгать в место.
 
 ### Checklist
-- [ ] Зафиксировать формат Anchor v1 (например): `chapterHref|offset` (+ optional fragment).
-- [ ] Добавить хелперы: `Anchor.parse`, `Anchor.toString`, `Anchor.isValid`.
-- [ ] Определить правила экранирования разделителя (`|`) и пустых значений.
+- [x] Зафиксировать формат Anchor v1 (например): `chapterHref|offset` (+ optional fragment).
+- [x] Добавить хелперы: `Anchor.parse`, `Anchor.toString`, `Anchor.isValid`.
+- [x] Определить правила экранирования разделителя (`|`) и пустых значений.
 
 ### Acceptance Criteria
 - Anchor генерируется и парсится одинаково во всех местах.

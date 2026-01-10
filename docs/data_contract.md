@@ -6,7 +6,8 @@
 - Все даты хранятся как строка ISO-8601 (`DateTime.toIso8601String()`).
 - `id` — стабильный уникальный идентификатор записи.
 - `bookId` ссылается на `LibraryEntry.id`.
-- `anchor` может быть `null`, формат пока не закреплен (см. Issue 10).
+- `anchor` может быть `null`, формат: `chapterHref|offset` (+ optional `|fragment`).
+- Разделитель `|` и обратный слэш `\` экранируются обратным слэшем.
 - `updatedAt` не меньше `createdAt`.
 
 ## LibraryEntry
