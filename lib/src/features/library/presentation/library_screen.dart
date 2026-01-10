@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:cogniread/src/core/services/storage_service.dart';
 import 'package:cogniread/src/features/library/presentation/library_controller.dart';
 import 'package:cogniread/src/features/reader/presentation/reader_screen.dart';
@@ -24,8 +22,10 @@ class LibraryScreen extends StatefulWidget {
 class _LibraryScreenState extends State<LibraryScreen> {
   late final LibraryController _controller;
   late final VoidCallback _controllerListener;
-  String _query = '';
+  late final TextEditingController _searchController;
   String? _selectedBookId;
+  String? _lastNotice;
+  bool _showSearch = false;
 
   @override
   void initState() {
@@ -39,16 +39,19 @@ class _LibraryScreenState extends State<LibraryScreen> {
       if (!mounted) {
         return;
       }
+      _handleNotices();
       setState(_syncSelection);
     };
     _controller.addListener(_controllerListener);
     _controller.init();
+    _searchController = TextEditingController(text: _controller.query);
   }
 
   @override
   void dispose() {
     _controller.removeListener(_controllerListener);
     _controller.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -64,27 +67,17 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   Future<void> _importEpub() async {
-    final error = await _controller.importEpub();
-    if (error != null) {
-      _showError(error);
-    }
+    await _controller.importEpub();
   }
 
-  Future<void> _open(int index) async {
-    final book = _controller.books[index];
-    if (book.isMissing) {
-      _showError('Файл книги недоступен');
+  Future<void> _open(String id) async {
+    final book = await _controller.prepareOpen(id);
+    if (book == null) {
       return;
     }
-    if (book.sourcePath != 'stub') {
-      final exists = await File(book.storedPath).exists();
-      if (!exists) {
-        _controller.markMissing(book.id);
-        _showError('Файл книги недоступен');
-        return;
-      }
+    if (!mounted) {
+      return;
     }
-    _controller.markOpened(book.id);
     final isDesktop = MediaQuery.of(context).size.width >= 1000;
     if (isDesktop) {
       setState(() {
@@ -100,7 +93,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   Future<void> _deleteBook(int index) async {
-    final book = _controller.books[index];
+    final book = _controller.filteredBooks[index];
     final shouldDelete = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -121,12 +114,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     if (shouldDelete != true) {
       return;
     }
-    final error = await _controller.deleteBook(book.id);
-    if (error != null) {
-      _showError(error);
-      return;
-    }
-    _showError('Книга удалена');
+    await _controller.deleteBook(book.id);
   }
 
   Future<void> _clearLibrary() async {
@@ -152,12 +140,26 @@ class _LibraryScreenState extends State<LibraryScreen> {
     if (shouldClear != true) {
       return;
     }
-    final error = await _controller.clearLibrary();
-    if (error != null) {
-      _showError(error);
+    await _controller.clearLibrary();
+  }
+
+  void _handleNotices() {
+    final error = _controller.errorMessage;
+    final info = _controller.infoMessage;
+    final message = error ?? info;
+    if (message == null || message == _lastNotice) {
       return;
     }
-    _showError('Библиотека очищена');
+    _lastNotice = message;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+      _controller.clearNotices();
+    });
   }
 
   void _showError(String message) {
@@ -167,6 +169,18 @@ class _LibraryScreenState extends State<LibraryScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
     );
+  }
+
+  void _toggleSearch() {
+    setState(() {
+      _showSearch = !_showSearch;
+      if (_showSearch) {
+        _searchController.text = _controller.query;
+      } else {
+        _searchController.clear();
+        _controller.setQuery('');
+      }
+    });
   }
 
   @override
@@ -180,6 +194,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   Widget _buildMobileScaffold() {
     final scheme = Theme.of(context).colorScheme;
+    final filtered = _controller.filteredBooks;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Library'),
@@ -188,6 +203,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
             tooltip: 'Очистить библиотеку',
             onPressed: _controller.books.isEmpty ? null : _clearLibrary,
             icon: const Icon(Icons.delete_outline),
+          ),
+          IconButton(
+            tooltip: _showSearch ? 'Скрыть поиск' : 'Поиск',
+            onPressed: _controller.books.isEmpty ? null : _toggleSearch,
+            icon: Icon(_showSearch ? Icons.close : Icons.search),
           ),
         ],
       ),
@@ -214,23 +234,53 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     ),
                   ),
                 )
-              : ListView.separated(
-                  itemCount: _controller.books.length,
-                  separatorBuilder: (context, index) =>
-                      const Divider(height: 1),
-                  itemBuilder: (context, i) {
-                    final book = _controller.books[i];
-                    return ListTile(
-                      title: Text(book.title),
-                      subtitle: _buildBookSubtitle(book, scheme),
-                      trailing: IconButton(
-                        icon: const Icon(Icons.delete_outline),
-                        onPressed: () => _deleteBook(i),
-                        tooltip: 'Удалить книгу',
+              : Column(
+                  children: [
+                    if (_showSearch)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                        child: TextField(
+                          controller: _searchController,
+                          onChanged: _controller.setQuery,
+                          decoration: InputDecoration(
+                            hintText: 'Поиск по библиотеке',
+                            prefixIcon: const Icon(Icons.search),
+                            filled: true,
+                            fillColor:
+                                scheme.surfaceContainerHighest.withAlpha(128),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(14),
+                              borderSide:
+                                  BorderSide(color: scheme.outlineVariant),
+                            ),
+                          ),
+                        ),
                       ),
-                      onTap: () => _open(i),
-                    );
-                  },
+                    Expanded(
+                      child: filtered.isEmpty
+                          ? const Center(
+                              child: Text('Ничего не найдено.'),
+                            )
+                          : ListView.separated(
+                              itemCount: filtered.length,
+                              separatorBuilder: (context, index) =>
+                                  const Divider(height: 1),
+                              itemBuilder: (context, i) {
+                                final book = filtered[i];
+                                return ListTile(
+                                  title: Text(book.title),
+                                  subtitle: _buildBookSubtitle(book, scheme),
+                                  trailing: IconButton(
+                                    icon: const Icon(Icons.delete_outline),
+                                    onPressed: () => _deleteBook(i),
+                                    tooltip: 'Удалить книгу',
+                                  ),
+                                  onTap: () => _open(book.id),
+                                );
+                              },
+                            ),
+                    ),
+                  ],
                 ),
       floatingActionButton: FloatingActionButton(
         key: const ValueKey('import-epub-fab'),
@@ -242,7 +292,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   Widget _buildDesktopScaffold() {
     final scheme = Theme.of(context).colorScheme;
-    final filtered = _filteredBooks();
+    final filtered = _controller.filteredBooks;
     return Scaffold(
       body: Container(
         decoration: BoxDecoration(
@@ -311,21 +361,18 @@ class _LibraryScreenState extends State<LibraryScreen> {
                         child: _LibraryPanel(
                           loading: _controller.loading,
                           books: filtered,
-                          query: _query,
+                          query: _controller.query,
+                          showSearch: _showSearch,
+                          searchController: _searchController,
                           onQueryChanged: (value) {
-                            setState(() {
-                              _query = value;
-                            });
+                            _controller.setQuery(value);
                           },
+                          onToggleSearch: _toggleSearch,
                           onClearLibrary:
                               _controller.books.isEmpty ? null : _clearLibrary,
                           onImport: _importEpub,
-                          onOpen: (index) => _open(
-                            _controller.books.indexOf(filtered[index]),
-                          ),
-                          onDelete: (index) => _deleteBook(
-                            _controller.books.indexOf(filtered[index]),
-                          ),
+                          onOpen: (index) => _open(filtered[index].id),
+                          onDelete: (index) => _deleteBook(index),
                           selectedId: _selectedBookId,
                           onSelect: (id) {
                             setState(() {
@@ -352,20 +399,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
     );
   }
 
-  List<LibraryBookItem> _filteredBooks() {
-    if (_query.trim().isEmpty) {
-      return _controller.books;
-    }
-    final needle = _query.toLowerCase().trim();
-    return _controller.books
-        .where(
-          (book) =>
-              book.title.toLowerCase().contains(needle) ||
-              (book.author?.toLowerCase().contains(needle) ?? false),
-        )
-        .toList();
-  }
-
   Widget? _buildBookSubtitle(LibraryBookItem book, ColorScheme scheme) {
     if (book.isMissing) {
       final text = book.author == null
@@ -388,7 +421,10 @@ class _LibraryPanel extends StatelessWidget {
     required this.loading,
     required this.books,
     required this.query,
+    required this.showSearch,
+    required this.searchController,
     required this.onQueryChanged,
+    required this.onToggleSearch,
     required this.onClearLibrary,
     required this.onImport,
     required this.onOpen,
@@ -400,7 +436,10 @@ class _LibraryPanel extends StatelessWidget {
   final bool loading;
   final List<LibraryBookItem> books;
   final String query;
+  final bool showSearch;
+  final TextEditingController searchController;
   final ValueChanged<String> onQueryChanged;
+  final VoidCallback onToggleSearch;
   final VoidCallback? onClearLibrary;
   final VoidCallback onImport;
   final ValueChanged<int> onOpen;
@@ -443,23 +482,32 @@ class _LibraryPanel extends StatelessWidget {
                 icon: const Icon(Icons.delete_outline),
                 label: const Text('Очистить'),
               ),
+              const SizedBox(width: 8),
+              IconButton(
+                tooltip: showSearch ? 'Скрыть поиск' : 'Поиск',
+                onPressed: onToggleSearch,
+                icon: Icon(showSearch ? Icons.close : Icons.search),
+              ),
             ],
           ),
           const SizedBox(height: 16),
-          TextField(
-            onChanged: onQueryChanged,
-            decoration: InputDecoration(
-              hintText: 'Поиск по библиотеке',
-              prefixIcon: const Icon(Icons.search),
-              filled: true,
-              fillColor: scheme.surfaceContainerHighest.withAlpha(128),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(14),
-                borderSide: BorderSide(color: scheme.outlineVariant),
+          if (showSearch) ...[
+            TextField(
+              controller: searchController,
+              onChanged: onQueryChanged,
+              decoration: InputDecoration(
+                hintText: 'Поиск по библиотеке',
+                prefixIcon: const Icon(Icons.search),
+                filled: true,
+                fillColor: scheme.surfaceContainerHighest.withAlpha(128),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: BorderSide(color: scheme.outlineVariant),
+                ),
               ),
             ),
-          ),
-          const SizedBox(height: 16),
+            const SizedBox(height: 16),
+          ],
           Expanded(
             child: loading
                 ? const Center(child: CircularProgressIndicator())

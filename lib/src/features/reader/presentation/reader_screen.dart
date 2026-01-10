@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -5,6 +6,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import 'package:cogniread/src/core/types/toc.dart';
+import 'package:cogniread/src/core/utils/logger.dart';
 import 'package:cogniread/src/features/reader/presentation/reader_controller.dart';
 import 'package:cogniread/src/features/library/data/library_store.dart';
 
@@ -108,6 +110,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final offsetWithin = _initialPosition?.offset ?? 0;
     if (offsetWithin > 0) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!_itemScrollController.isAttached) {
+          _retryRestore();
+          return;
+        }
         _scrollOffsetController.animateScroll(
           offset: offsetWithin.toDouble(),
           duration: const Duration(milliseconds: 220),
@@ -481,7 +487,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
 }
 
 class _ChapterHeader extends StatelessWidget {
-  const _ChapterHeader({super.key, required this.title});
+  const _ChapterHeader({required this.title});
 
   final String title;
 

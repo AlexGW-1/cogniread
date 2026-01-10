@@ -69,32 +69,66 @@ class LibraryController extends ChangeNotifier {
   Future<void>? _storeReady;
 
   bool _loading = true;
+  String? _errorMessage;
+  String? _infoMessage;
+  String _query = '';
   final List<LibraryBookItem> _books = <LibraryBookItem>[];
 
   bool get loading => _loading;
   List<LibraryBookItem> get books => List<LibraryBookItem>.unmodifiable(_books);
+  String? get errorMessage => _errorMessage;
+  String? get infoMessage => _infoMessage;
+  String get query => _query;
+
+  List<LibraryBookItem> get filteredBooks {
+    final needle = _query.toLowerCase().trim();
+    if (needle.isEmpty) {
+      return books;
+    }
+    return books
+        .where(
+          (book) =>
+              book.title.toLowerCase().contains(needle) ||
+              (book.author?.toLowerCase().contains(needle) ?? false),
+        )
+        .toList();
+  }
 
   Future<void> init() async {
     _storeReady = _stubImport ? Future<void>.value() : _store.init();
     await _loadLibrary();
   }
 
-  Future<String?> importEpub() async {
+  void setQuery(String value) {
+    _query = value;
+    notifyListeners();
+  }
+
+  void clearNotices() {
+    _errorMessage = null;
+    _infoMessage = null;
+    notifyListeners();
+  }
+
+  Future<void> importEpub() async {
     Log.d('Import EPUB pressed.');
     if (_stubImport) {
       _addStubBook();
-      return null;
+      _setInfo('Книга добавлена');
+      return;
     }
     final path = _pickEpubPath == null
         ? await _pickEpubFromFilePicker()
         : await _pickEpubPath();
     if (path == null) {
-      return 'Импорт отменён';
+      _setInfo('Импорт отменён');
+      return;
     }
 
     final validationError = await _validateEpubPath(path);
     if (validationError != null) {
-      return validationError;
+      _setError(validationError);
+      return;
     }
 
     try {
@@ -146,9 +180,11 @@ class LibraryController extends ChangeNotifier {
           } else {
             await _loadLibrary();
           }
-          return null;
+          _setInfo('Книга восстановлена');
+          return;
         }
-        return 'Эта книга уже в библиотеке';
+        _setError('Эта книга уже в библиотеке');
+        return;
       }
       final metadata = await _readMetadata(stored.path, fallbackTitle);
       final entry = LibraryEntry(
@@ -184,17 +220,19 @@ class LibraryController extends ChangeNotifier {
       _books.sort(_sortByLastOpenedAt);
       notifyListeners();
       Log.d('EPUB copied to: ${stored.path}');
-      return null;
+      _setInfo('Книга добавлена');
+      return;
     } catch (e) {
       Log.d('EPUB import failed: $e');
-      return 'Не удалось сохранить файл';
+      _setError('Не удалось сохранить файл');
     }
   }
 
-  Future<String?> deleteBook(String id) async {
+  Future<void> deleteBook(String id) async {
     final index = _books.indexWhere((book) => book.id == id);
     if (index == -1) {
-      return 'Книга не найдена';
+      _setError('Книга не найдена');
+      return;
     }
     final book = _books[index];
     try {
@@ -206,14 +244,15 @@ class LibraryController extends ChangeNotifier {
       }
       _books.removeAt(index);
       notifyListeners();
-      return null;
+      _setInfo('Книга удалена');
+      return;
     } catch (e) {
       Log.d('Failed to delete book: $e');
-      return 'Не удалось удалить книгу';
+      _setError('Не удалось удалить книгу');
     }
   }
 
-  Future<String?> clearLibrary() async {
+  Future<void> clearLibrary() async {
     _books.clear();
     notifyListeners();
     try {
@@ -229,10 +268,11 @@ class LibraryController extends ChangeNotifier {
         }
       }
       await _loadLibrary();
-      return null;
+      _setInfo('Библиотека очищена');
+      return;
     } catch (e) {
       Log.d('Failed to clear library: $e');
-      return 'Не удалось очистить библиотеку';
+      _setError('Не удалось очистить библиотеку');
     }
   }
 
@@ -284,6 +324,29 @@ class LibraryController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<LibraryBookItem?> prepareOpen(String id) async {
+    final index = _books.indexWhere((book) => book.id == id);
+    if (index == -1) {
+      _setError('Книга не найдена');
+      return null;
+    }
+    final book = _books[index];
+    if (book.isMissing) {
+      _setError('Файл книги недоступен');
+      return null;
+    }
+    if (book.sourcePath != 'stub') {
+      final exists = await File(book.storedPath).exists();
+      if (!exists) {
+        markMissing(book.id);
+        _setError('Файл книги недоступен');
+        return null;
+      }
+    }
+    await markOpened(book.id);
+    return book;
+  }
+
   Future<void> _loadLibrary() async {
     if (_stubImport) {
       _loading = false;
@@ -306,6 +369,7 @@ class LibraryController extends ChangeNotifier {
       notifyListeners();
     } catch (e) {
       Log.d('Failed to load library: $e');
+      _setError('Не удалось загрузить библиотеку');
       _loading = false;
       notifyListeners();
     }
@@ -342,6 +406,16 @@ class LibraryController extends ChangeNotifier {
     }
 
     return null;
+  }
+
+  void _setError(String message) {
+    _errorMessage = message;
+    notifyListeners();
+  }
+
+  void _setInfo(String message) {
+    _infoMessage = message;
+    notifyListeners();
   }
 
   void _addStubBook() {
