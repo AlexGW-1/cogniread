@@ -225,8 +225,8 @@
 Документация должна соответствовать реальности MVP0. Плюс — нужен контракт данных, чтобы аккуратно расширять модели (notes/highlights/bookmarks).
 
 ### Checklist
-- [ ] Обновить `STATE.md` под реальный статус.
-- [ ] Добавить `docs/data_contract.md`:
+- [x] Обновить `STATE.md` под реальный статус.
+- [x] Добавить `docs/data_contract.md`:
   - `LibraryEntry`
   - `ReadingPosition`
   - `Note`
