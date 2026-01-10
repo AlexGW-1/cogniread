@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:archive/archive.dart';
 import 'package:cogniread/src/core/types/toc.dart';
 import 'package:cogniread/src/core/utils/logger.dart';
+import 'package:cogniread/src/core/types/anchor.dart';
 import 'package:cogniread/src/features/library/data/library_store.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
@@ -157,6 +159,44 @@ class ReaderController extends ChangeNotifier {
     await load(bookId);
   }
 
+  Future<bool> addHighlight({
+    required int chapterIndex,
+    required int startOffset,
+    required int endOffset,
+    required String excerpt,
+    String color = 'yellow',
+  }) async {
+    final bookId = _activeBookId;
+    if (bookId == null || excerpt.trim().isEmpty) {
+      return false;
+    }
+    if (chapterIndex < 0 || chapterIndex >= _chapters.length) {
+      return false;
+    }
+    if (startOffset < 0 || endOffset <= startOffset) {
+      return false;
+    }
+    await _store.init();
+    final chapter = _chapters[chapterIndex];
+    final chapterHref = chapter.href ?? 'index:$chapterIndex';
+    final anchor = Anchor(
+      chapterHref: chapterHref,
+      offset: startOffset,
+    ).toString();
+    final now = DateTime.now();
+    final highlight = Highlight(
+      id: _makeId(),
+      bookId: bookId,
+      anchor: anchor,
+      excerpt: excerpt.trim(),
+      color: color,
+      createdAt: now,
+      updatedAt: now,
+    );
+    await _store.addHighlight(bookId, highlight);
+    return true;
+  }
+
   void _setLoading() {
     _loading = true;
     _error = null;
@@ -173,6 +213,26 @@ class ReaderController extends ChangeNotifier {
     if (kDebugMode) {
       Log.d(message);
     }
+  }
+
+  String _makeId() {
+    final rand = Random.secure();
+    final bytes = List<int>.generate(16, (_) => rand.nextInt(256));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    return _formatUuid(bytes);
+  }
+
+  String _formatUuid(List<int> bytes) {
+    String toHex(int value) => value.toRadixString(16).padLeft(2, '0');
+    final chars = bytes.map(toHex).toList();
+    return [
+      chars.sublist(0, 4).join(),
+      chars.sublist(4, 6).join(),
+      chars.sublist(6, 8).join(),
+      chars.sublist(8, 10).join(),
+      chars.sublist(10, 16).join(),
+    ].join('-');
   }
 
   void _storeCache(String bookId, List<ReaderChapter> chapters) {

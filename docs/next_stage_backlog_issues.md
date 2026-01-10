@@ -271,15 +271,15 @@
 Пользователь выделяет текст → сохраняет highlight → видит в списке.
 
 ### Checklist
-- [ ] Добавить контекстное меню на selection: `Highlight`.
+- [x] Добавить контекстное меню на selection: `Highlight`.
 - [ ] Сохранять сущность Highlight:
-  - [ ] `id` (uuid)
-  - [ ] `bookId`
-  - [ ] `anchor`
-  - [ ] `excerpt`
-  - [ ] `createdAt`, `updatedAt`
-  - [ ] `color` (optional, можно default)
-- [ ] Persist: записывать в Hive через `LibraryStore`.
+  - [x] `id` (uuid)
+  - [x] `bookId`
+  - [x] `anchor`
+  - [x] `excerpt`
+  - [x] `createdAt`, `updatedAt`
+  - [x] `color` (optional, можно default)
+- [x] Persist: записывать в Hive через `LibraryStore`.
 
 ### Acceptance Criteria
 - Highlight создаётся и сохраняется (после перезапуска остаётся).

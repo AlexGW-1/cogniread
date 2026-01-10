@@ -32,6 +32,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
       ScrollOffsetController();
   late final ReaderController _controller;
   late final VoidCallback _controllerListener;
+  final List<SelectionListenerNotifier> _selectionNotifiers = [];
+  int? _selectionChapterIndex;
+  SelectedContentRange? _selectionRange;
+  String? _selectionText;
   ReadingPosition? _initialPosition;
   Timer? _positionDebounce;
   bool _didRestore = false;
@@ -46,6 +50,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       if (!mounted) {
         return;
       }
+      _ensureSelectionNotifiers();
       setState(() {
         _initialPosition ??= _controller.initialPosition;
       });
@@ -63,6 +68,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _controller.removeListener(_controllerListener);
     _controller.dispose();
     _itemPositionsListener.itemPositions.removeListener(_onScroll);
+    for (final notifier in _selectionNotifiers) {
+      notifier.dispose();
+    }
     super.dispose();
   }
 
@@ -145,6 +153,109 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final index =
         _controller.chapters.indexWhere((chapter) => chapter.href == chapterHref);
     return index == -1 ? null : index;
+  }
+
+  void _ensureSelectionNotifiers() {
+    final count = _controller.chapters.length;
+    if (_selectionNotifiers.length == count) {
+      return;
+    }
+    for (final notifier in _selectionNotifiers) {
+      notifier.dispose();
+    }
+    _selectionNotifiers
+      ..clear()
+      ..addAll(
+        List<SelectionListenerNotifier>.generate(
+          count,
+          (_) => SelectionListenerNotifier(),
+        ),
+      );
+    for (var i = 0; i < _selectionNotifiers.length; i += 1) {
+      final index = i;
+      _selectionNotifiers[index].addListener(() {
+        _onChapterSelectionChanged(index);
+      });
+    }
+    _clearSelectionSnapshot();
+  }
+
+  void _onChapterSelectionChanged(int index) {
+    if (index < 0 || index >= _controller.chapters.length) {
+      return;
+    }
+    final notifier = _selectionNotifiers[index];
+    if (!notifier.registered) {
+      return;
+    }
+    final range = notifier.selection.range;
+    if (range == null || range.startOffset == range.endOffset) {
+      if (_selectionChapterIndex == index) {
+        _clearSelectionSnapshot();
+      }
+      return;
+    }
+    final text = _chapterPlainText(index);
+    final start = range.startOffset.clamp(0, text.length) as int;
+    final end = range.endOffset.clamp(0, text.length) as int;
+    if (start >= end) {
+      _clearSelectionSnapshot();
+      return;
+    }
+    _selectionChapterIndex = index;
+    _selectionRange = SelectedContentRange(
+      startOffset: start,
+      endOffset: end,
+    );
+    _selectionText = text.substring(start, end);
+  }
+
+  void _clearSelectionSnapshot() {
+    _selectionChapterIndex = null;
+    _selectionRange = null;
+    _selectionText = null;
+  }
+
+  String _chapterPlainText(int index) {
+    final chapter = _controller.chapters[index];
+    return <String>[chapter.title, ...chapter.paragraphs].join('\n\n');
+  }
+
+  bool get _canHighlightSelection {
+    final text = _selectionText;
+    return _selectionChapterIndex != null &&
+        _selectionRange != null &&
+        text != null &&
+        text.trim().isNotEmpty;
+  }
+
+  Future<void> _addHighlightFromSelection(
+    SelectableRegionState selectableRegionState,
+  ) async {
+    if (!_canHighlightSelection) {
+      return;
+    }
+    final chapterIndex = _selectionChapterIndex!;
+    final range = _selectionRange!;
+    final excerpt = _selectionText!.trim();
+    final saved = await _controller.addHighlight(
+      chapterIndex: chapterIndex,
+      startOffset: range.startOffset,
+      endOffset: range.endOffset,
+      excerpt: excerpt,
+    );
+    if (!mounted) {
+      return;
+    }
+    selectableRegionState.clearSelection();
+    selectableRegionState.hideToolbar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          saved ? 'Highlight сохранен' : 'Не удалось создать highlight',
+        ),
+      ),
+    );
   }
 
   Future<void> _persistReadingPosition() async {
@@ -262,6 +373,28 @@ class _ReaderScreenState extends State<ReaderScreen> {
                                 builder: (context, constraints) {
                                   _viewportExtent = constraints.maxHeight;
                                   return SelectionArea(
+                                    contextMenuBuilder:
+                                        (context, selectableRegionState) {
+                                      final items = <ContextMenuButtonItem>[
+                                        if (_canHighlightSelection)
+                                          ContextMenuButtonItem(
+                                            label: 'Highlight',
+                                            onPressed: () {
+                                              _addHighlightFromSelection(
+                                                selectableRegionState,
+                                              );
+                                            },
+                                          ),
+                                        ...selectableRegionState
+                                            .contextMenuButtonItems,
+                                      ];
+                                      return AdaptiveTextSelectionToolbar
+                                          .buttonItems(
+                                        anchors: selectableRegionState
+                                            .contextMenuAnchors,
+                                        buttonItems: items,
+                                      );
+                                    },
                                     child: ScrollablePositionedList.builder(
                                       itemScrollController:
                                           _itemScrollController,
@@ -275,6 +408,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
                                             _controller.chapters[index];
                                         return _ChapterContent(
                                           chapter: chapter,
+                                          selectionNotifier:
+                                              _selectionNotifiers[index],
                                           dividerColor: scheme.outlineVariant,
                                         );
                                       },
@@ -541,51 +676,56 @@ class _ReaderErrorPanel extends StatelessWidget {
 class _ChapterContent extends StatelessWidget {
   const _ChapterContent({
     required this.chapter,
+    required this.selectionNotifier,
     required this.dividerColor,
   });
 
   final ReaderChapter chapter;
+  final SelectionListenerNotifier selectionNotifier;
   final Color dividerColor;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.only(top: 6, bottom: 10),
-            child: _ChapterHeader(
-              title: chapter.title,
-            ),
-          ),
-          for (final paragraph in chapter.paragraphs)
+    return SelectionListener(
+      selectionNotifier: selectionNotifier,
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
             Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: Text(
-                paragraph,
-                textAlign: TextAlign.justify,
-                style: const TextStyle(
-                  fontSize: 17,
-                  height: 1.65,
-                  fontFamily: 'Georgia',
-                  fontFamilyFallback: [
-                    'Times New Roman',
-                    'Times',
-                    'serif',
-                  ],
-                ),
+              padding: const EdgeInsets.only(top: 6, bottom: 10),
+              child: _ChapterHeader(
+                title: chapter.title,
               ),
             ),
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            child: Divider(
-              height: 32,
-              color: dividerColor,
+            for (final paragraph in chapter.paragraphs)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Text(
+                  paragraph,
+                  textAlign: TextAlign.justify,
+                  style: const TextStyle(
+                    fontSize: 17,
+                    height: 1.65,
+                    fontFamily: 'Georgia',
+                    fontFamilyFallback: [
+                      'Times New Roman',
+                      'Times',
+                      'serif',
+                    ],
+                  ),
+                ),
+              ),
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              child: Divider(
+                height: 32,
+                color: dividerColor,
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
