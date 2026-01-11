@@ -15,6 +15,9 @@
 ## EPUB rendering (MVP0/1)
 - Нативный рендер текста во Flutter: извлекаем главы, строим список параграфов и отображаем через `ScrollablePositionedList` + `SelectableRegion`.
 
+## Архитектура (текущий этап)
+- До Sync MVP используем Controller + Store. Черновые слои Clean Architecture удалены, чтобы не держать дублирующий код.
+
 ## Формат позиции/заметок (native reader)
 - `readingPosition`: `chapterHref`, `anchor` (string), `offset` (int), `updatedAt`.
 - `progress`: `percent` (0..1), `chapterIndex`, `totalChapters`, `updatedAt`.
