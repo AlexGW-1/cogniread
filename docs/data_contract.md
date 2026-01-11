@@ -85,6 +85,7 @@
 | anchor | String | no | Якорь позиции. |
 | label | String | yes | Название/ярлык. |
 | createdAt | String (ISO-8601) | yes | Дата создания. |
+| updatedAt | String (ISO-8601) | no | Дата обновления. |
 
 ## Ссылки
 - Структура `TocNode`: `lib/src/core/types/toc.dart`.

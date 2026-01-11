@@ -418,10 +418,10 @@
 Закладка — быстрый способ вернуться к месту без выделения текста.
 
 ### Checklist
-- [ ] Добавить кнопку toggle bookmark на текущей позиции.
-- [ ] Хранить Bookmark: `id`, `bookId`, `anchor`, `createdAt`, `updatedAt`.
-- [ ] Экран/панель списка bookmarks.
-- [ ] Переход по bookmark (использовать Jump-to-anchor).
+- [x] Добавить кнопку toggle bookmark на текущей позиции.
+- [x] Хранить Bookmark: `id`, `bookId`, `anchor`, `createdAt`, `updatedAt`.
+- [x] Экран/панель списка bookmarks.
+- [x] Переход по bookmark (использовать Jump-to-anchor).
 
 ### Acceptance Criteria
 - Bookmark создаётся/удаляется и переживает перезапуск.

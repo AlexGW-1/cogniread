@@ -565,6 +565,27 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
+  Future<bool?> _confirmDeleteBookmark() {
+    return showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Удалить закладку?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Отмена'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Удалить'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   void _showNotesHighlights() {
     showModalBottomSheet<void>(
       context: context,
@@ -666,20 +687,25 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
-  Future<void> _saveBookmark() async {
+  Future<void> _toggleBookmark() async {
     final position = _computeReadingPosition();
     if (position == null) {
       _showPositioningError('Не удалось создать закладку');
       return;
     }
-    final saved = await _controller.saveBookmark(position);
+    final saved = await _controller.toggleBookmark(position);
     if (!mounted) {
       return;
     }
+    final hasBookmark = _controller.bookmark != null;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          saved ? 'Закладка сохранена' : 'Не удалось создать закладку',
+          saved
+              ? hasBookmark
+                  ? 'Закладка сохранена'
+                  : 'Закладка удалена'
+              : 'Не удалось изменить закладку',
         ),
       ),
     );
@@ -692,6 +718,75 @@ class _ReaderScreenState extends State<ReaderScreen> {
       return;
     }
     _scrollToBookmark(bookmark);
+  }
+
+  void _showBookmarks() {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (context) {
+        return AnimatedBuilder(
+          animation: _controller,
+          builder: (context, _) {
+            final bookmarks = _controller.bookmarks;
+            if (bookmarks.isEmpty) {
+              return const SafeArea(
+                child: Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(24),
+                    child: Text('Пока нет закладок.'),
+                  ),
+                ),
+              );
+            }
+            return SafeArea(
+              child: ListView.separated(
+                itemCount: bookmarks.length,
+                separatorBuilder: (_, _) => const Divider(height: 1),
+                itemBuilder: (context, index) {
+                  final bookmark = bookmarks[index];
+                  final anchor = Anchor.parse(bookmark.anchor);
+                  final chapterIndex = anchor == null
+                      ? null
+                      : anchor.chapterHref.startsWith('index:')
+                          ? int.tryParse(
+                              anchor.chapterHref.substring('index:'.length),
+                            )
+                          : _controller.chapters.indexWhere(
+                              (chapter) => chapter.href == anchor.chapterHref,
+                            );
+                  final chapterTitle = chapterIndex == null || chapterIndex < 0
+                      ? 'Неизвестная глава'
+                      : _controller.chapters[chapterIndex].title;
+                  return ListTile(
+                    title: Text(bookmark.label),
+                    subtitle: Text(
+                      '$chapterTitle · ${_formatDateTime(bookmark.createdAt)}',
+                    ),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.delete_outline),
+                      tooltip: 'Удалить закладку',
+                      onPressed: () async {
+                        final confirmed = await _confirmDeleteBookmark();
+                        if (confirmed != true) {
+                          return;
+                        }
+                        await _controller.removeBookmark(bookmark.id);
+                      },
+                    ),
+                    onTap: anchor == null
+                        ? null
+                        : () {
+                            Navigator.of(context).pop();
+                            _scrollToBookmark(bookmark);
+                          },
+                  );
+                },
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   int? _chapterIndexForHighlight(Highlight highlight) {
@@ -1073,15 +1168,20 @@ class _ReaderScreenState extends State<ReaderScreen> {
         title: Text(_controller.title ?? 'Reader'),
         actions: [
           IconButton(
-            tooltip: 'Сохранить закладку',
-            onPressed: _saveBookmark,
-            icon: const Icon(Icons.bookmark_add_outlined),
+            tooltip: _controller.bookmark == null
+                ? 'Добавить закладку'
+                : 'Удалить закладку',
+            onPressed: _toggleBookmark,
+            icon: Icon(
+              _controller.bookmark == null
+                  ? Icons.bookmark_add_outlined
+                  : Icons.bookmark_remove_outlined,
+            ),
           ),
           IconButton(
-            tooltip: 'Перейти к закладке',
-            onPressed:
-                _controller.bookmark == null ? null : _jumpToBookmark,
-            icon: const Icon(Icons.bookmark),
+            tooltip: 'Закладки',
+            onPressed: _showBookmarks,
+            icon: const Icon(Icons.bookmarks_outlined),
           ),
           IconButton(
             tooltip: 'Выделения',
@@ -1156,8 +1256,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
                               onHighlightsTap: _showHighlights,
                               onNotesTap: _showNotes,
                               onMarksTap: _showNotesHighlights,
-                              onBookmarkSave: _saveBookmark,
-                              onBookmarkJump: _jumpToBookmark,
+                              onBookmarkToggle: _toggleBookmark,
+                              onBookmarksTap: _showBookmarks,
                             ),
                             const SizedBox(height: 16),
                             Expanded(
@@ -1726,8 +1826,8 @@ class _ReaderHeader extends StatelessWidget {
     required this.onHighlightsTap,
     required this.onNotesTap,
     required this.onMarksTap,
-    required this.onBookmarkSave,
-    required this.onBookmarkJump,
+    required this.onBookmarkToggle,
+    required this.onBookmarksTap,
   });
 
   final String title;
@@ -1737,8 +1837,8 @@ class _ReaderHeader extends StatelessWidget {
   final VoidCallback onHighlightsTap;
   final VoidCallback onNotesTap;
   final VoidCallback onMarksTap;
-  final VoidCallback onBookmarkSave;
-  final VoidCallback onBookmarkJump;
+  final VoidCallback onBookmarkToggle;
+  final VoidCallback onBookmarksTap;
 
   @override
   Widget build(BuildContext context) {
@@ -1763,14 +1863,19 @@ class _ReaderHeader extends StatelessWidget {
           icon: Icon(Icons.list, color: scheme.primary),
         ),
         IconButton(
-          tooltip: 'Сохранить закладку',
-          onPressed: onBookmarkSave,
-          icon: Icon(Icons.bookmark_add_outlined, color: scheme.primary),
+          tooltip: hasBookmark ? 'Удалить закладку' : 'Добавить закладку',
+          onPressed: onBookmarkToggle,
+          icon: Icon(
+            hasBookmark
+                ? Icons.bookmark_remove_outlined
+                : Icons.bookmark_add_outlined,
+            color: scheme.primary,
+          ),
         ),
         IconButton(
-          tooltip: 'Перейти к закладке',
-          onPressed: hasBookmark ? onBookmarkJump : null,
-          icon: Icon(Icons.bookmark, color: scheme.primary),
+          tooltip: 'Закладки',
+          onPressed: onBookmarksTap,
+          icon: Icon(Icons.bookmarks_outlined, color: scheme.primary),
         ),
         IconButton(
           tooltip: 'Выделения',

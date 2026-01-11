@@ -266,6 +266,7 @@ class Bookmark {
     required this.anchor,
     required this.label,
     required this.createdAt,
+    required this.updatedAt,
   });
 
   final String id;
@@ -273,6 +274,7 @@ class Bookmark {
   final String? anchor;
   final String label;
   final DateTime createdAt;
+  final DateTime? updatedAt;
 
   Map<String, Object?> toMap() => <String, Object?>{
         'id': id,
@@ -280,6 +282,7 @@ class Bookmark {
         'anchor': anchor,
         'label': label,
         'createdAt': createdAt.toIso8601String(),
+        'updatedAt': updatedAt?.toIso8601String(),
       };
 
   static Bookmark fromMap(Map<String, Object?> map) {
@@ -289,6 +292,9 @@ class Bookmark {
       anchor: map['anchor'] as String?,
       label: map['label'] as String? ?? '',
       createdAt: DateTime.parse(map['createdAt'] as String),
+      updatedAt: map['updatedAt'] == null
+          ? null
+          : DateTime.parse(map['updatedAt'] as String),
     );
   }
 }
@@ -676,6 +682,39 @@ class LibraryStore {
         notes: entry.notes,
         highlights: entry.highlights,
         bookmarks: [...entry.bookmarks, bookmark],
+        tocOfficial: entry.tocOfficial,
+        tocGenerated: entry.tocGenerated,
+        tocMode: entry.tocMode,
+      ),
+    );
+  }
+
+  Future<void> removeBookmark(String id, String bookmarkId) async {
+    final entry = await getById(id);
+    if (entry == null) {
+      return;
+    }
+    final updated =
+        entry.bookmarks.where((item) => item.id != bookmarkId).toList();
+    if (updated.length == entry.bookmarks.length) {
+      return;
+    }
+    await upsert(
+      LibraryEntry(
+        id: entry.id,
+        title: entry.title,
+        author: entry.author,
+        localPath: entry.localPath,
+        coverPath: entry.coverPath,
+        addedAt: entry.addedAt,
+        fingerprint: entry.fingerprint,
+        sourcePath: entry.sourcePath,
+        readingPosition: entry.readingPosition,
+        progress: entry.progress,
+        lastOpenedAt: entry.lastOpenedAt,
+        notes: entry.notes,
+        highlights: entry.highlights,
+        bookmarks: updated,
         tocOfficial: entry.tocOfficial,
         tocGenerated: entry.tocGenerated,
         tocMode: entry.tocMode,

@@ -47,6 +47,7 @@ class ReaderController extends ChangeNotifier {
   List<ReaderChapter> _chapters = const <ReaderChapter>[];
   List<Highlight> _highlights = const <Highlight>[];
   List<Note> _notes = const <Note>[];
+  List<Bookmark> _bookmarks = const <Bookmark>[];
   Bookmark? _bookmark;
   String? _activeBookId;
   TocMode _tocMode = TocMode.official;
@@ -63,6 +64,7 @@ class ReaderController extends ChangeNotifier {
   List<ReaderChapter> get chapters => _chapters;
   List<Highlight> get highlights => List<Highlight>.unmodifiable(_highlights);
   List<Note> get notes => List<Note>.unmodifiable(_notes);
+  List<Bookmark> get bookmarks => List<Bookmark>.unmodifiable(_bookmarks);
   Bookmark? get bookmark => _bookmark;
   TocMode get tocMode => _tocMode;
   bool get hasGeneratedToc => _tocGeneratedNodes.isNotEmpty;
@@ -89,6 +91,7 @@ class ReaderController extends ChangeNotifier {
       _tocGeneratedNodes = entry.tocGenerated;
       _highlights = entry.highlights;
       _notes = entry.notes;
+      _bookmarks = entry.bookmarks;
       _bookmark = entry.bookmarks.isEmpty ? null : entry.bookmarks.first;
 
       final file = File(entry.localPath);
@@ -238,7 +241,7 @@ class ReaderController extends ChangeNotifier {
     return true;
   }
 
-  Future<bool> saveBookmark(ReadingPosition position) async {
+  Future<bool> toggleBookmark(ReadingPosition position) async {
     final bookId = _activeBookId;
     if (bookId == null) {
       return false;
@@ -249,9 +252,13 @@ class ReaderController extends ChangeNotifier {
       return false;
     }
     await _store.init();
-    final entry = await _store.getById(bookId);
-    if (entry == null) {
-      return false;
+    if (_bookmarks.isNotEmpty) {
+      final toRemove = _bookmarks.first;
+      await _store.removeBookmark(bookId, toRemove.id);
+      _bookmarks = const <Bookmark>[];
+      _bookmark = null;
+      notifyListeners();
+      return true;
     }
     final anchor = Anchor(
       chapterHref: chapterHref,
@@ -264,9 +271,24 @@ class ReaderController extends ChangeNotifier {
       anchor: anchor,
       label: 'Закладка',
       createdAt: now,
+      updatedAt: now,
     );
     await _store.setBookmark(bookId, bookmark);
+    _bookmarks = <Bookmark>[bookmark];
     _bookmark = bookmark;
+    notifyListeners();
+    return true;
+  }
+
+  Future<bool> removeBookmark(String bookmarkId) async {
+    final bookId = _activeBookId;
+    if (bookId == null) {
+      return false;
+    }
+    await _store.init();
+    await _store.removeBookmark(bookId, bookmarkId);
+    _bookmarks = _bookmarks.where((item) => item.id != bookmarkId).toList();
+    _bookmark = _bookmarks.isEmpty ? null : _bookmarks.first;
     notifyListeners();
     return true;
   }
