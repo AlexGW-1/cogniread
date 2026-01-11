@@ -673,19 +673,20 @@
 
 ---
 
-## Issue 29 — Debug: viewer/export event log (JSON)
+## Issue 29 — Debug: viewer/export event log (JSON) — отменено
 **Labels:** `epic:sync-ready` `type:feature` `prio:P3` `size:S`  
 **Suggested branch:** `feature/event-log-debug-export`
 
 ### Context
-Для отладки синка удобно смотреть события и экспортировать их.
+Временная задача для отладки синка. После завершения Issue 30 было решено удалить debug viewer и не поддерживать экспорт в UI.
 
 ### Checklist
 - [x] Экран/диалог “Sync debug”: список последних N событий.
 - [x] Экспорт в JSON (clipboard или файл).
+- [x] Удалено как временное решение.
 
 ### Acceptance Criteria
-- Можно быстро получить JSON-дамп событий и поделиться/проанализировать.
+- Не планируется к реализации; оставить как историческую запись для контекста.
 
 ---
 
