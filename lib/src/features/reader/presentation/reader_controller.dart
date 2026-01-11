@@ -636,6 +636,10 @@ class ReaderController extends ChangeNotifier {
     LibraryEntry entry,
   ) async {
     try {
+      final ext = p.extension(entry.localPath).toLowerCase();
+      if (ext == '.fb2') {
+        return await _extractPlainFb2(bytes, entry);
+      }
       final archive = ZipDecoder().decodeBytes(bytes, verify: false);
       _lastArchive = archive;
       final tocResult = _buildTocResult(archive);
@@ -667,10 +671,10 @@ class ReaderController extends ChangeNotifier {
       throw const _ReaderLoadException(_ReaderLoadErrorType.parseFailed);
     } on ArchiveException catch (e) {
       Log.d('Failed to decode archive: $e');
-      return _extractPlainFb2(bytes);
+      return await _extractPlainFb2(bytes, entry);
     } on FormatException catch (e) {
       Log.d('Failed to decode archive: $e');
-      return _extractPlainFb2(bytes);
+      return await _extractPlainFb2(bytes, entry);
     } catch (e) {
       Log.d('Failed to decode archive: $e');
       if (e is _ReaderLoadException) {
@@ -680,21 +684,24 @@ class ReaderController extends ChangeNotifier {
     }
   }
 
-  List<_ChapterSource> _extractPlainFb2(List<int> bytes) {
-    final decoded = _decodeFb2Xml(bytes);
+  Future<List<_ChapterSource>> _extractPlainFb2(
+    List<int> bytes,
+    LibraryEntry entry,
+  ) async {
+    final decoded = _decodeFb2Bytes(bytes);
+    _officialTocEntries = const <_TocEntry>[];
+    _generatedTocEntries = const <_TocEntry>[];
+    _tocOfficialNodes = _tocNodesFromFb2Xml(decoded);
+    _tocGeneratedNodes = const <TocNode>[];
+    _tocMode = TocMode.official;
+    if (_tocOfficialNodes.isNotEmpty) {
+      await _storeToc(entry, _tocMode);
+    }
     final chapters = _chaptersFromFb2(decoded);
     if (chapters.isNotEmpty) {
       return chapters;
     }
     throw const _ReaderLoadException(_ReaderLoadErrorType.parseFailed);
-  }
-
-  String _decodeFb2Xml(List<int> bytes) {
-    try {
-      return utf8.decode(bytes);
-    } on FormatException {
-      return latin1.decode(bytes);
-    }
   }
 
   List<ReaderChapter> _buildChapters(List<_ChapterSource> chapterSources) {
@@ -2068,78 +2075,89 @@ List<TocNode> _tocNodesFromFb2Archive(Archive archive) {
       continue;
     }
     final decoded = _decodeFb2Bytes(content);
-    if (!_isFictionBookXml(decoded)) {
-      continue;
-    }
-    try {
-      final doc = XmlDocument.parse(decoded);
-      XmlElement? body;
-      for (final candidate in doc.findAllElements('body')) {
-        final name = candidate.getAttribute('name');
-        if (name == null || name.toLowerCase() != 'notes') {
-          body = candidate;
-          break;
-        }
-      }
-      if (body == null) {
-        return const <TocNode>[];
-      }
-      final nodes = <TocNode>[];
-      var idCounter = 0;
-      var chapterCounter = 0;
-      String? lastTitle;
-
-      void walkSections(
-        Iterable<XmlElement> sections,
-        String? parentId,
-        int depth,
-      ) {
-        var order = 0;
-        for (final section in sections) {
-          final rawTitle = _extractFb2SectionTitle(section);
-          if (_shouldSkipFb2Title(rawTitle)) {
-            walkSections(section.findElements('section'), parentId, depth);
-            continue;
-          }
-          final isSpecial = _isFb2Prologue(rawTitle) || _isFb2Epilogue(rawTitle);
-          if (!isSpecial) {
-            chapterCounter += 1;
-          }
-          final normalized =
-              _normalizeFb2ChapterTitle(rawTitle, chapterCounter, isSpecial);
-          if (normalized.isEmpty || normalized == lastTitle) {
-            walkSections(section.findElements('section'), parentId, depth);
-            continue;
-          }
-          lastTitle = normalized;
-          final id = 'fb2-$idCounter';
-          idCounter += 1;
-          final fragment = section.getAttribute('id');
-          nodes.add(
-            TocNode(
-              id: id,
-              parentId: parentId,
-              label: normalized,
-              href: null,
-              fragment: fragment,
-              level: depth,
-              order: order,
-              source: TocSource.fb2,
-            ),
-          );
-          order += 1;
-          walkSections(section.findElements('section'), id, depth + 1);
-        }
-      }
-
-      walkSections(body.findElements('section'), null, 0);
+    final nodes = _tocNodesFromFb2Xml(decoded);
+    if (nodes.isNotEmpty) {
       return nodes;
-    } catch (e) {
-      Log.d('Reader failed to parse FB2 toc: $e');
-      return const <TocNode>[];
     }
   }
   return const <TocNode>[];
+}
+
+List<TocNode> _tocNodesFromFb2Xml(String xml) {
+  if (!_isFictionBookXml(xml)) {
+    return const <TocNode>[];
+  }
+  try {
+    final doc = XmlDocument.parse(xml);
+    return _tocNodesFromFb2Document(doc);
+  } catch (e) {
+    Log.d('Reader failed to parse FB2 toc: $e');
+    return const <TocNode>[];
+  }
+}
+
+List<TocNode> _tocNodesFromFb2Document(XmlDocument doc) {
+  XmlElement? body;
+  for (final candidate in doc.findAllElements('body')) {
+    final name = candidate.getAttribute('name');
+    if (name == null || name.toLowerCase() != 'notes') {
+      body = candidate;
+      break;
+    }
+  }
+  if (body == null) {
+    return const <TocNode>[];
+  }
+  final nodes = <TocNode>[];
+  var idCounter = 0;
+  var chapterCounter = 0;
+  String? lastTitle;
+
+  void walkSections(
+    Iterable<XmlElement> sections,
+    String? parentId,
+    int depth,
+  ) {
+    var order = 0;
+    for (final section in sections) {
+      final rawTitle = _extractFb2SectionTitle(section);
+      if (_shouldSkipFb2Title(rawTitle)) {
+        walkSections(section.findElements('section'), parentId, depth);
+        continue;
+      }
+      final isSpecial = _isFb2Prologue(rawTitle) || _isFb2Epilogue(rawTitle);
+      if (!isSpecial) {
+        chapterCounter += 1;
+      }
+      final normalized =
+          _normalizeFb2ChapterTitle(rawTitle, chapterCounter, isSpecial);
+      if (normalized.isEmpty || normalized == lastTitle) {
+        walkSections(section.findElements('section'), parentId, depth);
+        continue;
+      }
+      lastTitle = normalized;
+      final id = 'fb2-$idCounter';
+      idCounter += 1;
+      final fragment = section.getAttribute('id');
+      nodes.add(
+        TocNode(
+          id: id,
+          parentId: parentId,
+          label: normalized,
+          href: null,
+          fragment: fragment,
+          level: depth,
+          order: order,
+          source: TocSource.fb2,
+        ),
+      );
+      order += 1;
+      walkSections(section.findElements('section'), id, depth + 1);
+    }
+  }
+
+  walkSections(body.findElements('section'), null, 0);
+  return nodes;
 }
 
 List<_TocEntry> _normalizeTocEntries(List<_TocEntry> entries) {
