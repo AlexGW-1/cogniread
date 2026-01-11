@@ -17,9 +17,9 @@
 **Цель:** схема хранения событий.
 
 **Checklist**
-- Таблица `event_log` + индексы (см. `docs/sync_gateway_storage.md`).
-- Миграции.
-- Репозиторий/DAO.
+- [x] Таблица `event_log` + индексы (см. `docs/sync_gateway_storage.md`).
+- [x] Миграции.
+- [ ] Репозиторий/DAO.
 
 ---
 ## 3) Idempotency + ACK

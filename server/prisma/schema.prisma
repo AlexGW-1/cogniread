@@ -1,0 +1,50 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model EventLog {
+  id           String   @id
+  userId       String
+  deviceId     String
+  entityType   String
+  entityId     String
+  op           String
+  payload      Json
+  createdAt    DateTime @default(now())
+  schemaVersion Int
+
+  @@index([userId, createdAt])
+  @@index([userId, entityType, entityId])
+}
+
+model ReadingPosition {
+  userId      String
+  bookId      String
+  chapterHref String?
+  anchor      String?
+  offset      Int?
+  updatedAt   DateTime
+
+  @@id([userId, bookId])
+  @@index([userId, updatedAt])
+}
+
+model SyncCursor {
+  userId    String
+  deviceId  String
+  lastCursor String
+  updatedAt DateTime @default(now())
+
+  @@id([userId, deviceId])
+}
