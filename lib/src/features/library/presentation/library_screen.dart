@@ -267,7 +267,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                 )
                               : ListView.separated(
                                   itemCount: results.length,
-                                  separatorBuilder: (_, __) =>
+                                  separatorBuilder: (context, index) =>
                                       const Divider(height: 1),
                                   itemBuilder: (context, index) {
                                     final result = results[index];

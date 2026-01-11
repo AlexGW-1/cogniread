@@ -96,9 +96,9 @@
 Нужно, чтобы PR не приносили «мелкий мусор» и чтобы анализатор был стабильно чистым.
 
 ### Checklist
-- [ ] Исправить предупреждение `use_super_parameters` (например, `NotImplementedYetException`).
-- [ ] Добавить в GitHub Actions шаг `dart format --set-exit-if-changed .`.
-- [ ] Убедиться, что workflow остаётся воспроизводимым и быстрым.
+- [x] Исправить предупреждение `use_super_parameters` (например, `NotImplementedYetException`).
+- [x] Добавить в GitHub Actions шаг `dart format --set-exit-if-changed .`.
+- [x] Убедиться, что workflow остаётся воспроизводимым и быстрым.
 
 ### Acceptance Criteria
 - `flutter analyze` без предупреждений/инфо (в рамках текущих lint правил).
