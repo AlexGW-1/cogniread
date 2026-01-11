@@ -8,6 +8,7 @@ import 'package:cogniread/src/features/library/data/library_store.dart';
 import 'package:epubx/epubx.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
+import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
 
 class LibraryBookItem {
@@ -17,6 +18,7 @@ class LibraryBookItem {
     required this.author,
     required this.sourcePath,
     required this.storedPath,
+    required this.coverPath,
     required this.hash,
     required this.addedAt,
     required this.lastOpenedAt,
@@ -33,6 +35,7 @@ class LibraryBookItem {
       author: entry.author,
       sourcePath: entry.sourcePath,
       storedPath: entry.localPath,
+      coverPath: entry.coverPath,
       hash: entry.fingerprint,
       addedAt: entry.addedAt,
       lastOpenedAt: entry.lastOpenedAt,
@@ -45,6 +48,7 @@ class LibraryBookItem {
   final String? author;
   final String sourcePath;
   final String storedPath;
+  final String? coverPath;
   final String hash;
   final DateTime addedAt;
   final DateTime? lastOpenedAt;
@@ -67,6 +71,7 @@ class LibraryController extends ChangeNotifier {
   final Future<String?> Function()? _pickEpubPath;
   final bool _stubImport;
   Future<void>? _storeReady;
+  bool _coverSyncInProgress = false;
 
   bool _loading = true;
   String? _errorMessage;
@@ -154,6 +159,7 @@ class LibraryController extends ChangeNotifier {
             title: existing.title,
             author: existing.author,
             localPath: stored.path,
+            coverPath: existing.coverPath,
             addedAt: existing.addedAt,
             fingerprint: existing.fingerprint,
             sourcePath: File(path).absolute.path,
@@ -187,11 +193,13 @@ class LibraryController extends ChangeNotifier {
         return;
       }
       final metadata = await _readMetadata(stored.path, fallbackTitle);
+      final coverPath = await _readCoverPath(stored.path, stored.hash);
       final entry = LibraryEntry(
         id: stored.hash,
         title: metadata.title,
         author: metadata.author,
         localPath: stored.path,
+        coverPath: coverPath,
         addedAt: DateTime.now(),
         fingerprint: stored.hash,
         sourcePath: File(path).absolute.path,
@@ -242,6 +250,13 @@ class LibraryController extends ChangeNotifier {
       if (await file.exists()) {
         await file.delete();
       }
+      final coverPath = book.coverPath;
+      if (coverPath != null) {
+        final coverFile = File(coverPath);
+        if (await coverFile.exists()) {
+          await coverFile.delete();
+        }
+      }
       _books.removeAt(index);
       notifyListeners();
       _setInfo('Книга удалена');
@@ -265,6 +280,10 @@ class LibraryController extends ChangeNotifier {
           if (entry is File && entry.path.toLowerCase().endsWith('.epub')) {
             await entry.delete();
           }
+        }
+        final coversDir = Directory(p.join(dirPath, 'covers'));
+        if (await coversDir.exists()) {
+          await coversDir.delete(recursive: true);
         }
       }
       await _loadLibrary();
@@ -291,6 +310,7 @@ class LibraryController extends ChangeNotifier {
         author: book.author,
         sourcePath: book.sourcePath,
         storedPath: book.storedPath,
+        coverPath: book.coverPath,
         hash: book.hash,
         addedAt: book.addedAt,
         lastOpenedAt: DateTime.now(),
@@ -316,6 +336,7 @@ class LibraryController extends ChangeNotifier {
       author: book.author,
       sourcePath: book.sourcePath,
       storedPath: book.storedPath,
+      coverPath: book.coverPath,
       hash: book.hash,
       addedAt: book.addedAt,
       lastOpenedAt: book.lastOpenedAt,
@@ -367,12 +388,70 @@ class LibraryController extends ChangeNotifier {
       _books.sort(_sortByLastOpenedAt);
       _loading = false;
       notifyListeners();
+      _syncMissingCovers(entries);
     } catch (e) {
       Log.d('Failed to load library: $e');
       _setError('Не удалось загрузить библиотеку');
       _loading = false;
       notifyListeners();
     }
+  }
+
+  void _syncMissingCovers(List<LibraryEntry> entries) {
+    if (_coverSyncInProgress) {
+      return;
+    }
+    _coverSyncInProgress = true;
+    Future<void>(() async {
+      try {
+        for (final entry in entries) {
+          if (entry.coverPath != null &&
+              await File(entry.coverPath!).exists()) {
+            continue;
+          }
+          final exists = await File(entry.localPath).exists();
+          if (!exists) {
+            continue;
+          }
+          final coverPath = await _readCoverPath(entry.localPath, entry.id);
+          if (coverPath == null) {
+            continue;
+          }
+          final updated = LibraryEntry(
+            id: entry.id,
+            title: entry.title,
+            author: entry.author,
+            localPath: entry.localPath,
+            coverPath: coverPath,
+            addedAt: entry.addedAt,
+            fingerprint: entry.fingerprint,
+            sourcePath: entry.sourcePath,
+            readingPosition: entry.readingPosition,
+            progress: entry.progress,
+            lastOpenedAt: entry.lastOpenedAt,
+            notes: entry.notes,
+            highlights: entry.highlights,
+            bookmarks: entry.bookmarks,
+            tocOfficial: entry.tocOfficial,
+            tocGenerated: entry.tocGenerated,
+            tocMode: entry.tocMode,
+          );
+          await _store.upsert(updated);
+          final index = _books.indexWhere((book) => book.id == entry.id);
+          if (index != -1) {
+            _books[index] = LibraryBookItem.fromEntry(
+              updated,
+              isMissing: _books[index].isMissing,
+            );
+            notifyListeners();
+          }
+        }
+      } catch (e) {
+        Log.d('Failed to sync covers: $e');
+      } finally {
+        _coverSyncInProgress = false;
+      }
+    });
   }
 
   Future<String?> _pickEpubFromFilePicker() async {
@@ -408,6 +487,32 @@ class LibraryController extends ChangeNotifier {
     return null;
   }
 
+  Future<String?> _readCoverPath(String path, String bookId) async {
+    try {
+      final bytes = await File(path).readAsBytes();
+      final bookRef = await EpubReader.openBook(bytes);
+      final cover = await _readCoverImage(bookRef);
+      if (cover == null) {
+        return null;
+      }
+      final pngBytes = img.encodePng(cover);
+      if (pngBytes.isEmpty) {
+        return null;
+      }
+      final dirPath = await _storageService.appStoragePath();
+      final coversDir = Directory(p.join(dirPath, 'covers'));
+      if (!await coversDir.exists()) {
+        await coversDir.create(recursive: true);
+      }
+      final coverPath = p.join(coversDir.path, '$bookId.png');
+      await File(coverPath).writeAsBytes(pngBytes, flush: true);
+      return coverPath;
+    } catch (e) {
+      Log.d('Failed to read EPUB cover: $e');
+      return null;
+    }
+  }
+
   void _setError(String message) {
     _errorMessage = message;
     notifyListeners();
@@ -426,6 +531,7 @@ class LibraryController extends ChangeNotifier {
         author: null,
         sourcePath: 'stub',
         storedPath: 'stub',
+        coverPath: null,
         hash: 'stub',
         addedAt: DateTime.now(),
         lastOpenedAt: null,
@@ -433,6 +539,121 @@ class LibraryController extends ChangeNotifier {
       ),
     );
     notifyListeners();
+  }
+}
+
+Future<img.Image?> _readCoverImage(EpubBookRef bookRef) async {
+  try {
+    final cover = await bookRef.readCover();
+    if (cover != null) {
+      return cover;
+    }
+  } catch (e) {
+    Log.d('Cover via metadata failed: $e');
+  }
+
+  final manifestItems = bookRef.Schema?.Package?.Manifest?.Items;
+  if (manifestItems != null) {
+    for (final item in manifestItems) {
+      if (_isCoverManifestItem(item)) {
+        final image = await _decodeImageFromHref(bookRef, item.Href);
+        if (image != null) {
+          return image;
+        }
+      }
+    }
+  }
+
+  final guideItems = bookRef.Schema?.Package?.Guide?.Items;
+  if (guideItems != null) {
+    for (final item in guideItems) {
+      final type = item.Type?.toLowerCase() ?? '';
+      if (type.contains('cover')) {
+        final image = await _decodeImageFromHref(bookRef, item.Href);
+        if (image != null) {
+          return image;
+        }
+      }
+    }
+  }
+
+  final images = bookRef.Content?.Images;
+  if (images != null && images.isNotEmpty) {
+    List<int>? bestBytes;
+    for (final entry in images.entries) {
+      try {
+        final bytes = await entry.value.readContentAsBytes();
+        if (bytes.isNotEmpty &&
+            (bestBytes == null || bytes.length > bestBytes.length)) {
+          bestBytes = bytes;
+        }
+      } catch (e) {
+        Log.d('Cover image read failed for ${entry.key}: $e');
+      }
+    }
+    if (bestBytes != null) {
+      return _decodeImage(bestBytes);
+    }
+  }
+
+  return null;
+}
+
+bool _isCoverManifestItem(EpubManifestItem item) {
+  final mediaType = item.MediaType?.toLowerCase() ?? '';
+  if (!mediaType.startsWith('image/')) {
+    return false;
+  }
+  final properties = item.Properties?.toLowerCase() ?? '';
+  if (properties.contains('cover-image')) {
+    return true;
+  }
+  return _looksLikeCover(item.Id) || _looksLikeCover(item.Href);
+}
+
+bool _looksLikeCover(String? value) {
+  if (value == null) {
+    return false;
+  }
+  return value.toLowerCase().contains('cover');
+}
+
+Future<img.Image?> _decodeImageFromHref(
+  EpubBookRef bookRef,
+  String? href,
+) async {
+  if (href == null || href.isEmpty) {
+    return null;
+  }
+  final images = bookRef.Content?.Images;
+  if (images == null || images.isEmpty) {
+    return null;
+  }
+  final normalized = href.startsWith('./') ? href.substring(2) : href;
+  final direct = images[normalized] ?? images[href];
+  if (direct != null) {
+    final bytes = await direct.readContentAsBytes();
+    return _decodeImage(bytes);
+  }
+  final targetBase = p.basename(normalized).toLowerCase();
+  for (final entry in images.entries) {
+    if (p.basename(entry.key).toLowerCase() == targetBase) {
+      final bytes = await entry.value.readContentAsBytes();
+      return _decodeImage(bytes);
+    }
+  }
+  return null;
+}
+
+img.Image? _decodeImage(List<int> bytes) {
+  if (bytes.isEmpty) {
+    return null;
+  }
+  try {
+    return img.decodeImage(bytes);
+  } catch (e) {
+    Log.d('Cover image decode failed: $e');
+    return null;
   }
 }
 

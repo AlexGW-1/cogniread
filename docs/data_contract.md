@@ -18,6 +18,7 @@
 | title | String | yes | Заголовок книги. |
 | author | String | no | Автор (если найден). |
 | localPath | String | yes | Путь к локальной копии EPUB. |
+| coverPath | String | no | Путь к сохраненной обложке. |
 | addedAt | String (ISO-8601) | yes | Дата добавления. |
 | fingerprint | String | yes | SHA-256 хэш файла. |
 | sourcePath | String | yes | Исходный путь файла. |

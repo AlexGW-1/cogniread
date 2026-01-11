@@ -47,6 +47,7 @@ void main() {
       title: 'Title',
       author: 'Author',
       localPath: '/tmp/book.epub',
+      coverPath: null,
       addedAt: DateTime(2026, 1, 11),
       fingerprint: 'hash',
       sourcePath: '/tmp/book.epub',

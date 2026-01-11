@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:cogniread/src/core/services/storage_service.dart';
 import 'package:cogniread/src/features/library/presentation/library_controller.dart';
 import 'package:cogniread/src/features/reader/presentation/reader_screen.dart';
@@ -271,6 +273,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                 final book = filtered[i];
                                 return ListTile(
                                   key: ValueKey('library-book-tile-$i'),
+                                  leading: _BookCover(
+                                    title: book.title,
+                                    coverPath: book.coverPath,
+                                  ),
                                   title: Text(book.title),
                                   subtitle: _buildBookSubtitle(book, scheme),
                                   trailing: IconButton(
@@ -577,7 +583,7 @@ class _BookCard extends StatelessWidget {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _BookCover(title: book.title),
+              _BookCover(title: book.title, coverPath: book.coverPath),
               const SizedBox(width: 14),
               Expanded(
                 child: Column(
@@ -634,15 +640,53 @@ class _BookCard extends StatelessWidget {
 }
 
 class _BookCover extends StatelessWidget {
-  const _BookCover({required this.title});
+  const _BookCover({required this.title, required this.coverPath});
 
   final String title;
+  final String? coverPath;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final trimmed = title.trim();
     final initial = trimmed.isEmpty ? '?' : trimmed.substring(0, 1);
+    File? coverFile;
+    if (coverPath != null) {
+      final candidate = File(coverPath!);
+      if (candidate.existsSync()) {
+        coverFile = candidate;
+      }
+    }
+    if (coverFile != null) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Image.file(
+          coverFile,
+          width: 56,
+          height: 72,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => _BookCoverPlaceholder(
+            initial: initial,
+            scheme: scheme,
+          ),
+        ),
+      );
+    }
+    return _BookCoverPlaceholder(initial: initial, scheme: scheme);
+  }
+}
+
+class _BookCoverPlaceholder extends StatelessWidget {
+  const _BookCoverPlaceholder({
+    required this.initial,
+    required this.scheme,
+  });
+
+  final String initial;
+  final ColorScheme scheme;
+
+  @override
+  Widget build(BuildContext context) {
     return Container(
       width: 56,
       height: 72,

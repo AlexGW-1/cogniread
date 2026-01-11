@@ -7,6 +7,7 @@ class LibraryEntry {
     required this.title,
     required this.author,
     required this.localPath,
+    required this.coverPath,
     required this.addedAt,
     required this.fingerprint,
     required this.sourcePath,
@@ -25,6 +26,7 @@ class LibraryEntry {
   final String title;
   final String? author;
   final String localPath;
+  final String? coverPath;
   final DateTime addedAt;
   final String fingerprint;
   final String sourcePath;
@@ -43,6 +45,7 @@ class LibraryEntry {
         'title': title,
         'author': author,
         'localPath': localPath,
+        'coverPath': coverPath,
         'addedAt': addedAt.toIso8601String(),
         'fingerprint': fingerprint,
         'sourcePath': sourcePath,
@@ -63,6 +66,7 @@ class LibraryEntry {
       title: map['title'] as String,
       author: map['author'] as String?,
       localPath: map['localPath'] as String,
+      coverPath: map['coverPath'] as String?,
       addedAt: DateTime.parse(map['addedAt'] as String),
       fingerprint: map['fingerprint'] as String,
       sourcePath: map['sourcePath'] as String,
@@ -396,6 +400,7 @@ class LibraryStore {
         title: entry.title,
         author: entry.author,
         localPath: entry.localPath,
+        coverPath: entry.coverPath,
         addedAt: entry.addedAt,
         fingerprint: entry.fingerprint,
         sourcePath: entry.sourcePath,
@@ -426,6 +431,7 @@ class LibraryStore {
         title: entry.title,
         author: entry.author,
         localPath: entry.localPath,
+        coverPath: entry.coverPath,
         addedAt: entry.addedAt,
         fingerprint: entry.fingerprint,
         sourcePath: entry.sourcePath,
@@ -453,6 +459,7 @@ class LibraryStore {
         title: entry.title,
         author: entry.author,
         localPath: entry.localPath,
+        coverPath: entry.coverPath,
         addedAt: entry.addedAt,
         fingerprint: entry.fingerprint,
         sourcePath: entry.sourcePath,
@@ -480,6 +487,7 @@ class LibraryStore {
         title: entry.title,
         author: entry.author,
         localPath: entry.localPath,
+        coverPath: entry.coverPath,
         addedAt: entry.addedAt,
         fingerprint: entry.fingerprint,
         sourcePath: entry.sourcePath,
@@ -512,6 +520,7 @@ class LibraryStore {
         title: entry.title,
         author: entry.author,
         localPath: entry.localPath,
+        coverPath: entry.coverPath,
         addedAt: entry.addedAt,
         fingerprint: entry.fingerprint,
         sourcePath: entry.sourcePath,
@@ -539,6 +548,7 @@ class LibraryStore {
         title: entry.title,
         author: entry.author,
         localPath: entry.localPath,
+        coverPath: entry.coverPath,
         addedAt: entry.addedAt,
         fingerprint: entry.fingerprint,
         sourcePath: entry.sourcePath,
@@ -571,6 +581,7 @@ class LibraryStore {
         title: entry.title,
         author: entry.author,
         localPath: entry.localPath,
+        coverPath: entry.coverPath,
         addedAt: entry.addedAt,
         fingerprint: entry.fingerprint,
         sourcePath: entry.sourcePath,
@@ -598,6 +609,7 @@ class LibraryStore {
         title: entry.title,
         author: entry.author,
         localPath: entry.localPath,
+        coverPath: entry.coverPath,
         addedAt: entry.addedAt,
         fingerprint: entry.fingerprint,
         sourcePath: entry.sourcePath,
