@@ -10,18 +10,18 @@
 - path_provider — доступ к sandbox/app-managed директориям для копирования EPUB и служебных файлов.
 
 ## EPUB parsing
-- epubx — парсинг EPUB с извлечением базовых метаданных (title/author) без тяжелого рендеринга.
+- epubx — парсинг EPUB с извлечением метаданных и контента без WebView.
 
 ## EPUB rendering (MVP0/1)
-- epubx + WebView — рендер на основе HTML в WebView с контролем якорей и позиций.
+- Нативный рендер текста во Flutter: извлекаем главы, строим список параграфов и отображаем через `ScrollablePositionedList` + `SelectableRegion`.
 
-## Формат позиции/заметок (epubx + WebView)
-- `readingPosition`: `chapterId`/`chapterHref`, `anchorId`/`cfi`, `offset` (int), `updatedAt`.
+## Формат позиции/заметок (native reader)
+- `readingPosition`: `chapterHref`, `anchor` (string), `offset` (int), `updatedAt`.
 - `progress`: `percent` (0..1), `chapterIndex`, `totalChapters`, `updatedAt`.
 - `lastOpenedAt`: timestamp для сортировки/“продолжить чтение”.
-- `notes[]`: `id`, `bookId`, `anchorId`/`cfi`, `excerpt`, `noteText`, `createdAt`, `updatedAt`.
-- `highlights[]`: `id`, `bookId`, `anchorId`/`cfi`, `excerpt`, `color`, `createdAt`, `updatedAt`.
-- `bookmarks[]`: `id`, `bookId`, `anchorId`/`cfi`, `label`, `createdAt`.
+- `notes[]`: `id`, `bookId`, `anchor` (string), `endOffset`, `excerpt`, `noteText`, `color`, `createdAt`, `updatedAt`.
+- `highlights[]`: `id`, `bookId`, `anchor` (string), `endOffset`, `excerpt`, `color`, `createdAt`, `updatedAt`.
+- `bookmarks[]`: `id`, `bookId`, `anchor` (string), `label`, `createdAt`, `updatedAt` (сейчас одна закладка на книгу).
 
 ## Позиция чтения (устойчивый формат)
 - `{bookId, chapterHref | chapterIndex, fragmentId?, offsetPx?, progressPct?, updatedAt}`
