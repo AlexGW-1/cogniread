@@ -19,6 +19,8 @@
 
 ---
 
+## Active backlog
+
 # EPIC 1 — Stabilization (M1)
 
 ## Issue 1 — Reader perf: замеры и выбор стратегии рендера
@@ -239,6 +241,8 @@
 
 ---
 
+## Done (MVP0–MVP3)
+
 # EPIC 2 — Active Reading: Notes/Highlights/Bookmarks (M2)
 
 ## Issue 10 — Anchors v1: формат + хелперы (serialize/parse/validate)
@@ -402,7 +406,7 @@
 
 ### Checklist
 - [x] Delete highlight (с подтверждением).
-- [ ] (Optional) change color.
+- [x] (Optional) change color — отложено, не входит в текущий этап.
 
 ### Acceptance Criteria
 - Удаление/смена цвета сохраняются после перезапуска.
@@ -717,9 +721,5 @@
 
 ---
 
-# Рекомендуемый порядок выполнения
-1) **EPIC 1:** 1 → 2 → 3 → 5 → 7 → 8 → 9 → 4 → 6  
-2) **EPIC 2:** 10 → 11 → 12 → 13 → 14 → 17 → 15 → 16 → 18 → 19  
-3) **EPIC 3:** 20 → 21 → 22 (→ 23 опционально)  
-4) **EPIC 4:** 24 → 25 → 27 → 28 → 26 → 29  
-5) **EPIC 5:** 30
+# Рекомендуемый порядок выполнения (remaining)
+1) **EPIC 1:** 1 → 2 → 3 → 5 → 4
