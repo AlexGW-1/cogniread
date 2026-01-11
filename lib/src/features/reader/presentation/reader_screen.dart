@@ -933,15 +933,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
-  void _jumpToBookmark() {
-    final bookmark = _controller.bookmark;
-    if (bookmark == null) {
-      _showPositioningError('Закладка не установлена');
-      return;
-    }
-    _scrollToBookmark(bookmark);
-  }
-
   void _showBookmarks() {
     showModalBottomSheet<void>(
       context: context,
