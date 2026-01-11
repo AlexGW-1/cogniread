@@ -462,6 +462,98 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
+  void _showNotesHighlights() {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (context) {
+        var filter = _MarkFilter.all;
+        return StatefulBuilder(
+          builder: (context, setState) {
+            final entries = _markEntries(filter);
+            return SafeArea(
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                    child: Row(
+                      children: [
+                        const Expanded(
+                          child: Text(
+                            'Заметки и выделения',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        SegmentedButton<_MarkFilter>(
+                          segments: const [
+                            ButtonSegment(
+                              value: _MarkFilter.all,
+                              label: Text('Все'),
+                            ),
+                            ButtonSegment(
+                              value: _MarkFilter.notes,
+                              label: Text('Заметки'),
+                            ),
+                            ButtonSegment(
+                              value: _MarkFilter.highlights,
+                              label: Text('Выделения'),
+                            ),
+                          ],
+                          selected: {filter},
+                          onSelectionChanged: (selection) {
+                            setState(() {
+                              filter = selection.first;
+                            });
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: entries.isEmpty
+                        ? const Center(
+                            child: Text('Пока нет заметок и выделений.'),
+                          )
+                        : ListView.separated(
+                            itemCount: entries.length,
+                            separatorBuilder: (_, _) => const Divider(height: 1),
+                            itemBuilder: (context, index) {
+                              final entry = entries[index];
+                              return ListTile(
+                                title: Text(
+                                  entry.excerpt,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                subtitle: Text(
+                                  '${entry.typeLabel} · ${_formatDateTime(entry.createdAt)}',
+                                ),
+                                leading: _HighlightSwatch(
+                                  color: entry.color,
+                                ),
+                                onTap: () {
+                                  Navigator.of(context).pop();
+                                  entry.onTap();
+                                },
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   int? _chapterIndexForHighlight(Highlight highlight) {
     final anchor = Anchor.parse(highlight.anchor);
     if (anchor == null) {
@@ -552,6 +644,40 @@ class _ReaderScreenState extends State<ReaderScreen> {
         curve: Curves.easeInOut,
       );
     });
+  }
+
+  List<_MarkEntry> _markEntries(_MarkFilter filter) {
+    final entries = <_MarkEntry>[];
+    if (filter == _MarkFilter.all || filter == _MarkFilter.highlights) {
+      for (final highlight in _controller.highlights) {
+        final excerpt = highlight.excerpt.trim();
+        entries.add(
+          _MarkEntry(
+            typeLabel: 'Выделение',
+            excerpt: excerpt.isEmpty ? '(без текста)' : excerpt,
+            createdAt: highlight.createdAt,
+            color: _markColorFor(highlight.color),
+            onTap: () => _scrollToHighlight(highlight),
+          ),
+        );
+      }
+    }
+    if (filter == _MarkFilter.all || filter == _MarkFilter.notes) {
+      for (final note in _controller.notes) {
+        final excerpt = note.excerpt.trim();
+        entries.add(
+          _MarkEntry(
+            typeLabel: 'Заметка',
+            excerpt: excerpt.isEmpty ? '(без текста)' : excerpt,
+            createdAt: note.createdAt,
+            color: _markColorFor(note.color),
+            onTap: () => _scrollToNote(note),
+          ),
+        );
+      }
+    }
+    entries.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return entries;
   }
 
   double? _estimateHighlightScrollOffset(
@@ -760,6 +886,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
             icon: const Icon(Icons.sticky_note_2_outlined),
           ),
           IconButton(
+            tooltip: 'Заметки и выделения',
+            onPressed: _showNotesHighlights,
+            icon: const Icon(Icons.view_list_outlined),
+          ),
+          IconButton(
             tooltip: 'Оглавление',
             onPressed: hasToc ? _showToc : null,
             key: const ValueKey('reader-toc-button'),
@@ -815,6 +946,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                               onTocTap: _showToc,
                               onHighlightsTap: _showHighlights,
                               onNotesTap: _showNotes,
+                              onMarksTap: _showNotesHighlights,
                             ),
                             const SizedBox(height: 16),
                             Expanded(
@@ -1086,6 +1218,36 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 }
 
+String _formatDateTime(DateTime date) {
+  final day = date.day.toString().padLeft(2, '0');
+  final month = date.month.toString().padLeft(2, '0');
+  final hour = date.hour.toString().padLeft(2, '0');
+  final minute = date.minute.toString().padLeft(2, '0');
+  return '$day.$month.${date.year} $hour:$minute';
+}
+
+enum _MarkFilter {
+  all,
+  notes,
+  highlights,
+}
+
+class _MarkEntry {
+  const _MarkEntry({
+    required this.typeLabel,
+    required this.excerpt,
+    required this.createdAt,
+    required this.color,
+    required this.onTap,
+  });
+
+  final String typeLabel;
+  final String excerpt;
+  final DateTime createdAt;
+  final Color color;
+  final VoidCallback onTap;
+}
+
 class _ReaderErrorPanel extends StatelessWidget {
   const _ReaderErrorPanel({
     required this.message,
@@ -1350,6 +1512,7 @@ class _ReaderHeader extends StatelessWidget {
     required this.onTocTap,
     required this.onHighlightsTap,
     required this.onNotesTap,
+    required this.onMarksTap,
   });
 
   final String title;
@@ -1357,6 +1520,7 @@ class _ReaderHeader extends StatelessWidget {
   final VoidCallback onTocTap;
   final VoidCallback onHighlightsTap;
   final VoidCallback onNotesTap;
+  final VoidCallback onMarksTap;
 
   @override
   Widget build(BuildContext context) {
@@ -1389,6 +1553,11 @@ class _ReaderHeader extends StatelessWidget {
           tooltip: 'Заметки',
           onPressed: onNotesTap,
           icon: Icon(Icons.sticky_note_2_outlined, color: scheme.primary),
+        ),
+        IconButton(
+          tooltip: 'Заметки и выделения',
+          onPressed: onMarksTap,
+          icon: Icon(Icons.view_list_outlined, color: scheme.primary),
         ),
       ],
     );
