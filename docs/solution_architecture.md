@@ -18,6 +18,13 @@ Solution Architecture
 ## Target (Solution Architecture)
 Ниже описан целевой вид системы с backend, синхронизацией и AI‑слоем.
 
+# 2.1 Next stage plan (Current → Target)
+
+- Sync gateway: контракт API (upload/download event log), минимальная auth‑модель.
+- Storage: серверные схемы для event log и состояний чтения.
+- Sync pipeline: LWW‑конфликты + идемпотентность событий.
+- Observability: базовые метрики/логи для операций синхронизации.
+
 # 3. Цели и принципы
 
 - Кроссплатформенность (mobile/desktop) при единой кодовой базе.
