@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
+import 'package:cogniread/src/core/types/anchor.dart';
 import 'package:cogniread/src/core/types/toc.dart';
 import 'package:cogniread/src/core/utils/logger.dart';
 import 'package:cogniread/src/features/reader/presentation/reader_controller.dart';
@@ -32,7 +34,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
       ScrollOffsetController();
   late final ReaderController _controller;
   late final VoidCallback _controllerListener;
-  final List<SelectionListenerNotifier> _selectionNotifiers = [];
   int? _selectionChapterIndex;
   SelectedContentRange? _selectionRange;
   String? _selectionText;
@@ -41,6 +42,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   bool _didRestore = false;
   int _restoreAttempts = 0;
   double _viewportExtent = 0;
+  double? _textWidth;
 
   @override
   void initState() {
@@ -50,7 +52,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
       if (!mounted) {
         return;
       }
-      _ensureSelectionNotifiers();
       setState(() {
         _initialPosition ??= _controller.initialPosition;
       });
@@ -68,9 +69,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _controller.removeListener(_controllerListener);
     _controller.dispose();
     _itemPositionsListener.itemPositions.removeListener(_onScroll);
-    for (final notifier in _selectionNotifiers) {
-      notifier.dispose();
-    }
     super.dispose();
   }
 
@@ -155,40 +153,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
     return index == -1 ? null : index;
   }
 
-  void _ensureSelectionNotifiers() {
-    final count = _controller.chapters.length;
-    if (_selectionNotifiers.length == count) {
-      return;
-    }
-    for (final notifier in _selectionNotifiers) {
-      notifier.dispose();
-    }
-    _selectionNotifiers
-      ..clear()
-      ..addAll(
-        List<SelectionListenerNotifier>.generate(
-          count,
-          (_) => SelectionListenerNotifier(),
-        ),
-      );
-    for (var i = 0; i < _selectionNotifiers.length; i += 1) {
-      final index = i;
-      _selectionNotifiers[index].addListener(() {
-        _onChapterSelectionChanged(index);
-      });
-    }
-    _clearSelectionSnapshot();
-  }
-
-  void _onChapterSelectionChanged(int index) {
+  void _onChapterSelectionChanged(
+    int index,
+    SelectedContentRange? range,
+  ) {
     if (index < 0 || index >= _controller.chapters.length) {
       return;
     }
-    final notifier = _selectionNotifiers[index];
-    if (!notifier.registered) {
-      return;
-    }
-    final range = notifier.selection.range;
     if (range == null || range.startOffset == range.endOffset) {
       if (_selectionChapterIndex == index) {
         _clearSelectionSnapshot();
@@ -218,7 +189,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   String _chapterPlainText(int index) {
     final chapter = _controller.chapters[index];
-    return <String>[chapter.title, ...chapter.paragraphs].join('\n\n');
+    return <String>[chapter.title, ...chapter.paragraphs].join();
   }
 
   bool get _canHighlightSelection {
@@ -231,6 +202,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   Future<void> _addHighlightFromSelection(
     SelectableRegionState selectableRegionState,
+    String colorKey,
   ) async {
     if (!_canHighlightSelection) {
       return;
@@ -243,6 +215,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       startOffset: range.startOffset,
       endOffset: range.endOffset,
       excerpt: excerpt,
+      color: colorKey,
     );
     if (!mounted) {
       return;
@@ -256,6 +229,238 @@ class _ReaderScreenState extends State<ReaderScreen> {
         ),
       ),
     );
+  }
+
+  void _showHighlights() {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (context) {
+        return AnimatedBuilder(
+          animation: _controller,
+          builder: (context, _) {
+            final highlights = _controller.highlights;
+            if (highlights.isEmpty) {
+              return const SafeArea(
+                child: Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(24),
+                    child: Text('Пока нет выделений.'),
+                  ),
+                ),
+              );
+            }
+            return SafeArea(
+              child: ListView.separated(
+                itemCount: highlights.length,
+                separatorBuilder: (_, _) => const Divider(height: 1),
+                itemBuilder: (context, index) {
+                  final highlight = highlights[index];
+                  final chapterIndex = _chapterIndexForHighlight(highlight);
+                  final chapterTitle = chapterIndex == null
+                      ? 'Неизвестная глава'
+                      : _controller.chapters[chapterIndex].title;
+                  final excerpt = highlight.excerpt.trim();
+                  return ListTile(
+                    title: Text(
+                      excerpt.isEmpty ? '(без текста)' : excerpt,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(chapterTitle),
+                    leading: _HighlightSwatch(
+                      color: _highlightColorFor(highlight.color),
+                    ),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.delete_outline),
+                      tooltip: 'Удалить выделение',
+                      onPressed: () async {
+                        await _controller.removeHighlight(highlight.id);
+                      },
+                    ),
+                    onTap: chapterIndex == null
+                        ? null
+                        : () {
+                            Navigator.of(context).pop();
+                            _scrollToHighlight(highlight);
+                          },
+                  );
+                },
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  int? _chapterIndexForHighlight(Highlight highlight) {
+    final anchor = Anchor.parse(highlight.anchor);
+    if (anchor == null) {
+      return null;
+    }
+    final chapterHref = anchor.chapterHref;
+    if (chapterHref.startsWith('index:')) {
+      return int.tryParse(chapterHref.substring('index:'.length));
+    }
+    final index =
+        _controller.chapters.indexWhere((chapter) => chapter.href == chapterHref);
+    return index == -1 ? null : index;
+  }
+
+  void _scrollToHighlight(Highlight highlight) {
+    final anchor = Anchor.parse(highlight.anchor);
+    if (anchor == null) {
+      return;
+    }
+    final chapterIndex = _chapterIndexForHighlight(highlight);
+    if (chapterIndex == null) {
+      return;
+    }
+    final offsetWithin = _estimateHighlightScrollOffset(
+      highlight,
+      chapterIndex,
+    );
+    if (offsetWithin == null || offsetWithin <= 0) {
+      return;
+    }
+    if (!_itemScrollController.isAttached) {
+      return;
+    }
+    _itemScrollController.jumpTo(index: chapterIndex);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_itemScrollController.isAttached) {
+        return;
+      }
+      _scrollOffsetController.animateScroll(
+        offset: offsetWithin,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeInOut,
+      );
+    });
+  }
+
+  double? _estimateHighlightScrollOffset(
+    Highlight highlight,
+    int chapterIndex,
+  ) {
+    final anchor = Anchor.parse(highlight.anchor);
+    if (anchor == null) {
+      return null;
+    }
+    final chapter = _controller.chapters[chapterIndex];
+    final textWidth = _textWidth;
+    if (textWidth == null || textWidth <= 0) {
+      return null;
+    }
+    final titleStyle = Theme.of(context).textTheme.titleMedium?.copyWith(
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.2,
+        );
+    const bodyStyle = TextStyle(
+      fontSize: 17,
+      height: 1.65,
+      fontFamily: 'Georgia',
+      fontFamilyFallback: [
+        'Times New Roman',
+        'Times',
+        'serif',
+      ],
+    );
+    final titleText = chapter.title;
+    final offset = anchor.offset;
+    if (offset < titleText.length) {
+      final titleHeight = _measureTextHeight(titleText, titleStyle, textWidth);
+      final caretOffset =
+          _measureCaretOffset(titleText, titleStyle, textWidth, offset);
+      return 6 + caretOffset; // top padding
+    }
+    var remaining = offset - titleText.length;
+    var accumulated = 6 +
+        _measureTextHeight(titleText, titleStyle, textWidth) +
+        10; // title padding
+    for (final paragraph in chapter.paragraphs) {
+      if (remaining <= paragraph.length) {
+        final caretOffset =
+            _measureCaretOffset(paragraph, bodyStyle, textWidth, remaining);
+        return accumulated + caretOffset;
+      }
+      accumulated +=
+          _measureTextHeight(paragraph, bodyStyle, textWidth) + 12;
+      remaining -= paragraph.length;
+    }
+    return accumulated;
+  }
+
+  double _measureTextHeight(
+    String text,
+    TextStyle? style,
+    double width,
+  ) {
+    final painter = TextPainter(
+      text: TextSpan(text: text, style: style),
+      textDirection: TextDirection.ltr,
+      maxLines: null,
+    )..layout(maxWidth: width);
+    return painter.height;
+  }
+
+  double _measureCaretOffset(
+    String text,
+    TextStyle? style,
+    double width,
+    int offset,
+  ) {
+    final clamped = offset.clamp(0, text.length) as int;
+    final painter = TextPainter(
+      text: TextSpan(text: text, style: style),
+      textDirection: TextDirection.ltr,
+      maxLines: null,
+    )..layout(maxWidth: width);
+    return painter.getOffsetForCaret(
+      TextPosition(offset: clamped),
+      Rect.zero,
+    ).dy;
+  }
+
+  List<_HighlightRange> _highlightRangesForChapter(int chapterIndex) {
+    final ranges = <_HighlightRange>[];
+    for (final highlight in _controller.highlights) {
+      final anchor = Anchor.parse(highlight.anchor);
+      if (anchor == null) {
+        continue;
+      }
+      final index = anchor.chapterHref.startsWith('index:')
+          ? int.tryParse(anchor.chapterHref.substring('index:'.length))
+          : _controller.chapters
+              .indexWhere((chapter) => chapter.href == anchor.chapterHref);
+      if (index != chapterIndex) {
+        continue;
+      }
+      final start = anchor.offset;
+      final end = highlight.endOffset ??
+          (start + highlight.excerpt.trim().length);
+      if (end <= start) {
+        continue;
+      }
+      ranges.add(
+        _HighlightRange(
+          start: start,
+          end: end,
+          color: _highlightColorFor(highlight.color),
+        ),
+      );
+    }
+    ranges.sort((a, b) => a.start.compareTo(b.start));
+    return ranges;
+  }
+
+  Color _highlightColorFor(String key) {
+    return _highlightOptions
+        .firstWhere(
+          (option) => option.key == key,
+          orElse: () => _highlightOptions.first,
+        )
+        .color;
   }
 
   Future<void> _persistReadingPosition() async {
@@ -313,6 +518,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
         title: Text(_controller.title ?? 'Reader'),
         actions: [
           IconButton(
+            tooltip: 'Выделения',
+            onPressed: _showHighlights,
+            icon: const Icon(Icons.highlight_outlined),
+          ),
+          IconButton(
             tooltip: 'Оглавление',
             onPressed: hasToc ? _showToc : null,
             key: const ValueKey('reader-toc-button'),
@@ -366,25 +576,30 @@ class _ReaderScreenState extends State<ReaderScreen> {
                               title: _controller.title ?? 'Reader',
                               hasToc: hasToc,
                               onTocTap: _showToc,
+                              onHighlightsTap: _showHighlights,
                             ),
                             const SizedBox(height: 16),
                             Expanded(
                               child: LayoutBuilder(
                                 builder: (context, constraints) {
                                   _viewportExtent = constraints.maxHeight;
+                                  _textWidth = constraints.maxWidth;
                                   return SelectionArea(
                                     contextMenuBuilder:
                                         (context, selectableRegionState) {
                                       final items = <ContextMenuButtonItem>[
                                         if (_canHighlightSelection)
-                                          ContextMenuButtonItem(
-                                            label: 'Highlight',
-                                            onPressed: () {
-                                              _addHighlightFromSelection(
-                                                selectableRegionState,
-                                              );
-                                            },
-                                          ),
+                                          for (final option
+                                              in _highlightOptions)
+                                            ContextMenuButtonItem(
+                                              label: 'Highlight · ${option.label}',
+                                              onPressed: () {
+                                                _addHighlightFromSelection(
+                                                  selectableRegionState,
+                                                  option.key,
+                                                );
+                                              },
+                                            ),
                                         ...selectableRegionState
                                             .contextMenuButtonItems,
                                       ];
@@ -408,8 +623,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
                                             _controller.chapters[index];
                                         return _ChapterContent(
                                           chapter: chapter,
-                                          selectionNotifier:
-                                              _selectionNotifiers[index],
+                                          chapterIndex: index,
+                                          onSelectionChanged:
+                                              _onChapterSelectionChanged,
+                                          highlightRanges:
+                                              _highlightRangesForChapter(index),
                                           dividerColor: scheme.outlineVariant,
                                         );
                                       },
@@ -622,23 +840,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 }
 
-class _ChapterHeader extends StatelessWidget {
-  const _ChapterHeader({required this.title});
-
-  final String title;
-
-  @override
-  Widget build(BuildContext context) {
-    return Text(
-      title,
-      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-            fontWeight: FontWeight.w600,
-            letterSpacing: 0.2,
-          ),
-    );
-  }
-}
-
 class _ReaderErrorPanel extends StatelessWidget {
   const _ReaderErrorPanel({
     required this.message,
@@ -673,21 +874,120 @@ class _ReaderErrorPanel extends StatelessWidget {
   }
 }
 
-class _ChapterContent extends StatelessWidget {
+class _ChapterContent extends StatefulWidget {
   const _ChapterContent({
     required this.chapter,
-    required this.selectionNotifier,
+    required this.chapterIndex,
+    required this.onSelectionChanged,
+    required this.highlightRanges,
     required this.dividerColor,
   });
 
   final ReaderChapter chapter;
-  final SelectionListenerNotifier selectionNotifier;
+  final int chapterIndex;
+  final void Function(int, SelectedContentRange?) onSelectionChanged;
+  final List<_HighlightRange> highlightRanges;
   final Color dividerColor;
 
   @override
+  State<_ChapterContent> createState() => _ChapterContentState();
+}
+
+class _ChapterContentState extends State<_ChapterContent> {
+  late final SelectionListenerNotifier _selectionNotifier;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectionNotifier = SelectionListenerNotifier();
+    _selectionNotifier.addListener(_handleSelectionChanged);
+  }
+
+  @override
+  void dispose() {
+    _selectionNotifier.removeListener(_handleSelectionChanged);
+    _selectionNotifier.dispose();
+    super.dispose();
+  }
+
+  void _handleSelectionChanged() {
+    if (!_selectionNotifier.registered) {
+      return;
+    }
+    widget.onSelectionChanged(
+      widget.chapterIndex,
+      _selectionNotifier.selection.range,
+    );
+  }
+
+  List<TextSpan> _buildSpans(
+    String text,
+    int baseOffset,
+    TextStyle? style,
+  ) {
+    final ranges = widget.highlightRanges;
+    if (ranges.isEmpty || text.isEmpty) {
+      return [TextSpan(text: text, style: style)];
+    }
+    final spans = <TextSpan>[];
+    var cursor = 0;
+    for (final range in ranges) {
+      if (range.end <= baseOffset || range.start >= baseOffset + text.length) {
+        continue;
+      }
+      final localStart = (range.start - baseOffset).clamp(0, text.length) as int;
+      final localEnd = (range.end - baseOffset).clamp(0, text.length) as int;
+      if (localEnd <= cursor) {
+        continue;
+      }
+      if (localStart > cursor) {
+        spans.add(
+          TextSpan(text: text.substring(cursor, localStart), style: style),
+        );
+      }
+      final highlightStart = localStart < cursor ? cursor : localStart;
+      spans.add(
+        TextSpan(
+          text: text.substring(highlightStart, localEnd),
+          style: style?.copyWith(
+            backgroundColor: range.color.withAlpha(140),
+          ),
+        ),
+      );
+      cursor = localEnd;
+    }
+    if (cursor < text.length) {
+      spans.add(TextSpan(text: text.substring(cursor), style: style));
+    }
+    return spans;
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final titleStyle = Theme.of(context).textTheme.titleMedium?.copyWith(
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.2,
+        );
+    const bodyStyle = TextStyle(
+      fontSize: 17,
+      height: 1.65,
+      fontFamily: 'Georgia',
+      fontFamilyFallback: [
+        'Times New Roman',
+        'Times',
+        'serif',
+      ],
+    );
+    final titleText = widget.chapter.title;
+    final titleSpans = _buildSpans(titleText, 0, titleStyle);
+    final paragraphOffsets = <int>[];
+    var runningOffset = titleText.length;
+    for (final paragraph in widget.chapter.paragraphs) {
+      paragraphOffsets.add(runningOffset);
+      runningOffset += paragraph.length;
+    }
     return SelectionListener(
-      selectionNotifier: selectionNotifier,
+      selectionNotifier: _selectionNotifier,
       child: Padding(
         padding: const EdgeInsets.only(bottom: 12),
         child: Column(
@@ -695,36 +995,102 @@ class _ChapterContent extends StatelessWidget {
           children: [
             Padding(
               padding: const EdgeInsets.only(top: 6, bottom: 10),
-              child: _ChapterHeader(
-                title: chapter.title,
+              child: Text.rich(
+                TextSpan(children: titleSpans),
+                textAlign: TextAlign.left,
               ),
             ),
-            for (final paragraph in chapter.paragraphs)
+            for (var i = 0; i < widget.chapter.paragraphs.length; i += 1)
               Padding(
                 padding: const EdgeInsets.only(bottom: 12),
-                child: Text(
-                  paragraph,
-                  textAlign: TextAlign.justify,
-                  style: const TextStyle(
-                    fontSize: 17,
-                    height: 1.65,
-                    fontFamily: 'Georgia',
-                    fontFamilyFallback: [
-                      'Times New Roman',
-                      'Times',
-                      'serif',
-                    ],
+                child: Text.rich(
+                  TextSpan(
+                    children: _buildSpans(
+                      widget.chapter.paragraphs[i],
+                      paragraphOffsets[i],
+                      bodyStyle,
+                    ),
                   ),
+                  textAlign: TextAlign.justify,
+                  style: bodyStyle,
                 ),
               ),
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 12),
               child: Divider(
                 height: 32,
-                color: dividerColor,
+                color: widget.dividerColor,
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HighlightRange {
+  const _HighlightRange({
+    required this.start,
+    required this.end,
+    required this.color,
+  });
+
+  final int start;
+  final int end;
+  final Color color;
+}
+
+class _HighlightOption {
+  const _HighlightOption({
+    required this.key,
+    required this.label,
+    required this.color,
+  });
+
+  final String key;
+  final String label;
+  final Color color;
+}
+
+const List<_HighlightOption> _highlightOptions = [
+  _HighlightOption(
+    key: 'yellow',
+    label: 'Желтый',
+    color: Color(0xFFFFF59D),
+  ),
+  _HighlightOption(
+    key: 'green',
+    label: 'Зеленый',
+    color: Color(0xFFC8E6C9),
+  ),
+  _HighlightOption(
+    key: 'pink',
+    label: 'Розовый',
+    color: Color(0xFFF8BBD0),
+  ),
+  _HighlightOption(
+    key: 'blue',
+    label: 'Голубой',
+    color: Color(0xFFBBDEFB),
+  ),
+];
+
+class _HighlightSwatch extends StatelessWidget {
+  const _HighlightSwatch({required this.color});
+
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 16,
+      height: 16,
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+        border: Border.all(
+          color: Theme.of(context).colorScheme.outlineVariant,
         ),
       ),
     );
@@ -736,11 +1102,13 @@ class _ReaderHeader extends StatelessWidget {
     required this.title,
     required this.hasToc,
     required this.onTocTap,
+    required this.onHighlightsTap,
   });
 
   final String title;
   final bool hasToc;
   final VoidCallback onTocTap;
+  final VoidCallback onHighlightsTap;
 
   @override
   Widget build(BuildContext context) {
@@ -763,6 +1131,11 @@ class _ReaderHeader extends StatelessWidget {
           onPressed: hasToc ? onTocTap : null,
           key: const ValueKey('reader-toc-button-inline'),
           icon: Icon(Icons.list, color: scheme.primary),
+        ),
+        IconButton(
+          tooltip: 'Выделения',
+          onPressed: onHighlightsTap,
+          icon: Icon(Icons.highlight_outlined, color: scheme.primary),
         ),
       ],
     );

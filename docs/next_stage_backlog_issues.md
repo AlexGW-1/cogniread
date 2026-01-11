@@ -272,7 +272,7 @@
 
 ### Checklist
 - [x] Добавить контекстное меню на selection: `Highlight`.
-- [ ] Сохранять сущность Highlight:
+- [x] Сохранять сущность Highlight:
   - [x] `id` (uuid)
   - [x] `bookId`
   - [x] `anchor`

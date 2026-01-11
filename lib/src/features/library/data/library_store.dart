@@ -206,6 +206,7 @@ class Highlight {
     required this.id,
     required this.bookId,
     required this.anchor,
+    required this.endOffset,
     required this.excerpt,
     required this.color,
     required this.createdAt,
@@ -215,6 +216,7 @@ class Highlight {
   final String id;
   final String bookId;
   final String? anchor;
+  final int? endOffset;
   final String excerpt;
   final String color;
   final DateTime createdAt;
@@ -224,6 +226,7 @@ class Highlight {
         'id': id,
         'bookId': bookId,
         'anchor': anchor,
+        'endOffset': endOffset,
         'excerpt': excerpt,
         'color': color,
         'createdAt': createdAt.toIso8601String(),
@@ -235,6 +238,7 @@ class Highlight {
       id: map['id'] as String,
       bookId: map['bookId'] as String,
       anchor: map['anchor'] as String?,
+      endOffset: (map['endOffset'] as num?)?.toInt(),
       excerpt: map['excerpt'] as String? ?? '',
       color: map['color'] as String? ?? '',
       createdAt: DateTime.parse(map['createdAt'] as String),
@@ -503,6 +507,38 @@ class LibraryStore {
         lastOpenedAt: entry.lastOpenedAt,
         notes: entry.notes,
         highlights: [...entry.highlights, highlight],
+        bookmarks: entry.bookmarks,
+        tocOfficial: entry.tocOfficial,
+        tocGenerated: entry.tocGenerated,
+        tocMode: entry.tocMode,
+      ),
+    );
+  }
+
+  Future<void> removeHighlight(String id, String highlightId) async {
+    final entry = await getById(id);
+    if (entry == null) {
+      return;
+    }
+    final updatedHighlights =
+        entry.highlights.where((item) => item.id != highlightId).toList();
+    if (updatedHighlights.length == entry.highlights.length) {
+      return;
+    }
+    await upsert(
+      LibraryEntry(
+        id: entry.id,
+        title: entry.title,
+        author: entry.author,
+        localPath: entry.localPath,
+        addedAt: entry.addedAt,
+        fingerprint: entry.fingerprint,
+        sourcePath: entry.sourcePath,
+        readingPosition: entry.readingPosition,
+        progress: entry.progress,
+        lastOpenedAt: entry.lastOpenedAt,
+        notes: entry.notes,
+        highlights: updatedHighlights,
         bookmarks: entry.bookmarks,
         tocOfficial: entry.tocOfficial,
         tocGenerated: entry.tocGenerated,

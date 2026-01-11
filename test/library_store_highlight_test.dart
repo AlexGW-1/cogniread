@@ -76,6 +76,7 @@ void main() {
       id: 'highlight-1',
       bookId: entry.id,
       anchor: 'chapter|10',
+      endOffset: 22,
       excerpt: 'Some text',
       color: 'yellow',
       createdAt: DateTime(2026, 1, 11, 10),
@@ -91,6 +92,7 @@ void main() {
     expect(stored.id, highlight.id);
     expect(stored.bookId, highlight.bookId);
     expect(stored.anchor, highlight.anchor);
+    expect(stored.endOffset, highlight.endOffset);
     expect(stored.excerpt, highlight.excerpt);
     expect(stored.color, highlight.color);
     expect(stored.createdAt, highlight.createdAt);

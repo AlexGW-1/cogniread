@@ -45,6 +45,7 @@ class ReaderController extends ChangeNotifier {
   String? _title;
   ReadingPosition? _initialPosition;
   List<ReaderChapter> _chapters = const <ReaderChapter>[];
+  List<Highlight> _highlights = const <Highlight>[];
   String? _activeBookId;
   TocMode _tocMode = TocMode.official;
   List<_TocEntry> _officialTocEntries = const <_TocEntry>[];
@@ -58,6 +59,7 @@ class ReaderController extends ChangeNotifier {
   String? get title => _title;
   ReadingPosition? get initialPosition => _initialPosition;
   List<ReaderChapter> get chapters => _chapters;
+  List<Highlight> get highlights => List<Highlight>.unmodifiable(_highlights);
   TocMode get tocMode => _tocMode;
   bool get hasGeneratedToc => _tocGeneratedNodes.isNotEmpty;
 
@@ -81,6 +83,7 @@ class ReaderController extends ChangeNotifier {
       _tocMode = entry.tocMode;
       _tocOfficialNodes = entry.tocOfficial;
       _tocGeneratedNodes = entry.tocGenerated;
+      _highlights = entry.highlights;
 
       final file = File(entry.localPath);
       if (!await file.exists()) {
@@ -188,13 +191,27 @@ class ReaderController extends ChangeNotifier {
       id: _makeId(),
       bookId: bookId,
       anchor: anchor,
+      endOffset: endOffset,
       excerpt: excerpt.trim(),
       color: color,
       createdAt: now,
       updatedAt: now,
     );
     await _store.addHighlight(bookId, highlight);
+    _highlights = [..._highlights, highlight];
+    notifyListeners();
     return true;
+  }
+
+  Future<void> removeHighlight(String highlightId) async {
+    final bookId = _activeBookId;
+    if (bookId == null) {
+      return;
+    }
+    await _store.init();
+    await _store.removeHighlight(bookId, highlightId);
+    _highlights = _highlights.where((item) => item.id != highlightId).toList();
+    notifyListeners();
   }
 
   void _setLoading() {

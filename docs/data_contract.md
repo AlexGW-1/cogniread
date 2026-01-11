@@ -56,6 +56,7 @@
 | id | String | yes | Уникальный ID заметки. |
 | bookId | String | yes | ID книги. |
 | anchor | String | no | Якорь позиции. |
+| endOffset | int | no | Конечный offset выделения. |
 | excerpt | String | yes | Выдержка из текста. |
 | noteText | String | yes | Текст заметки. |
 | createdAt | String (ISO-8601) | yes | Дата создания. |
