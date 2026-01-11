@@ -18,11 +18,15 @@ class ReaderScreen extends StatefulWidget {
     required this.bookId,
     this.embedded = false,
     this.persistReadingPosition = true,
+    this.initialNoteId,
+    this.initialHighlightId,
   });
 
   final String bookId;
   final bool embedded;
   final bool persistReadingPosition;
+  final String? initialNoteId;
+  final String? initialHighlightId;
 
   @override
   State<ReaderScreen> createState() => _ReaderScreenState();
@@ -44,14 +48,23 @@ class _ReaderScreenState extends State<ReaderScreen> {
   Timer? _searchHighlightTimer;
   bool _didRestore = false;
   int _restoreAttempts = 0;
+  int _initialJumpAttempts = 0;
   double _viewportExtent = 0;
   double? _textWidth;
   _HighlightRange? _searchHighlightRange;
   int? _searchHighlightChapterIndex;
+  String? _pendingInitialNoteId;
+  String? _pendingInitialHighlightId;
+  bool _initialJumpDone = false;
+  bool _skipRestore = false;
 
   @override
   void initState() {
     super.initState();
+    _pendingInitialNoteId = widget.initialNoteId;
+    _pendingInitialHighlightId = widget.initialHighlightId;
+    _skipRestore =
+        widget.initialNoteId != null || widget.initialHighlightId != null;
     _controller = ReaderController();
     _controllerListener = () {
       if (!mounted) {
@@ -61,6 +74,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
         _initialPosition ??= _controller.initialPosition;
       });
       _scheduleRestorePosition();
+      _scheduleInitialMarkJump();
     };
     _controller.addListener(_controllerListener);
     if (widget.persistReadingPosition) {
@@ -78,10 +92,25 @@ class _ReaderScreenState extends State<ReaderScreen> {
       _initialPosition = null;
       _didRestore = false;
       _restoreAttempts = 0;
+      _initialJumpAttempts = 0;
+      _initialJumpDone = false;
       _selectionChapterIndex = null;
       _selectionRange = null;
       _selectionText = null;
+      _pendingInitialNoteId = widget.initialNoteId;
+      _pendingInitialHighlightId = widget.initialHighlightId;
+      _skipRestore =
+          widget.initialNoteId != null || widget.initialHighlightId != null;
       _controller.load(widget.bookId);
+    } else if (widget.initialNoteId != oldWidget.initialNoteId ||
+        widget.initialHighlightId != oldWidget.initialHighlightId) {
+      _pendingInitialNoteId = widget.initialNoteId;
+      _pendingInitialHighlightId = widget.initialHighlightId;
+      _initialJumpAttempts = 0;
+      _initialJumpDone = false;
+      _skipRestore =
+          widget.initialNoteId != null || widget.initialHighlightId != null;
+      _scheduleInitialMarkJump();
     }
   }
 
@@ -112,6 +141,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   void _scheduleRestorePosition() {
+    if (_skipRestore) {
+      return;
+    }
     if (_didRestore || _initialPosition == null) {
       return;
     }
@@ -166,6 +198,83 @@ class _ReaderScreenState extends State<ReaderScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _restoreReadingPosition();
     });
+  }
+
+  void _scheduleInitialMarkJump() {
+    if (_initialJumpDone ||
+        (_pendingInitialNoteId == null && _pendingInitialHighlightId == null) ||
+        _controller.loading ||
+        _controller.chapters.isEmpty) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _jumpToInitialMark();
+    });
+  }
+
+  void _jumpToInitialMark() {
+    if (_initialJumpDone) {
+      return;
+    }
+    if (!_itemScrollController.isAttached) {
+      _retryInitialMarkJump();
+      return;
+    }
+    final noteId = _pendingInitialNoteId;
+    final highlightId = _pendingInitialHighlightId;
+    _pendingInitialNoteId = null;
+    _pendingInitialHighlightId = null;
+    var jumped = false;
+    if (noteId != null) {
+      final note = _findNoteById(noteId);
+      if (note != null) {
+        _scrollToNote(note);
+        jumped = true;
+      }
+    }
+    if (!jumped && highlightId != null) {
+      final highlight = _findHighlightById(highlightId);
+      if (highlight != null) {
+        _scrollToHighlight(highlight);
+        jumped = true;
+      }
+    }
+    if (!jumped) {
+      _skipRestore = false;
+      _scheduleRestorePosition();
+    }
+    _initialJumpDone = true;
+  }
+
+  void _retryInitialMarkJump() {
+    _initialJumpAttempts += 1;
+    if (_initialJumpAttempts > 5) {
+      _pendingInitialNoteId = null;
+      _pendingInitialHighlightId = null;
+      _initialJumpDone = true;
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _jumpToInitialMark();
+    });
+  }
+
+  Note? _findNoteById(String id) {
+    for (final note in _controller.notes) {
+      if (note.id == id) {
+        return note;
+      }
+    }
+    return null;
+  }
+
+  Highlight? _findHighlightById(String id) {
+    for (final highlight in _controller.highlights) {
+      if (highlight.id == id) {
+        return highlight;
+      }
+    }
+    return null;
   }
 
   int? _resolveChapterIndex(ReadingPosition position) {

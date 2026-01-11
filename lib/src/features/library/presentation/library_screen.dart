@@ -25,9 +25,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
   late final LibraryController _controller;
   late final VoidCallback _controllerListener;
   late final TextEditingController _searchController;
+  late final TextEditingController _globalSearchController;
   String? _selectedBookId;
   String? _lastNotice;
   bool _showSearch = false;
+  String? _pendingNoteId;
+  String? _pendingHighlightId;
 
   @override
   void initState() {
@@ -47,6 +50,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _controller.addListener(_controllerListener);
     _controller.init();
     _searchController = TextEditingController(text: _controller.query);
+    _globalSearchController = TextEditingController(
+      text: _controller.globalSearchQuery,
+    );
   }
 
   @override
@@ -54,6 +60,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _controller.removeListener(_controllerListener);
     _controller.dispose();
     _searchController.dispose();
+    _globalSearchController.dispose();
     super.dispose();
   }
 
@@ -72,7 +79,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
     await _controller.importEpub();
   }
 
-  Future<void> _open(String id) async {
+  Future<void> _open(
+    String id, {
+    String? initialNoteId,
+    String? initialHighlightId,
+  }) async {
     final book = await _controller.prepareOpen(id);
     if (book == null) {
       return;
@@ -84,12 +95,18 @@ class _LibraryScreenState extends State<LibraryScreen> {
     if (isDesktop) {
       setState(() {
         _selectedBookId = book.id;
+        _pendingNoteId = initialNoteId;
+        _pendingHighlightId = initialHighlightId;
       });
       return;
     }
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => ReaderScreen(bookId: book.id),
+        builder: (_) => ReaderScreen(
+          bookId: book.id,
+          initialNoteId: initialNoteId,
+          initialHighlightId: initialHighlightId,
+        ),
       ),
     );
   }
@@ -185,6 +202,108 @@ class _LibraryScreenState extends State<LibraryScreen> {
     });
   }
 
+  void _showGlobalSearch() {
+    _globalSearchController.text = _controller.globalSearchQuery;
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) {
+        return AnimatedBuilder(
+          animation: _controller,
+          builder: (context, _) {
+            final query = _controller.globalSearchQuery.trim();
+            final searching = _controller.globalSearching;
+            final results = _controller.globalSearchResults;
+            return SafeArea(
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 16,
+                  right: 16,
+                  top: 12,
+                  bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
+                ),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        const Expanded(
+                          child: Text(
+                            'Глобальный поиск',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Закрыть',
+                          onPressed: () => Navigator.of(context).pop(),
+                          icon: const Icon(Icons.close),
+                        ),
+                      ],
+                    ),
+                    TextField(
+                      controller: _globalSearchController,
+                      onChanged: _controller.setGlobalSearchQuery,
+                      autofocus: true,
+                      decoration: const InputDecoration(
+                        hintText: 'Книги, заметки, выделения',
+                        prefixIcon: Icon(Icons.manage_search),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    if (searching) const LinearProgressIndicator(),
+                    const SizedBox(height: 12),
+                    Expanded(
+                      child: query.isEmpty
+                          ? const Center(
+                              child: Text(
+                                'Введите запрос для поиска.',
+                              ),
+                            )
+                          : results.isEmpty && !searching
+                              ? const Center(
+                                  child: Text('Ничего не найдено.'),
+                                )
+                              : ListView.separated(
+                                  itemCount: results.length,
+                                  separatorBuilder: (_, __) =>
+                                      const Divider(height: 1),
+                                  itemBuilder: (context, index) {
+                                    final result = results[index];
+                                    return _SearchResultTile(
+                                      result: result,
+                                      onTap: () => _openSearchResult(result),
+                                    );
+                                  },
+                                ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _openSearchResult(LibrarySearchResult result) async {
+    Navigator.of(context).pop();
+    if (result.type == LibrarySearchResultType.book) {
+      await _open(result.bookId);
+      return;
+    }
+    await _open(
+      result.bookId,
+      initialNoteId:
+          result.type == LibrarySearchResultType.note ? result.markId : null,
+      initialHighlightId: result.type == LibrarySearchResultType.highlight
+          ? result.markId
+          : null,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDesktop = MediaQuery.of(context).size.width >= 1000;
@@ -205,6 +324,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
             tooltip: 'Очистить библиотеку',
             onPressed: _controller.books.isEmpty ? null : _clearLibrary,
             icon: const Icon(Icons.delete_outline),
+          ),
+          IconButton(
+            tooltip: 'Глобальный поиск',
+            onPressed: _controller.books.isEmpty ? null : _showGlobalSearch,
+            icon: const Icon(Icons.manage_search),
           ),
           IconButton(
             tooltip: _showSearch ? 'Скрыть поиск' : 'Поиск',
@@ -320,7 +444,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
             children: [
               NavigationRail(
                 selectedIndex: 0,
-                onDestinationSelected: (_) {
+                onDestinationSelected: (index) {
+                  if (index == 0) {
+                    return;
+                  }
+                  if (index == 1) {
+                    _showGlobalSearch();
+                    return;
+                  }
                   _showError('Этот раздел появится позже');
                 },
                 labelType: NavigationRailLabelType.all,
@@ -378,6 +509,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
                             _controller.setQuery(value);
                           },
                           onToggleSearch: _toggleSearch,
+                          onGlobalSearch:
+                              _controller.books.isEmpty ? null : _showGlobalSearch,
                           onClearLibrary:
                               _controller.books.isEmpty ? null : _clearLibrary,
                           onImport: _importEpub,
@@ -396,6 +529,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
                         flex: 7,
                         child: _ReaderPanel(
                           bookId: _selectedBookId,
+                          initialNoteId: _pendingNoteId,
+                          initialHighlightId: _pendingHighlightId,
                         ),
                       ),
                     ],
@@ -435,6 +570,7 @@ class _LibraryPanel extends StatelessWidget {
     required this.searchController,
     required this.onQueryChanged,
     required this.onToggleSearch,
+    required this.onGlobalSearch,
     required this.onClearLibrary,
     required this.onImport,
     required this.onOpen,
@@ -450,6 +586,7 @@ class _LibraryPanel extends StatelessWidget {
   final TextEditingController searchController;
   final ValueChanged<String> onQueryChanged;
   final VoidCallback onToggleSearch;
+  final VoidCallback? onGlobalSearch;
   final VoidCallback? onClearLibrary;
   final VoidCallback onImport;
   final ValueChanged<int> onOpen;
@@ -493,6 +630,12 @@ class _LibraryPanel extends StatelessWidget {
                 label: const Text('Очистить'),
               ),
               const SizedBox(width: 8),
+              IconButton(
+                tooltip: 'Глобальный поиск',
+                onPressed: onGlobalSearch,
+                icon: const Icon(Icons.manage_search),
+              ),
+              const SizedBox(width: 4),
               IconButton(
                 tooltip: showSearch ? 'Скрыть поиск' : 'Поиск',
                 onPressed: onToggleSearch,
@@ -752,9 +895,15 @@ class _LibraryEmpty extends StatelessWidget {
 }
 
 class _ReaderPanel extends StatelessWidget {
-  const _ReaderPanel({required this.bookId});
+  const _ReaderPanel({
+    required this.bookId,
+    required this.initialNoteId,
+    required this.initialHighlightId,
+  });
 
   final String? bookId;
+  final String? initialNoteId;
+  final String? initialHighlightId;
 
   @override
   Widget build(BuildContext context) {
@@ -775,7 +924,65 @@ class _ReaderPanel extends StatelessWidget {
         ),
       );
     }
-    return ReaderScreen(bookId: bookId!, embedded: true);
+    return ReaderScreen(
+      bookId: bookId!,
+      embedded: true,
+      initialNoteId: initialNoteId,
+      initialHighlightId: initialHighlightId,
+    );
+  }
+}
+
+class _SearchResultTile extends StatelessWidget {
+  const _SearchResultTile({
+    required this.result,
+    required this.onTap,
+  });
+
+  final LibrarySearchResult result;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final label = result.sourceLabel;
+    final bookSubtitle = [
+      if (result.bookAuthor != null && result.bookAuthor!.trim().isNotEmpty)
+        result.bookAuthor,
+      label,
+    ].whereType<String>().join(' · ');
+    return ListTile(
+      leading: Icon(
+        _iconForResult(result.type),
+        color: scheme.primary,
+      ),
+      title: Text(
+        result.type == LibrarySearchResultType.book
+            ? result.bookTitle
+            : result.snippet,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      ),
+      subtitle: Text(
+        result.type == LibrarySearchResultType.book
+            ? bookSubtitle
+            : '${result.bookTitle} · $label',
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      ),
+      onTap: onTap,
+    );
+  }
+
+  IconData _iconForResult(LibrarySearchResultType type) {
+    switch (type) {
+      case LibrarySearchResultType.book:
+        return Icons.menu_book_outlined;
+      case LibrarySearchResultType.note:
+        return Icons.edit_note_outlined;
+      case LibrarySearchResultType.highlight:
+        return Icons.highlight_outlined;
+    }
   }
 }
 
