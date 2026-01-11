@@ -1350,16 +1350,21 @@ String? _extractFb2XmlFromArchive(Archive archive) {
 
 _BookMetadata _extractFb2Metadata(String xml, String fallbackTitle) {
   final doc = XmlDocument.parse(xml);
+  final titleInfo = doc.findAllElements('title-info').firstWhere(
+        (_) => true,
+        orElse: () => XmlElement(XmlName('title-info')),
+      );
+  final scope = titleInfo.name.local == 'title-info' ? titleInfo : doc;
   final title = _firstNonEmpty(
-        doc.findAllElements('book-title').map((element) => element.innerText),
+        scope.findAllElements('book-title').map((element) => element.innerText),
       ) ??
       fallbackTitle;
-  final author = _extractFb2Author(doc);
+  final author = _extractFb2Author(scope);
   return _BookMetadata(title: title, author: author);
 }
 
-String? _extractFb2Author(XmlDocument doc) {
-  final author = doc.findAllElements('author').firstWhere(
+String? _extractFb2Author(XmlNode node) {
+  final author = node.findAllElements('author').firstWhere(
         (_) => true,
         orElse: () => XmlElement(XmlName('author')),
       );
