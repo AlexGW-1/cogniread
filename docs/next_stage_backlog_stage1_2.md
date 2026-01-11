@@ -145,13 +145,13 @@
 `ReaderController._extractChapters` сейчас всегда пытается `ZipDecoder().decodeBytes(...)` и при ошибке бросает «Ошибка парсинга EPUB». Для plain `.fb2` это гарантированная ошибка.
 
 ### Checklist
-- [ ] В `_extractChapters`: если zip‑декод не удался — пробовать XML‑парсинг:
-  - [ ] попытка UTF‑8,
-  - [ ] fallback по эвристике (например, latin1/Windows‑1251) — достаточно для MVP.
-  - [ ] `XmlDocument.parse(decoded)`.
-- [ ] Сконструировать главы через существующий `_chaptersFromFb2(...)`.
-- [ ] Сконструировать TOC для FB2 (минимум generated) и сохранить в `LibraryEntry`.
-- [ ] Сообщения об ошибках: различать «битый zip» и «битый xml».
+- [x] В `_extractChapters`: если zip‑декод не удался — пробовать XML‑парсинг:
+  - [x] попытка UTF‑8,
+  - [x] fallback по эвристике (например, latin1/Windows‑1251) — достаточно для MVP.
+  - [x] `XmlDocument.parse(decoded)`.
+- [x] Сконструировать главы через существующий `_chaptersFromFb2(...)`.
+- [x] Сконструировать TOC для FB2 (минимум generated) и сохранить в `LibraryEntry`.
+- [x] Сообщения об ошибках: различать «битый zip» и «битый xml».
 
 ### Acceptance Criteria
 - Plain `.fb2` открывается и отображается.
