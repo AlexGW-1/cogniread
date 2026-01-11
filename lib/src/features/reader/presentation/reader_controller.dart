@@ -44,6 +44,20 @@ class SearchResult {
   final String snippet;
 }
 
+enum ReaderLoadState { loading, content, error }
+
+enum _ReaderLoadErrorType { timeout, parseFailed, fileAccess, unknown }
+
+class _ReaderLoadException implements Exception {
+  const _ReaderLoadException(this.type, {this.details});
+
+  final _ReaderLoadErrorType type;
+  final String? details;
+
+  @override
+  String toString() => 'ReaderLoadException($type, $details)';
+}
+
 class ReaderController extends ChangeNotifier {
   ReaderController({LibraryStore? store, bool? perfLogsEnabled})
       : _store = store ?? LibraryStore(),
@@ -59,6 +73,7 @@ class ReaderController extends ChangeNotifier {
   static final Map<String, TocMode> _cacheMode = <String, TocMode>{};
 
   bool _loading = true;
+  ReaderLoadState _state = ReaderLoadState.loading;
   String? _error;
   String? _title;
   ReadingPosition? _initialPosition;
@@ -81,6 +96,7 @@ class ReaderController extends ChangeNotifier {
   Archive? _lastArchive;
 
   bool get loading => _loading;
+  ReaderLoadState get state => _state;
   String? get error => _error;
   String? get title => _title;
   ReadingPosition? get initialPosition => _initialPosition;
@@ -105,9 +121,7 @@ class ReaderController extends ChangeNotifier {
       await _store.init();
       final entry = await _store.getById(bookId);
       if (entry == null) {
-        _error = 'Книга не найдена';
-        _loading = false;
-        notifyListeners();
+        _setError('Книга не найдена');
         return;
       }
 
@@ -123,9 +137,7 @@ class ReaderController extends ChangeNotifier {
 
       final file = File(entry.localPath);
       if (!await file.exists()) {
-        _error = 'Файл книги недоступен';
-        _loading = false;
-        notifyListeners();
+        _setError('Файл книги недоступен');
         return;
       }
 
@@ -137,18 +149,22 @@ class ReaderController extends ChangeNotifier {
         _logCache('Reader cache hit ($bookId, chapters=${cached.length})');
         _touchCache(bookId);
         _chapters = cached;
-        _loading = false;
         totalWatch.stop();
         _logPerf(
           'Reader perf: time to content ${totalWatch.elapsedMilliseconds}ms',
         );
-        notifyListeners();
+        _setContent();
         return;
       }
       _logCache('Reader cache miss ($bookId)');
 
       final readWatch = Stopwatch()..start();
-      final bytes = await file.readAsBytes();
+      final bytes = await file.readAsBytes().catchError((error) {
+        if (error is FileSystemException) {
+          throw const _ReaderLoadException(_ReaderLoadErrorType.fileAccess);
+        }
+        throw error;
+      });
       readWatch.stop();
       _logPerf(
         'Reader perf: read bytes ${readWatch.elapsedMilliseconds}ms'
@@ -156,10 +172,12 @@ class ReaderController extends ChangeNotifier {
       );
       Log.d('Reader loading file: ${entry.localPath} (${bytes.length} bytes)');
       final extractWatch = Stopwatch()..start();
-      final chapterSources = await _extractChapters(bytes, entry)
-          .timeout(const Duration(seconds: 8), onTimeout: () {
-        throw Exception('EPUB parse timeout');
-      });
+      final chapterSources = await _extractChapters(bytes, entry).timeout(
+        const Duration(seconds: 8),
+        onTimeout: () {
+          throw const _ReaderLoadException(_ReaderLoadErrorType.timeout);
+        },
+      );
       extractWatch.stop();
       _logPerf(
         'Reader perf: extract chapters ${extractWatch.elapsedMilliseconds}ms'
@@ -176,17 +194,14 @@ class ReaderController extends ChangeNotifier {
 
       _chapters = chapters;
       _storeCache(bookId, chapters);
-      _loading = false;
       totalWatch.stop();
       _logPerf(
         'Reader perf: time to content ${totalWatch.elapsedMilliseconds}ms',
       );
-      notifyListeners();
+      _setContent();
     } catch (e) {
       Log.d('Failed to load book: $e');
-      _error = 'Не удалось открыть книгу: $e';
-      _loading = false;
-      notifyListeners();
+      _setError(_userMessageForError(e));
     }
   }
 
@@ -457,8 +472,42 @@ class ReaderController extends ChangeNotifier {
 
   void _setLoading() {
     _loading = true;
+    _state = ReaderLoadState.loading;
     _error = null;
     notifyListeners();
+  }
+
+  void _setContent() {
+    _loading = false;
+    _state = ReaderLoadState.content;
+    _error = null;
+    notifyListeners();
+  }
+
+  void _setError(String message) {
+    _loading = false;
+    _state = ReaderLoadState.error;
+    _error = message;
+    notifyListeners();
+  }
+
+  String _userMessageForError(Object error) {
+    if (error is _ReaderLoadException) {
+      switch (error.type) {
+        case _ReaderLoadErrorType.timeout:
+          return 'Превышено время обработки книги. Попробуйте ещё раз.';
+        case _ReaderLoadErrorType.parseFailed:
+          return 'Файл книги поврежден или имеет неподдерживаемый формат.';
+        case _ReaderLoadErrorType.fileAccess:
+          return 'Нет доступа к файлу книги.';
+        case _ReaderLoadErrorType.unknown:
+          return 'Не удалось открыть книгу.';
+      }
+    }
+    if (error is FileSystemException) {
+      return 'Нет доступа к файлу книги.';
+    }
+    return 'Не удалось открыть книгу: $error';
   }
 
   void _logPerf(String message) {
@@ -617,9 +666,18 @@ class ReaderController extends ChangeNotifier {
         return chapters;
       }
       throw Exception('Не удалось извлечь главы');
+    } on ArchiveException catch (e) {
+      Log.d('Failed to decode EPUB archive: $e');
+      throw const _ReaderLoadException(_ReaderLoadErrorType.parseFailed);
+    } on FormatException catch (e) {
+      Log.d('Failed to decode EPUB archive: $e');
+      throw const _ReaderLoadException(_ReaderLoadErrorType.parseFailed);
     } catch (e) {
       Log.d('Failed to decode EPUB archive: $e');
-      throw Exception('Ошибка парсинга EPUB');
+      if (e is _ReaderLoadException) {
+        rethrow;
+      }
+      throw const _ReaderLoadException(_ReaderLoadErrorType.parseFailed);
     }
   }
 
