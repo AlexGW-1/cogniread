@@ -298,6 +298,7 @@
 **Labels:** `epic:active-reading` `type:feature` `prio:P0` `size:S`  
 **Depends on:** Issue 10  
 **Suggested branch:** `feature/notes-create`
+**Status:** Done
 
 ### Context
 Пользователь выделяет текст → добавляет заметку → текст заметки сохраняется.
