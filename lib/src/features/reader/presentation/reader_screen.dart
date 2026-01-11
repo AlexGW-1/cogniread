@@ -183,8 +183,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
       return;
     }
     final text = _chapterPlainText(index);
-    final start = range.startOffset.clamp(0, text.length) as int;
-    final end = range.endOffset.clamp(0, text.length) as int;
+    final start = range.startOffset.clamp(0, text.length).toInt();
+    final end = range.endOffset.clamp(0, text.length).toInt();
     if (start >= end) {
       _clearSelectionSnapshot();
       return;
@@ -554,6 +554,43 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
+  void _showPositioningError(String message) {
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
+  Future<void> _saveBookmark() async {
+    final position = _computeReadingPosition();
+    if (position == null) {
+      _showPositioningError('Не удалось создать закладку');
+      return;
+    }
+    final saved = await _controller.saveBookmark(position);
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          saved ? 'Закладка сохранена' : 'Не удалось создать закладку',
+        ),
+      ),
+    );
+  }
+
+  void _jumpToBookmark() {
+    final bookmark = _controller.bookmark;
+    if (bookmark == null) {
+      _showPositioningError('Закладка не установлена');
+      return;
+    }
+    _scrollToBookmark(bookmark);
+  }
+
   int? _chapterIndexForHighlight(Highlight highlight) {
     final anchor = Anchor.parse(highlight.anchor);
     if (anchor == null) {
@@ -585,65 +622,123 @@ class _ReaderScreenState extends State<ReaderScreen> {
   void _scrollToHighlight(Highlight highlight) {
     final anchor = Anchor.parse(highlight.anchor);
     if (anchor == null) {
+      _showPositioningError('Не удалось перейти к выделению');
       return;
     }
     final chapterIndex = _chapterIndexForHighlight(highlight);
     if (chapterIndex == null) {
+      _showPositioningError('Не удалось открыть главу с выделением');
       return;
     }
     final offsetWithin = _estimateHighlightScrollOffset(
       highlight,
       chapterIndex,
     );
-    if (offsetWithin == null || offsetWithin <= 0) {
+    if (offsetWithin == null || offsetWithin < 0) {
+      _showPositioningError('Не удалось точно позиционировать выделение');
       return;
     }
-    if (!_itemScrollController.isAttached) {
-      return;
-    }
-    _itemScrollController.jumpTo(index: chapterIndex);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_itemScrollController.isAttached) {
-        return;
-      }
-      _scrollOffsetController.animateScroll(
-        offset: offsetWithin,
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeInOut,
-      );
-    });
+    _scrollToChapterOffset(
+      chapterIndex,
+      offsetWithin,
+      'Не удалось перейти к выделению',
+    );
   }
 
   void _scrollToNote(Note note) {
     final anchor = Anchor.parse(note.anchor);
     if (anchor == null) {
+      _showPositioningError('Не удалось перейти к заметке');
       return;
     }
     final chapterIndex = _chapterIndexForNote(note);
     if (chapterIndex == null) {
+      _showPositioningError('Не удалось открыть главу с заметкой');
       return;
     }
     final offsetWithin = _estimateAnchorScrollOffset(
       chapterIndex,
       anchor.offset,
     );
-    if (offsetWithin == null || offsetWithin <= 0) {
+    if (offsetWithin == null || offsetWithin < 0) {
+      _showPositioningError('Не удалось точно позиционировать заметку');
       return;
     }
+    _scrollToChapterOffset(
+      chapterIndex,
+      offsetWithin,
+      'Не удалось перейти к заметке',
+    );
+  }
+
+  void _scrollToBookmark(Bookmark bookmark) {
+    final anchor = Anchor.parse(bookmark.anchor);
+    if (anchor == null) {
+      _showPositioningError('Не удалось перейти к закладке');
+      return;
+    }
+    final chapterHref = anchor.chapterHref;
+    final chapterIndex = chapterHref.startsWith('index:')
+        ? int.tryParse(chapterHref.substring('index:'.length))
+        : _controller.chapters
+            .indexWhere((chapter) => chapter.href == chapterHref);
+    if (chapterIndex == null || chapterIndex < 0) {
+      _showPositioningError('Не удалось открыть главу с закладкой');
+      return;
+    }
+    final offsetWithin = anchor.offset.toDouble();
+    if (offsetWithin < 0) {
+      _showPositioningError('Не удалось точно позиционировать закладку');
+      return;
+    }
+    _scrollToChapterOffset(
+      chapterIndex,
+      offsetWithin,
+      'Не удалось перейти к закладке',
+    );
+  }
+
+  void _scrollToChapterOffset(
+    int chapterIndex,
+    double targetOffset,
+    String errorMessage,
+  ) {
     if (!_itemScrollController.isAttached) {
+      _showPositioningError('Список глав ещё не готов');
       return;
     }
     _itemScrollController.jumpTo(index: chapterIndex);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_itemScrollController.isAttached) {
+        _showPositioningError(errorMessage);
+        return;
+      }
+      final currentOffset = _currentChapterOffset(chapterIndex) ?? 0;
+      final delta = targetOffset - currentOffset;
+      if (delta.abs() < 1) {
         return;
       }
       _scrollOffsetController.animateScroll(
-        offset: offsetWithin,
+        offset: delta,
         duration: const Duration(milliseconds: 220),
         curve: Curves.easeInOut,
       );
     });
+  }
+
+  double? _currentChapterOffset(int chapterIndex) {
+    final extent = _viewportExtent;
+    if (extent <= 0) {
+      return null;
+    }
+    final positions = _itemPositionsListener.itemPositions.value;
+    for (final position in positions) {
+      if (position.index == chapterIndex) {
+        final raw = -position.itemLeadingEdge * extent;
+        return raw < 0 ? 0 : raw;
+      }
+    }
+    return null;
   }
 
   List<_MarkEntry> _markEntries(_MarkFilter filter) {
@@ -719,10 +814,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
     final titleText = chapter.title;
     if (offset < titleText.length) {
-      final titleHeight = _measureTextHeight(titleText, titleStyle, textWidth);
-      final caretOffset =
-          _measureCaretOffset(titleText, titleStyle, textWidth, offset);
-      return 6 + caretOffset; // top padding
+    final caretOffset =
+        _measureCaretOffset(titleText, titleStyle, textWidth, offset);
+    return 6 + caretOffset; // top padding
     }
     var remaining = offset - titleText.length;
     var accumulated = 6 +
@@ -760,7 +854,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     double width,
     int offset,
   ) {
-    final clamped = offset.clamp(0, text.length) as int;
+    final clamped = offset.clamp(0, text.length).toInt();
     final painter = TextPainter(
       text: TextSpan(text: text, style: style),
       textDirection: TextDirection.ltr,
@@ -876,6 +970,17 @@ class _ReaderScreenState extends State<ReaderScreen> {
         title: Text(_controller.title ?? 'Reader'),
         actions: [
           IconButton(
+            tooltip: 'Сохранить закладку',
+            onPressed: _saveBookmark,
+            icon: const Icon(Icons.bookmark_add_outlined),
+          ),
+          IconButton(
+            tooltip: 'Перейти к закладке',
+            onPressed:
+                _controller.bookmark == null ? null : _jumpToBookmark,
+            icon: const Icon(Icons.bookmark),
+          ),
+          IconButton(
             tooltip: 'Выделения',
             onPressed: _showHighlights,
             icon: const Icon(Icons.highlight_outlined),
@@ -943,10 +1048,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
                             _ReaderHeader(
                               title: _controller.title ?? 'Reader',
                               hasToc: hasToc,
+                              hasBookmark: _controller.bookmark != null,
                               onTocTap: _showToc,
                               onHighlightsTap: _showHighlights,
                               onNotesTap: _showNotes,
                               onMarksTap: _showNotesHighlights,
+                              onBookmarkSave: _saveBookmark,
+                              onBookmarkJump: _jumpToBookmark,
                             ),
                             const SizedBox(height: 16),
                             Expanded(
@@ -1343,8 +1451,9 @@ class _ChapterContentState extends State<_ChapterContent> {
       if (range.end <= baseOffset || range.start >= baseOffset + text.length) {
         continue;
       }
-      final localStart = (range.start - baseOffset).clamp(0, text.length) as int;
-      final localEnd = (range.end - baseOffset).clamp(0, text.length) as int;
+      final localStart =
+          (range.start - baseOffset).clamp(0, text.length).toInt();
+      final localEnd = (range.end - baseOffset).clamp(0, text.length).toInt();
       if (localEnd <= cursor) {
         continue;
       }
@@ -1509,18 +1618,24 @@ class _ReaderHeader extends StatelessWidget {
   const _ReaderHeader({
     required this.title,
     required this.hasToc,
+    required this.hasBookmark,
     required this.onTocTap,
     required this.onHighlightsTap,
     required this.onNotesTap,
     required this.onMarksTap,
+    required this.onBookmarkSave,
+    required this.onBookmarkJump,
   });
 
   final String title;
   final bool hasToc;
+  final bool hasBookmark;
   final VoidCallback onTocTap;
   final VoidCallback onHighlightsTap;
   final VoidCallback onNotesTap;
   final VoidCallback onMarksTap;
+  final VoidCallback onBookmarkSave;
+  final VoidCallback onBookmarkJump;
 
   @override
   Widget build(BuildContext context) {
@@ -1543,6 +1658,16 @@ class _ReaderHeader extends StatelessWidget {
           onPressed: hasToc ? onTocTap : null,
           key: const ValueKey('reader-toc-button-inline'),
           icon: Icon(Icons.list, color: scheme.primary),
+        ),
+        IconButton(
+          tooltip: 'Сохранить закладку',
+          onPressed: onBookmarkSave,
+          icon: Icon(Icons.bookmark_add_outlined, color: scheme.primary),
+        ),
+        IconButton(
+          tooltip: 'Перейти к закладке',
+          onPressed: hasBookmark ? onBookmarkJump : null,
+          icon: Icon(Icons.bookmark, color: scheme.primary),
         ),
         IconButton(
           tooltip: 'Выделения',

@@ -625,4 +625,32 @@ class LibraryStore {
       ),
     );
   }
+
+  Future<void> setBookmark(String id, Bookmark bookmark) async {
+    final entry = await getById(id);
+    if (entry == null) {
+      return;
+    }
+    await upsert(
+      LibraryEntry(
+        id: entry.id,
+        title: entry.title,
+        author: entry.author,
+        localPath: entry.localPath,
+        coverPath: entry.coverPath,
+        addedAt: entry.addedAt,
+        fingerprint: entry.fingerprint,
+        sourcePath: entry.sourcePath,
+        readingPosition: entry.readingPosition,
+        progress: entry.progress,
+        lastOpenedAt: entry.lastOpenedAt,
+        notes: entry.notes,
+        highlights: entry.highlights,
+        bookmarks: <Bookmark>[bookmark],
+        tocOfficial: entry.tocOfficial,
+        tocGenerated: entry.tocGenerated,
+        tocMode: entry.tocMode,
+      ),
+    );
+  }
 }

@@ -47,6 +47,7 @@ class ReaderController extends ChangeNotifier {
   List<ReaderChapter> _chapters = const <ReaderChapter>[];
   List<Highlight> _highlights = const <Highlight>[];
   List<Note> _notes = const <Note>[];
+  Bookmark? _bookmark;
   String? _activeBookId;
   TocMode _tocMode = TocMode.official;
   List<_TocEntry> _officialTocEntries = const <_TocEntry>[];
@@ -62,6 +63,7 @@ class ReaderController extends ChangeNotifier {
   List<ReaderChapter> get chapters => _chapters;
   List<Highlight> get highlights => List<Highlight>.unmodifiable(_highlights);
   List<Note> get notes => List<Note>.unmodifiable(_notes);
+  Bookmark? get bookmark => _bookmark;
   TocMode get tocMode => _tocMode;
   bool get hasGeneratedToc => _tocGeneratedNodes.isNotEmpty;
 
@@ -87,6 +89,7 @@ class ReaderController extends ChangeNotifier {
       _tocGeneratedNodes = entry.tocGenerated;
       _highlights = entry.highlights;
       _notes = entry.notes;
+      _bookmark = entry.bookmarks.isEmpty ? null : entry.bookmarks.first;
 
       final file = File(entry.localPath);
       if (!await file.exists()) {
@@ -202,6 +205,39 @@ class ReaderController extends ChangeNotifier {
     );
     await _store.addHighlight(bookId, highlight);
     _highlights = [..._highlights, highlight];
+    notifyListeners();
+    return true;
+  }
+
+  Future<bool> saveBookmark(ReadingPosition position) async {
+    final bookId = _activeBookId;
+    if (bookId == null) {
+      return false;
+    }
+    final chapterHref = position.chapterHref;
+    final offset = position.offset;
+    if (chapterHref == null || offset == null || offset < 0) {
+      return false;
+    }
+    await _store.init();
+    final entry = await _store.getById(bookId);
+    if (entry == null) {
+      return false;
+    }
+    final anchor = Anchor(
+      chapterHref: chapterHref,
+      offset: offset,
+    ).toString();
+    final now = DateTime.now();
+    final bookmark = Bookmark(
+      id: _makeId(),
+      bookId: bookId,
+      anchor: anchor,
+      label: 'Закладка',
+      createdAt: now,
+    );
+    await _store.setBookmark(bookId, bookmark);
+    _bookmark = bookmark;
     notifyListeners();
     return true;
   }

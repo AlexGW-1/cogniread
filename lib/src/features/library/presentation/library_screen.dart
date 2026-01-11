@@ -665,7 +665,7 @@ class _BookCover extends StatelessWidget {
           width: 56,
           height: 72,
           fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => _BookCoverPlaceholder(
+          errorBuilder: (context, error, stackTrace) => _BookCoverPlaceholder(
             initial: initial,
             scheme: scheme,
           ),
