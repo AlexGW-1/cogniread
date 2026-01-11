@@ -572,15 +572,15 @@
 Для синка нужен журнал изменений (event log), чтобы воспроизводить изменения на сервере и решать конфликты.
 
 ### Checklist
-- [ ] Определить модель события:
-  - [ ] `id`
-  - [ ] `entityType`
-  - [ ] `entityId`
-  - [ ] `op` (add/update/delete)
-  - [ ] `payload` (минимальный)
-  - [ ] `createdAt`
-- [ ] Хранение событий (Hive box / отдельное хранилище).
-- [ ] API: addEvent, listEvents(limit), purgeEvents(olderThan) (optional).
+- [x] Определить модель события:
+  - [x] `id`
+  - [x] `entityType`
+  - [x] `entityId`
+  - [x] `op` (add/update/delete)
+  - [x] `payload` (минимальный)
+  - [x] `createdAt`
+- [x] Хранение событий (Hive box / отдельное хранилище).
+- [x] API: addEvent, listEvents(limit), purgeEvents(olderThan) (optional).
 
 ### Acceptance Criteria
 - События пишутся и читаются, порядок стабильный.
@@ -599,10 +599,10 @@
 Каждое изменение notes/highlights/bookmarks должно логироваться.
 
 ### Checklist
-- [ ] При add/update/delete note — писать событие.
-- [ ] При add/delete highlight — писать событие.
-- [ ] При toggle bookmark — писать событие.
-- [ ] Payload минимальный, но достаточный для воспроизведения.
+- [x] При add/update/delete note — писать событие.
+- [x] При add/delete highlight — писать событие.
+- [x] При toggle bookmark — писать событие.
+- [x] Payload минимальный, но достаточный для воспроизведения.
 
 ### Acceptance Criteria
 - После серии действий список событий отражает все операции (без пропусков).

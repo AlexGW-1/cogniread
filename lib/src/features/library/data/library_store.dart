@@ -1,4 +1,6 @@
 import 'package:cogniread/src/core/types/toc.dart';
+import 'package:cogniread/src/core/utils/logger.dart';
+import 'package:cogniread/src/features/sync/data/event_log_store.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 class LibraryEntry {
@@ -366,6 +368,7 @@ class LibraryStore {
   static const String _boxName = 'library_books';
   static bool _initialized = false;
   Box<dynamic>? _box;
+  final EventLogStore _eventStore = EventLogStore();
 
   Future<void> init() async {
     if (!_initialized) {
@@ -373,6 +376,7 @@ class LibraryStore {
       _initialized = true;
     }
     _box = await Hive.openBox<dynamic>(_boxName);
+    await _eventStore.init();
   }
 
   Box<dynamic> get _requireBox {
@@ -537,6 +541,12 @@ class LibraryStore {
         tocMode: entry.tocMode,
       ),
     );
+    await _logEvent(
+      entityType: 'note',
+      entityId: note.id,
+      op: 'add',
+      payload: note.toMap(),
+    );
   }
 
   Future<void> removeNote(String id, String noteId) async {
@@ -570,6 +580,15 @@ class LibraryStore {
         tocMode: entry.tocMode,
       ),
     );
+    await _logEvent(
+      entityType: 'note',
+      entityId: noteId,
+      op: 'delete',
+      payload: <String, Object?>{
+        'id': noteId,
+        'bookId': entry.id,
+      },
+    );
   }
 
   Future<void> updateNote(
@@ -583,6 +602,7 @@ class LibraryStore {
       return;
     }
     var changed = false;
+    Note? updatedNote;
     final updatedNotes = entry.notes.map((note) {
       if (note.id != noteId) {
         return note;
@@ -591,7 +611,7 @@ class LibraryStore {
         return note;
       }
       changed = true;
-      return Note(
+      final next = Note(
         id: note.id,
         bookId: note.bookId,
         anchor: note.anchor,
@@ -602,6 +622,8 @@ class LibraryStore {
         createdAt: note.createdAt,
         updatedAt: updatedAt,
       );
+      updatedNote = next;
+      return next;
     }).toList();
     if (!changed) {
       return;
@@ -626,6 +648,19 @@ class LibraryStore {
         tocGenerated: entry.tocGenerated,
         tocMode: entry.tocMode,
       ),
+    );
+    final payload = updatedNote?.toMap() ??
+        <String, Object?>{
+          'id': noteId,
+          'bookId': entry.id,
+          'noteText': noteText,
+          'updatedAt': updatedAt.toIso8601String(),
+        };
+    await _logEvent(
+      entityType: 'note',
+      entityId: noteId,
+      op: 'update',
+      payload: payload,
     );
   }
 
@@ -654,6 +689,12 @@ class LibraryStore {
         tocGenerated: entry.tocGenerated,
         tocMode: entry.tocMode,
       ),
+    );
+    await _logEvent(
+      entityType: 'highlight',
+      entityId: highlight.id,
+      op: 'add',
+      payload: highlight.toMap(),
     );
   }
 
@@ -688,6 +729,15 @@ class LibraryStore {
         tocMode: entry.tocMode,
       ),
     );
+    await _logEvent(
+      entityType: 'highlight',
+      entityId: highlightId,
+      op: 'delete',
+      payload: <String, Object?>{
+        'id': highlightId,
+        'bookId': entry.id,
+      },
+    );
   }
 
   Future<void> addBookmark(String id, Bookmark bookmark) async {
@@ -715,6 +765,12 @@ class LibraryStore {
         tocGenerated: entry.tocGenerated,
         tocMode: entry.tocMode,
       ),
+    );
+    await _logEvent(
+      entityType: 'bookmark',
+      entityId: bookmark.id,
+      op: 'add',
+      payload: bookmark.toMap(),
     );
   }
 
@@ -749,6 +805,15 @@ class LibraryStore {
         tocMode: entry.tocMode,
       ),
     );
+    await _logEvent(
+      entityType: 'bookmark',
+      entityId: bookmarkId,
+      op: 'delete',
+      payload: <String, Object?>{
+        'id': bookmarkId,
+        'bookId': entry.id,
+      },
+    );
   }
 
   Future<void> setBookmark(String id, Bookmark bookmark) async {
@@ -777,5 +842,37 @@ class LibraryStore {
         tocMode: entry.tocMode,
       ),
     );
+    await _logEvent(
+      entityType: 'bookmark',
+      entityId: bookmark.id,
+      op: 'add',
+      payload: bookmark.toMap(),
+    );
   }
+
+  Future<void> _logEvent({
+    required String entityType,
+    required String entityId,
+    required String op,
+    required Map<String, Object?> payload,
+  }) async {
+    try {
+      await _eventStore.addEvent(
+        EventLogEntry(
+          id: _makeEventId(),
+          entityType: entityType,
+          entityId: entityId,
+          op: op,
+          payload: payload,
+          createdAt: DateTime.now(),
+        ),
+      );
+    } catch (e) {
+      Log.d('Event log write failed: $e');
+    }
+  }
+}
+
+String _makeEventId() {
+  return 'evt-${DateTime.now().microsecondsSinceEpoch}';
 }
