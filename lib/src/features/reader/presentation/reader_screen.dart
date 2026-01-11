@@ -374,16 +374,20 @@ class _ReaderScreenState extends State<ReaderScreen> {
                       overflow: TextOverflow.ellipsis,
                     ),
                     subtitle: Text(chapterTitle),
-                    leading: _HighlightSwatch(
-                      color: _highlightColorFor(highlight.color),
-                    ),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.delete_outline),
-                      tooltip: 'Удалить выделение',
-                      onPressed: () async {
-                        await _controller.removeHighlight(highlight.id);
-                      },
-                    ),
+                      leading: _HighlightSwatch(
+                        color: _highlightColorFor(highlight.color),
+                      ),
+                      trailing: IconButton(
+                        icon: const Icon(Icons.delete_outline),
+                        tooltip: 'Удалить выделение',
+                        onPressed: () async {
+                          final confirmed = await _confirmDeleteHighlight();
+                          if (confirmed != true) {
+                            return;
+                          }
+                          await _controller.removeHighlight(highlight.id);
+                        },
+                      ),
                     onTap: chapterIndex == null
                         ? null
                         : () {
@@ -525,6 +529,27 @@ class _ReaderScreenState extends State<ReaderScreen> {
       builder: (context) {
         return AlertDialog(
           title: const Text('Удалить заметку?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Отмена'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Удалить'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<bool?> _confirmDeleteHighlight() {
+    return showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Удалить выделение?'),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(false),

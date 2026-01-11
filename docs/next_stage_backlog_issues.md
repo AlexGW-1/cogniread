@@ -401,7 +401,7 @@
 **Suggested branch:** `feature/highlights-edit-delete`
 
 ### Checklist
-- [ ] Delete highlight (с подтверждением).
+- [x] Delete highlight (с подтверждением).
 - [ ] (Optional) change color.
 
 ### Acceptance Criteria
