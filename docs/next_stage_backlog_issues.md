@@ -610,6 +610,9 @@
 ### Test Plan
 - Unit: add note → update note → delete note → events count == 3, ops корректны.
 
+### Notes
+- [ ] Удалить временную кнопку просмотра event log из `LibraryScreen` после отладки.
+
 ---
 
 ## Issue 26 — Event Log: reading position updates (дебаунс + запись)
