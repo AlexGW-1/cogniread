@@ -367,8 +367,13 @@ DateTime? _parseDateOrNull(Object? value) {
 class LibraryStore {
   static const String _boxName = 'library_books';
   static bool _initialized = false;
+  static const Duration _positionEventDebounce = Duration(seconds: 5);
+  static const int _positionOffsetDelta = 120;
   Box<dynamic>? _box;
   final EventLogStore _eventStore = EventLogStore();
+  final Map<String, DateTime> _lastPositionEventAt = <String, DateTime>{};
+  final Map<String, ReadingPosition> _lastPositionEventPosition =
+      <String, ReadingPosition>{};
 
   Future<void> init() async {
     if (!_initialized) {
@@ -433,6 +438,7 @@ class LibraryStore {
     if (entry == null) {
       return;
     }
+    final previousPosition = entry.readingPosition;
     await upsert(
       LibraryEntry(
         id: entry.id,
@@ -454,6 +460,7 @@ class LibraryStore {
         tocMode: entry.tocMode,
       ),
     );
+    await _maybeLogReadingPosition(entry.id, position, previousPosition);
   }
 
   Future<void> updateProgress(
@@ -870,6 +877,52 @@ class LibraryStore {
     } catch (e) {
       Log.d('Event log write failed: $e');
     }
+  }
+
+  Future<void> _maybeLogReadingPosition(
+    String bookId,
+    ReadingPosition position,
+    ReadingPosition previousPosition,
+  ) async {
+    final chapterHref = position.chapterHref;
+    final offset = position.offset;
+    if (chapterHref == null || offset == null) {
+      return;
+    }
+    final previousHref = previousPosition.chapterHref;
+    final previousOffset = previousPosition.offset;
+    if (previousHref == chapterHref &&
+        previousOffset != null &&
+        (offset - previousOffset).abs() < _positionOffsetDelta) {
+      return;
+    }
+    final now = DateTime.now();
+    final lastAt = _lastPositionEventAt[bookId];
+    if (lastAt != null &&
+        now.difference(lastAt) < _positionEventDebounce) {
+      return;
+    }
+    final lastPosition = _lastPositionEventPosition[bookId];
+    if (lastPosition != null &&
+        lastPosition.chapterHref == chapterHref &&
+        lastPosition.offset != null &&
+        (offset - lastPosition.offset!).abs() < _positionOffsetDelta) {
+      return;
+    }
+    _lastPositionEventAt[bookId] = now;
+    _lastPositionEventPosition[bookId] = position;
+    await _logEvent(
+      entityType: 'reading_position',
+      entityId: bookId,
+      op: 'update',
+      payload: <String, Object?>{
+        'bookId': bookId,
+        'chapterHref': chapterHref,
+        'anchor': position.anchor,
+        'offset': offset,
+        'updatedAt': position.updatedAt?.toIso8601String(),
+      },
+    );
   }
 }
 
