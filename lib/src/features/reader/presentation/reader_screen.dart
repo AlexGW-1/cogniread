@@ -439,12 +439,28 @@ class _ReaderScreenState extends State<ReaderScreen> {
                     leading: _HighlightSwatch(
                       color: _markColorFor(note.color),
                     ),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.delete_outline),
-                      tooltip: 'Удалить заметку',
-                      onPressed: () async {
-                        await _controller.removeNote(note.id);
-                      },
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.edit_outlined),
+                          tooltip: 'Редактировать заметку',
+                          onPressed: () {
+                            _editNote(note);
+                          },
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete_outline),
+                          tooltip: 'Удалить заметку',
+                          onPressed: () async {
+                            final confirmed = await _confirmDeleteNote();
+                            if (confirmed != true) {
+                              return;
+                            }
+                            await _controller.removeNote(note.id);
+                          },
+                        ),
+                      ],
                     ),
                     onTap: chapterIndex == null
                         ? null
@@ -457,6 +473,68 @@ class _ReaderScreenState extends State<ReaderScreen> {
               ),
             );
           },
+        );
+      },
+    );
+  }
+
+  Future<void> _editNote(Note note) async {
+    final controller = TextEditingController(text: note.noteText);
+    final updatedText = await showDialog<String>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Редактировать заметку'),
+          content: TextField(
+            controller: controller,
+            maxLines: 5,
+            autofocus: true,
+            decoration: const InputDecoration(
+              hintText: 'Текст заметки',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Отмена'),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.of(context).pop(controller.text);
+              },
+              child: const Text('Сохранить'),
+            ),
+          ],
+        );
+      },
+    );
+    if (updatedText == null) {
+      return;
+    }
+    final trimmed = updatedText.trim();
+    if (trimmed.isEmpty) {
+      _showPositioningError('Текст заметки пустой');
+      return;
+    }
+    await _controller.updateNote(note.id, trimmed);
+  }
+
+  Future<bool?> _confirmDeleteNote() {
+    return showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Удалить заметку?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Отмена'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Удалить'),
+            ),
+          ],
         );
       },
     );

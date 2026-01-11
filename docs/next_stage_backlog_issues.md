@@ -383,9 +383,9 @@
 Нужны базовые CRUD операции для notes.
 
 ### Checklist
-- [ ] Edit note text (диалог/экран редактирования).
-- [ ] Delete note (с подтверждением).
-- [ ] Обновлять `updatedAt` при edit.
+- [x] Edit note text (диалог/экран редактирования).
+- [x] Delete note (с подтверждением).
+- [x] Обновлять `updatedAt` при edit.
 
 ### Acceptance Criteria
 - Изменения видны сразу и сохраняются после перезапуска.

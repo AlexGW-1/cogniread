@@ -209,6 +209,35 @@ class ReaderController extends ChangeNotifier {
     return true;
   }
 
+  Future<bool> updateNote(String noteId, String noteText) async {
+    final bookId = _activeBookId;
+    if (bookId == null) {
+      return false;
+    }
+    await _store.init();
+    final now = DateTime.now();
+    await _store.updateNote(bookId, noteId, noteText, now);
+    _notes = _notes
+        .map(
+          (note) => note.id == noteId
+              ? Note(
+                  id: note.id,
+                  bookId: note.bookId,
+                  anchor: note.anchor,
+                  endOffset: note.endOffset,
+                  excerpt: note.excerpt,
+                  noteText: noteText,
+                  color: note.color,
+                  createdAt: note.createdAt,
+                  updatedAt: now,
+                )
+              : note,
+        )
+        .toList();
+    notifyListeners();
+    return true;
+  }
+
   Future<bool> saveBookmark(ReadingPosition position) async {
     final bookId = _activeBookId;
     if (bookId == null) {

@@ -537,6 +537,63 @@ class LibraryStore {
     );
   }
 
+  Future<void> updateNote(
+    String id,
+    String noteId,
+    String noteText,
+    DateTime updatedAt,
+  ) async {
+    final entry = await getById(id);
+    if (entry == null) {
+      return;
+    }
+    var changed = false;
+    final updatedNotes = entry.notes.map((note) {
+      if (note.id != noteId) {
+        return note;
+      }
+      if (note.noteText == noteText && note.updatedAt == updatedAt) {
+        return note;
+      }
+      changed = true;
+      return Note(
+        id: note.id,
+        bookId: note.bookId,
+        anchor: note.anchor,
+        endOffset: note.endOffset,
+        excerpt: note.excerpt,
+        noteText: noteText,
+        color: note.color,
+        createdAt: note.createdAt,
+        updatedAt: updatedAt,
+      );
+    }).toList();
+    if (!changed) {
+      return;
+    }
+    await upsert(
+      LibraryEntry(
+        id: entry.id,
+        title: entry.title,
+        author: entry.author,
+        localPath: entry.localPath,
+        coverPath: entry.coverPath,
+        addedAt: entry.addedAt,
+        fingerprint: entry.fingerprint,
+        sourcePath: entry.sourcePath,
+        readingPosition: entry.readingPosition,
+        progress: entry.progress,
+        lastOpenedAt: entry.lastOpenedAt,
+        notes: updatedNotes,
+        highlights: entry.highlights,
+        bookmarks: entry.bookmarks,
+        tocOfficial: entry.tocOfficial,
+        tocGenerated: entry.tocGenerated,
+        tocMode: entry.tocMode,
+      ),
+    );
+  }
+
   Future<void> addHighlight(String id, Highlight highlight) async {
     final entry = await getById(id);
     if (entry == null) {
