@@ -1,6 +1,18 @@
 # Диаграммы архитектуры проекта
 
-## 1. Clean Architecture (Domain / Data / Presentation)
+## 1. Current architecture (MVP0–MVP3)
+
+```mermaid
+flowchart TB
+User --> UI
+UI --> Controllers
+Controllers --> Stores
+Stores --> Hive
+Stores --> Files["App Storage (files)"]
+Controllers --> UI
+```
+
+## 2. Target architecture: Clean Architecture (Domain / Data / Presentation)
 
 ```mermaid
 flowchart TB
@@ -35,7 +47,7 @@ UseCases --> Entities
 Controllers --> Presenters
 ```
 
-## 2. Диаграмма потоков данных (Data Flow)
+## 3. Target data flow (Data Flow)
 
 ```mermaid
 flowchart LR
@@ -58,7 +70,7 @@ SyncModule --> SyncGateway
 SyncGateway --> App
 ```
 
-## 3. AI-пайплайн
+## 4. AI-пайплайн
 
 ```mermaid
 sequenceDiagram
@@ -83,7 +95,7 @@ sequenceDiagram
     API-->>App: Response
 ```
 
-## 4. Структура базы знаний
+## 5. Структура базы знаний
 
 ```mermaid
 graph TD
