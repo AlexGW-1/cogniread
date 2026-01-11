@@ -611,7 +611,7 @@
 - Unit: add note → update note → delete note → events count == 3, ops корректны.
 
 ### Notes
-- [ ] Удалить временную кнопку просмотра event log из `LibraryScreen` после отладки.
+- [x] Удалить временную кнопку просмотра event log из `LibraryScreen` после отладки.
 
 ---
 

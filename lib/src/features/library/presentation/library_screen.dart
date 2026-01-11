@@ -1,12 +1,9 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:cogniread/src/core/services/storage_service.dart';
 import 'package:cogniread/src/features/library/presentation/library_controller.dart';
 import 'package:cogniread/src/features/reader/presentation/reader_screen.dart';
-import 'package:cogniread/src/features/sync/data/event_log_store.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 class LibraryScreen extends StatefulWidget {
   const LibraryScreen({
@@ -298,95 +295,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
     await _controller.setViewMode(next);
   }
 
-  Future<void> _showEventLogDebug() async {
-    final store = EventLogStore();
-    await store.init();
-    final events = store.listEvents(limit: 50);
-    if (!mounted) {
-      return;
-    }
-    showModalBottomSheet<void>(
-      context: context,
-      builder: (context) {
-        return SafeArea(
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                child: Row(
-                  children: [
-                    const Expanded(
-                      child: Text(
-                        'Event log',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                    IconButton(
-                      tooltip: 'Копировать JSON',
-                      onPressed: events.isEmpty
-                          ? null
-                          : () async {
-                              final payload = events
-                                  .map((event) => event.toMap())
-                                  .toList();
-                              final json = jsonEncode(payload);
-                              await Clipboard.setData(
-                                ClipboardData(text: json),
-                              );
-                              if (!context.mounted) {
-                                return;
-                              }
-                              Navigator.of(context).pop();
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content:
-                                      Text('Event log скопирован в буфер'),
-                                ),
-                              );
-                            },
-                      icon: const Icon(Icons.copy_outlined),
-                    ),
-                    IconButton(
-                      tooltip: 'Закрыть',
-                      onPressed: () => Navigator.of(context).pop(),
-                      icon: const Icon(Icons.close),
-                    ),
-                  ],
-                ),
-              ),
-              const Divider(height: 1),
-              Expanded(
-                child: events.isEmpty
-                    ? const Center(
-                        child: Padding(
-                          padding: EdgeInsets.all(24),
-                          child: Text('Пока нет событий в журнале.'),
-                        ),
-                      )
-                    : ListView.separated(
-                        itemCount: events.length,
-                        separatorBuilder: (_, __) => const Divider(height: 1),
-                        itemBuilder: (context, index) {
-                          final event = events[index];
-                          return ListTile(
-                            title: Text('${event.entityType} · ${event.op}'),
-                            subtitle: Text(
-                              '${event.entityId} · ${event.createdAt.toIso8601String()}',
-                            ),
-                            dense: true,
-                          );
-                        },
-                      ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
 
   Future<void> _openSearchResult(LibrarySearchResult result) async {
     Navigator.of(context).pop();
@@ -436,11 +344,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
                   ? Icons.grid_view_outlined
                   : Icons.view_list_outlined,
             ),
-          ),
-          IconButton(
-            tooltip: 'Event log',
-            onPressed: _showEventLogDebug,
-            icon: const Icon(Icons.bug_report_outlined),
           ),
           IconButton(
             tooltip: 'Глобальный поиск',
@@ -659,7 +562,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
                           onToggleSearch: _toggleSearch,
                           onGlobalSearch:
                               _controller.books.isEmpty ? null : _showGlobalSearch,
-                          onEventLog: _showEventLogDebug,
                           onClearLibrary:
                               _controller.books.isEmpty ? null : _clearLibrary,
                           onImport: _importEpub,
@@ -722,7 +624,6 @@ class _LibraryPanel extends StatelessWidget {
     required this.onToggleViewMode,
     required this.onToggleSearch,
     required this.onGlobalSearch,
-    required this.onEventLog,
     required this.onClearLibrary,
     required this.onImport,
     required this.onOpen,
@@ -741,7 +642,6 @@ class _LibraryPanel extends StatelessWidget {
   final VoidCallback onToggleViewMode;
   final VoidCallback onToggleSearch;
   final VoidCallback? onGlobalSearch;
-  final VoidCallback onEventLog;
   final VoidCallback? onClearLibrary;
   final VoidCallback onImport;
   final ValueChanged<int> onOpen;
@@ -795,12 +695,6 @@ class _LibraryPanel extends StatelessWidget {
                       ? Icons.grid_view_outlined
                       : Icons.view_list_outlined,
                 ),
-              ),
-              const SizedBox(width: 4),
-              IconButton(
-                tooltip: 'Event log',
-                onPressed: onEventLog,
-                icon: const Icon(Icons.bug_report_outlined),
               ),
               const SizedBox(width: 4),
               IconButton(
