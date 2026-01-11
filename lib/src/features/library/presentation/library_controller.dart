@@ -118,6 +118,12 @@ class LibraryController extends ChangeNotifier {
   bool _loading = true;
   String? _errorMessage;
   String? _infoMessage;
+
+  static const List<String> _supportedExtensions = <String>[
+    '.epub',
+    '.fb2',
+    '.zip',
+  ];
   String _query = '';
   final List<LibraryBookItem> _books = <LibraryBookItem>[];
   LibraryViewMode _viewMode = LibraryViewMode.list;
@@ -334,21 +340,21 @@ class LibraryController extends ChangeNotifier {
   }
 
   Future<void> importEpub() async {
-    Log.d('Import EPUB pressed.');
+    Log.d('Import book pressed.');
     if (_stubImport) {
       _addStubBook();
       _setInfo('Книга добавлена');
       return;
     }
     final path = _pickEpubPath == null
-        ? await _pickEpubFromFilePicker()
+        ? await _pickBookFromFilePicker()
         : await _pickEpubPath();
     if (path == null) {
       _setInfo('Импорт отменён');
       return;
     }
 
-    final validationError = await _validateEpubPath(path);
+    final validationError = await _validateBookPath(path);
     if (validationError != null) {
       _setError(validationError);
       return;
@@ -359,16 +365,14 @@ class LibraryController extends ChangeNotifier {
       final stored = await _storageService.copyToAppStorageWithHash(path);
       final fallbackTitle = p.basenameWithoutExtension(path);
       final exists = await _store.existsByFingerprint(stored.hash);
-      Log.d('Import EPUB fingerprint=${stored.hash} exists=$exists');
+      Log.d('Import book fingerprint=${stored.hash} exists=$exists');
       if (exists) {
         final existing = await _store.getById(stored.hash);
         final existingPath = existing?.localPath;
         final existingMissing = existingPath == null
             ? true
             : !(await File(existingPath).exists());
-        Log.d(
-          'Import EPUB existingPath=$existingPath missing=$existingMissing',
-        );
+        Log.d('Import book existingPath=$existingPath missing=$existingMissing');
         final index = _books.indexWhere((book) => book.id == stored.hash);
         final listMissing = index != -1 && _books[index].isMissing;
         if (existing != null && (existingMissing || listMissing)) {
@@ -451,11 +455,11 @@ class LibraryController extends ChangeNotifier {
       _books.add(LibraryBookItem.fromEntry(entry, isMissing: false));
       _books.sort(_sortByLastOpenedAt);
       notifyListeners();
-      Log.d('EPUB copied to: ${stored.path}');
+      Log.d('Book copied to: ${stored.path}');
       _setInfo('Книга добавлена');
       return;
     } catch (e) {
-      Log.d('EPUB import failed: $e');
+      Log.d('Book import failed: $e');
       _setError('Не удалось сохранить файл');
     }
   }
@@ -501,7 +505,7 @@ class LibraryController extends ChangeNotifier {
       final dir = Directory(dirPath);
       if (await dir.exists()) {
         await for (final entry in dir.list()) {
-          if (entry is File && entry.path.toLowerCase().endsWith('.epub')) {
+          if (entry is File && _isSupportedExtension(entry.path)) {
             await entry.delete();
           }
         }
@@ -682,10 +686,11 @@ class LibraryController extends ChangeNotifier {
     });
   }
 
-  Future<String?> _pickEpubFromFilePicker() async {
+  Future<String?> _pickBookFromFilePicker() async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: const ['epub'],
+      allowedExtensions:
+          _supportedExtensions.map((ext) => ext.replaceFirst('.', '')).toList(),
       withData: false,
     );
     if (result == null || result.files.isEmpty) {
@@ -694,10 +699,9 @@ class LibraryController extends ChangeNotifier {
     return result.files.single.path;
   }
 
-  Future<String?> _validateEpubPath(String path) async {
-    final lowerPath = path.toLowerCase();
-    if (!lowerPath.endsWith('.epub')) {
-      return 'Неверное расширение файла (нужен .epub)';
+  Future<String?> _validateBookPath(String path) async {
+    if (!_isSupportedExtension(path)) {
+      return 'Неверное расширение файла';
     }
 
     final file = File(path);
@@ -716,6 +720,9 @@ class LibraryController extends ChangeNotifier {
   }
 
   Future<String?> _readCoverPath(String path, String bookId) async {
+    if (!_isSupportedExtension(path) || p.extension(path).toLowerCase() != '.epub') {
+      return null;
+    }
     try {
       final bytes = await File(path).readAsBytes();
       final bookRef = await EpubReader.openBook(bytes);
@@ -952,6 +959,14 @@ String? _extensionFromPath(String path) {
   return ext;
 }
 
+bool _isSupportedExtension(String path) {
+  final ext = _extensionFromPath(path);
+  if (ext == null) {
+    return false;
+  }
+  return LibraryController._supportedExtensions.contains(ext);
+}
+
 int _sortByLastOpenedAt(LibraryBookItem a, LibraryBookItem b) {
   final aTime = a.lastOpenedAt ?? a.addedAt;
   final bTime = b.lastOpenedAt ?? b.addedAt;
@@ -971,6 +986,9 @@ class _BookMetadata {
 
 Future<_BookMetadata> _readMetadata(String path, String fallbackTitle) async {
   try {
+    if (p.extension(path).toLowerCase() != '.epub') {
+      return _BookMetadata(title: fallbackTitle, author: null);
+    }
     final bytes = await File(path).readAsBytes();
     try {
       final bookRef = await EpubReader.openBook(bytes);

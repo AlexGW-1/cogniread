@@ -118,11 +118,11 @@
 Сейчас импорт и storage строго ограничены `.epub` (FilePicker + validate + StorageService). При этом reader уже умеет извлекать FB2/XML из zip‑архива. Нужно согласовать поддержку форматов на уровне импорта.
 
 ### Checklist
-- [ ] В `LibraryController`: расширить `FilePicker.allowedExtensions` (минимум `epub`, `fb2`, `zip`).
-- [ ] В `LibraryController._validate...`: заменить «нужен .epub» на whitelist‑валидацию (и нормальные ошибки).
-- [ ] В `AppStorageService.copyToAppStorageWithHash`: разрешить `.fb2` и `.zip` (плюс корректное именование в app storage).
-- [ ] В `clearLibrary()`: удалять не только `.epub`, а все поддержанные форматы.
-- [ ] Тесты: добавить покрытия для новых расширений (dedup/hash/ошибки).
+- [x] В `LibraryController`: расширить `FilePicker.allowedExtensions` (минимум `epub`, `fb2`, `zip`).
+- [x] В `LibraryController._validate...`: заменить «нужен .epub» на whitelist‑валидацию (и нормальные ошибки).
+- [x] В `AppStorageService.copyToAppStorageWithHash`: разрешить `.fb2` и `.zip` (плюс корректное именование в app storage).
+- [x] В `clearLibrary()`: удалять не только `.epub`, а все поддержанные форматы.
+- [x] Тесты: добавить покрытия для новых расширений (dedup/hash/ошибки).
 
 ### Acceptance Criteria
 - Можно импортировать `.fb2` и `.fb2.zip`.

@@ -14,6 +14,11 @@ class AppStorageService implements StorageService {
 
   final String booksDirectoryName;
   final int maxFileSizeBytes;
+  static const List<String> _supportedExtensions = <String>[
+    '.epub',
+    '.fb2',
+    '.zip',
+  ];
 
   @override
   Future<String> appStoragePath() async {
@@ -46,7 +51,7 @@ class AppStorageService implements StorageService {
     }
 
     final ext = p.extension(resolvedPath).toLowerCase();
-    if (ext != '.epub') {
+    if (!_supportedExtensions.contains(ext)) {
       throw FormatException('Unsupported file extension');
     }
     if (stat.size == 0) {

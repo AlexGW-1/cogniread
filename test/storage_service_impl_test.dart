@@ -54,6 +54,22 @@ void main() {
     expect(p.basename(stored.path), 'My_Book_${stored.hash}.epub');
   });
 
+  test('copyToAppStorageWithHash accepts fb2 and zip extensions', () async {
+    final service = AppStorageService();
+    final sourceDir = await Directory.systemTemp.createTemp('cogniread_src_');
+    addTearDown(() => sourceDir.delete(recursive: true));
+    final fb2Path = p.join(sourceDir.path, 'Book.fb2');
+    final zipPath = p.join(sourceDir.path, 'Book.fb2.zip');
+    await File(fb2Path).writeAsBytes(<int>[1, 2, 3]);
+    await File(zipPath).writeAsBytes(<int>[4, 5, 6]);
+
+    final fb2Stored = await service.copyToAppStorageWithHash(fb2Path);
+    final zipStored = await service.copyToAppStorageWithHash(zipPath);
+
+    expect(fb2Stored.path, endsWith('.fb2'));
+    expect(zipStored.path, endsWith('.zip'));
+  });
+
   test('copyToAppStorageWithHash dedups by fingerprint', () async {
     final service = AppStorageService();
     final sourceDir = await Directory.systemTemp.createTemp('cogniread_src_');
@@ -83,7 +99,7 @@ void main() {
     );
   });
 
-  test('copyToAppStorageWithHash rejects non-epub extension', () async {
+  test('copyToAppStorageWithHash rejects unsupported extension', () async {
     final service = AppStorageService();
     final sourceDir = await Directory.systemTemp.createTemp('cogniread_src_');
     addTearDown(() => sourceDir.delete(recursive: true));
