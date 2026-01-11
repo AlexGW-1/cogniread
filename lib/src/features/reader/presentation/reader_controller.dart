@@ -46,6 +46,7 @@ class ReaderController extends ChangeNotifier {
   ReadingPosition? _initialPosition;
   List<ReaderChapter> _chapters = const <ReaderChapter>[];
   List<Highlight> _highlights = const <Highlight>[];
+  List<Note> _notes = const <Note>[];
   String? _activeBookId;
   TocMode _tocMode = TocMode.official;
   List<_TocEntry> _officialTocEntries = const <_TocEntry>[];
@@ -60,6 +61,7 @@ class ReaderController extends ChangeNotifier {
   ReadingPosition? get initialPosition => _initialPosition;
   List<ReaderChapter> get chapters => _chapters;
   List<Highlight> get highlights => List<Highlight>.unmodifiable(_highlights);
+  List<Note> get notes => List<Note>.unmodifiable(_notes);
   TocMode get tocMode => _tocMode;
   bool get hasGeneratedToc => _tocGeneratedNodes.isNotEmpty;
 
@@ -84,6 +86,7 @@ class ReaderController extends ChangeNotifier {
       _tocOfficialNodes = entry.tocOfficial;
       _tocGeneratedNodes = entry.tocGenerated;
       _highlights = entry.highlights;
+      _notes = entry.notes;
 
       final file = File(entry.localPath);
       if (!await file.exists()) {
@@ -201,6 +204,60 @@ class ReaderController extends ChangeNotifier {
     _highlights = [..._highlights, highlight];
     notifyListeners();
     return true;
+  }
+
+  Future<bool> addNote({
+    required int chapterIndex,
+    required int startOffset,
+    required int endOffset,
+    required String excerpt,
+    required String text,
+    required String color,
+  }) async {
+    final bookId = _activeBookId;
+    if (bookId == null || excerpt.trim().isEmpty || text.trim().isEmpty) {
+      return false;
+    }
+    if (chapterIndex < 0 || chapterIndex >= _chapters.length) {
+      return false;
+    }
+    if (startOffset < 0 || endOffset <= startOffset) {
+      return false;
+    }
+    await _store.init();
+    final chapter = _chapters[chapterIndex];
+    final chapterHref = chapter.href ?? 'index:$chapterIndex';
+    final anchor = Anchor(
+      chapterHref: chapterHref,
+      offset: startOffset,
+    ).toString();
+    final now = DateTime.now();
+    final note = Note(
+      id: _makeId(),
+      bookId: bookId,
+      anchor: anchor,
+      endOffset: endOffset,
+      excerpt: excerpt.trim(),
+      noteText: text.trim(),
+      color: color,
+      createdAt: now,
+      updatedAt: now,
+    );
+    await _store.addNote(bookId, note);
+    _notes = [..._notes, note];
+    notifyListeners();
+    return true;
+  }
+
+  Future<void> removeNote(String noteId) async {
+    final bookId = _activeBookId;
+    if (bookId == null) {
+      return;
+    }
+    await _store.init();
+    await _store.removeNote(bookId, noteId);
+    _notes = _notes.where((item) => item.id != noteId).toList();
+    notifyListeners();
   }
 
   Future<void> removeHighlight(String highlightId) async {

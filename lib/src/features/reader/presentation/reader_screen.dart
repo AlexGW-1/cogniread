@@ -63,6 +63,22 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   @override
+  void didUpdateWidget(covariant ReaderScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.bookId != oldWidget.bookId) {
+      _positionDebounce?.cancel();
+      _persistReadingPositionFor(oldWidget.bookId);
+      _initialPosition = null;
+      _didRestore = false;
+      _restoreAttempts = 0;
+      _selectionChapterIndex = null;
+      _selectionRange = null;
+      _selectionText = null;
+      _controller.load(widget.bookId);
+    }
+  }
+
+  @override
   void dispose() {
     _positionDebounce?.cancel();
     _persistReadingPosition();
@@ -231,6 +247,97 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
+  Future<void> _addNoteFromSelection(
+    SelectableRegionState selectableRegionState,
+  ) async {
+    if (!_canHighlightSelection) {
+      return;
+    }
+    final chapterIndex = _selectionChapterIndex!;
+    final range = _selectionRange!;
+    final excerpt = _selectionText!.trim();
+    var selectedColor = _markOptions.first;
+    final controller = TextEditingController();
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          title: const Text('Новая заметка'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: controller,
+                maxLines: 4,
+                decoration: const InputDecoration(
+                  hintText: 'Введите заметку',
+                ),
+              ),
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final option in _markOptions)
+                    ChoiceChip(
+                      label: Text(option.label),
+                      selected: option.key == selectedColor.key,
+                      avatar: _HighlightSwatch(color: option.color),
+                      onSelected: (_) {
+                        setState(() {
+                          selectedColor = option;
+                        });
+                      },
+                    ),
+                ],
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Отмена'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Сохранить'),
+            ),
+          ],
+        ),
+      ),
+    );
+    final noteText = controller.text;
+    if (saved != true || noteText.trim().isEmpty) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Заметка не сохранена')),
+      );
+      return;
+    }
+    final stored = await _controller.addNote(
+      chapterIndex: chapterIndex,
+      startOffset: range.startOffset,
+      endOffset: range.endOffset,
+      excerpt: excerpt,
+      text: noteText,
+      color: selectedColor.key,
+    );
+    if (!mounted) {
+      return;
+    }
+    selectableRegionState.clearSelection();
+    selectableRegionState.hideToolbar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          stored ? 'Заметка сохранена' : 'Не удалось сохранить заметку',
+        ),
+      ),
+    );
+  }
+
   void _showHighlights() {
     showModalBottomSheet<void>(
       context: context,
@@ -293,8 +400,84 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
+  void _showNotes() {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (context) {
+        return AnimatedBuilder(
+          animation: _controller,
+          builder: (context, _) {
+            final notes = _controller.notes;
+            if (notes.isEmpty) {
+              return const SafeArea(
+                child: Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(24),
+                    child: Text('Пока нет заметок.'),
+                  ),
+                ),
+              );
+            }
+            return SafeArea(
+              child: ListView.separated(
+                itemCount: notes.length,
+                separatorBuilder: (_, _) => const Divider(height: 1),
+                itemBuilder: (context, index) {
+                  final note = notes[index];
+                  final chapterIndex = _chapterIndexForNote(note);
+                  final chapterTitle = chapterIndex == null
+                      ? 'Неизвестная глава'
+                      : _controller.chapters[chapterIndex].title;
+                  final noteText = note.noteText.trim();
+                  return ListTile(
+                    title: Text(
+                      noteText.isEmpty ? '(без текста)' : noteText,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(chapterTitle),
+                    leading: _HighlightSwatch(
+                      color: _markColorFor(note.color),
+                    ),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.delete_outline),
+                      tooltip: 'Удалить заметку',
+                      onPressed: () async {
+                        await _controller.removeNote(note.id);
+                      },
+                    ),
+                    onTap: chapterIndex == null
+                        ? null
+                        : () {
+                            Navigator.of(context).pop();
+                            _scrollToNote(note);
+                          },
+                  );
+                },
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   int? _chapterIndexForHighlight(Highlight highlight) {
     final anchor = Anchor.parse(highlight.anchor);
+    if (anchor == null) {
+      return null;
+    }
+    final chapterHref = anchor.chapterHref;
+    if (chapterHref.startsWith('index:')) {
+      return int.tryParse(chapterHref.substring('index:'.length));
+    }
+    final index =
+        _controller.chapters.indexWhere((chapter) => chapter.href == chapterHref);
+    return index == -1 ? null : index;
+  }
+
+  int? _chapterIndexForNote(Note note) {
+    final anchor = Anchor.parse(note.anchor);
     if (anchor == null) {
       return null;
     }
@@ -339,6 +522,38 @@ class _ReaderScreenState extends State<ReaderScreen> {
     });
   }
 
+  void _scrollToNote(Note note) {
+    final anchor = Anchor.parse(note.anchor);
+    if (anchor == null) {
+      return;
+    }
+    final chapterIndex = _chapterIndexForNote(note);
+    if (chapterIndex == null) {
+      return;
+    }
+    final offsetWithin = _estimateAnchorScrollOffset(
+      chapterIndex,
+      anchor.offset,
+    );
+    if (offsetWithin == null || offsetWithin <= 0) {
+      return;
+    }
+    if (!_itemScrollController.isAttached) {
+      return;
+    }
+    _itemScrollController.jumpTo(index: chapterIndex);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_itemScrollController.isAttached) {
+        return;
+      }
+      _scrollOffsetController.animateScroll(
+        offset: offsetWithin,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeInOut,
+      );
+    });
+  }
+
   double? _estimateHighlightScrollOffset(
     Highlight highlight,
     int chapterIndex,
@@ -347,6 +562,16 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (anchor == null) {
       return null;
     }
+    return _estimateAnchorScrollOffset(
+      chapterIndex,
+      anchor.offset,
+    );
+  }
+
+  double? _estimateAnchorScrollOffset(
+    int chapterIndex,
+    int offset,
+  ) {
     final chapter = _controller.chapters[chapterIndex];
     final textWidth = _textWidth;
     if (textWidth == null || textWidth <= 0) {
@@ -367,7 +592,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
       ],
     );
     final titleText = chapter.title;
-    final offset = anchor.offset;
     if (offset < titleText.length) {
       final titleHeight = _measureTextHeight(titleText, titleStyle, textWidth);
       final caretOffset =
@@ -455,15 +679,23 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   Color _highlightColorFor(String key) {
-    return _highlightOptions
+    return _markColorFor(key);
+  }
+
+  Color _markColorFor(String key) {
+    return _markOptions
         .firstWhere(
           (option) => option.key == key,
-          orElse: () => _highlightOptions.first,
+          orElse: () => _markOptions.first,
         )
         .color;
   }
 
   Future<void> _persistReadingPosition() async {
+    await _persistReadingPositionFor(widget.bookId);
+  }
+
+  Future<void> _persistReadingPositionFor(String bookId) async {
     if (_controller.loading ||
         _controller.chapters.isEmpty ||
         _itemPositionsListener.itemPositions.value.isEmpty) {
@@ -473,7 +705,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (position == null) {
       return;
     }
-    await _controller.saveReadingPosition(widget.bookId, position);
+    await _controller.saveReadingPosition(bookId, position);
   }
 
   ReadingPosition? _computeReadingPosition() {
@@ -521,6 +753,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
             tooltip: 'Выделения',
             onPressed: _showHighlights,
             icon: const Icon(Icons.highlight_outlined),
+          ),
+          IconButton(
+            tooltip: 'Заметки',
+            onPressed: _showNotes,
+            icon: const Icon(Icons.sticky_note_2_outlined),
           ),
           IconButton(
             tooltip: 'Оглавление',
@@ -577,6 +814,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                               hasToc: hasToc,
                               onTocTap: _showToc,
                               onHighlightsTap: _showHighlights,
+                              onNotesTap: _showNotes,
                             ),
                             const SizedBox(height: 16),
                             Expanded(
@@ -589,8 +827,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                                         (context, selectableRegionState) {
                                       final items = <ContextMenuButtonItem>[
                                         if (_canHighlightSelection)
-                                          for (final option
-                                              in _highlightOptions)
+                                          for (final option in _markOptions)
                                             ContextMenuButtonItem(
                                               label: 'Highlight · ${option.label}',
                                               onPressed: () {
@@ -600,6 +837,15 @@ class _ReaderScreenState extends State<ReaderScreen> {
                                                 );
                                               },
                                             ),
+                                        if (_canHighlightSelection)
+                                          ContextMenuButtonItem(
+                                            label: 'Note',
+                                            onPressed: () {
+                                              _addNoteFromSelection(
+                                                selectableRegionState,
+                                              );
+                                            },
+                                          ),
                                         ...selectableRegionState
                                             .contextMenuButtonItems,
                                       ];
@@ -1053,7 +1299,7 @@ class _HighlightOption {
   final Color color;
 }
 
-const List<_HighlightOption> _highlightOptions = [
+const List<_HighlightOption> _markOptions = [
   _HighlightOption(
     key: 'yellow',
     label: 'Желтый',
@@ -1103,12 +1349,14 @@ class _ReaderHeader extends StatelessWidget {
     required this.hasToc,
     required this.onTocTap,
     required this.onHighlightsTap,
+    required this.onNotesTap,
   });
 
   final String title;
   final bool hasToc;
   final VoidCallback onTocTap;
   final VoidCallback onHighlightsTap;
+  final VoidCallback onNotesTap;
 
   @override
   Widget build(BuildContext context) {
@@ -1136,6 +1384,11 @@ class _ReaderHeader extends StatelessWidget {
           tooltip: 'Выделения',
           onPressed: onHighlightsTap,
           icon: Icon(Icons.highlight_outlined, color: scheme.primary),
+        ),
+        IconButton(
+          tooltip: 'Заметки',
+          onPressed: onNotesTap,
+          icon: Icon(Icons.sticky_note_2_outlined, color: scheme.primary),
         ),
       ],
     );

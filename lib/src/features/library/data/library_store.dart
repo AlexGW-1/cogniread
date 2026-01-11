@@ -164,8 +164,10 @@ class Note {
     required this.id,
     required this.bookId,
     required this.anchor,
+    required this.endOffset,
     required this.excerpt,
     required this.noteText,
+    required this.color,
     required this.createdAt,
     required this.updatedAt,
   });
@@ -173,8 +175,10 @@ class Note {
   final String id;
   final String bookId;
   final String? anchor;
+  final int? endOffset;
   final String excerpt;
   final String noteText;
+  final String color;
   final DateTime createdAt;
   final DateTime updatedAt;
 
@@ -182,8 +186,10 @@ class Note {
         'id': id,
         'bookId': bookId,
         'anchor': anchor,
+        'endOffset': endOffset,
         'excerpt': excerpt,
         'noteText': noteText,
+        'color': color,
         'createdAt': createdAt.toIso8601String(),
         'updatedAt': updatedAt.toIso8601String(),
       };
@@ -193,8 +199,10 @@ class Note {
       id: map['id'] as String,
       bookId: map['bookId'] as String,
       anchor: map['anchor'] as String?,
+      endOffset: (map['endOffset'] as num?)?.toInt(),
       excerpt: map['excerpt'] as String? ?? '',
       noteText: map['noteText'] as String? ?? '',
+      color: map['color'] as String? ?? 'yellow',
       createdAt: DateTime.parse(map['createdAt'] as String),
       updatedAt: DateTime.parse(map['updatedAt'] as String),
     );
@@ -479,6 +487,38 @@ class LibraryStore {
         progress: entry.progress,
         lastOpenedAt: entry.lastOpenedAt,
         notes: [...entry.notes, note],
+        highlights: entry.highlights,
+        bookmarks: entry.bookmarks,
+        tocOfficial: entry.tocOfficial,
+        tocGenerated: entry.tocGenerated,
+        tocMode: entry.tocMode,
+      ),
+    );
+  }
+
+  Future<void> removeNote(String id, String noteId) async {
+    final entry = await getById(id);
+    if (entry == null) {
+      return;
+    }
+    final updatedNotes =
+        entry.notes.where((item) => item.id != noteId).toList();
+    if (updatedNotes.length == entry.notes.length) {
+      return;
+    }
+    await upsert(
+      LibraryEntry(
+        id: entry.id,
+        title: entry.title,
+        author: entry.author,
+        localPath: entry.localPath,
+        addedAt: entry.addedAt,
+        fingerprint: entry.fingerprint,
+        sourcePath: entry.sourcePath,
+        readingPosition: entry.readingPosition,
+        progress: entry.progress,
+        lastOpenedAt: entry.lastOpenedAt,
+        notes: updatedNotes,
         highlights: entry.highlights,
         bookmarks: entry.bookmarks,
         tocOfficial: entry.tocOfficial,

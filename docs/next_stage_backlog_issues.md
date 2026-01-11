@@ -303,13 +303,13 @@
 Пользователь выделяет текст → добавляет заметку → текст заметки сохраняется.
 
 ### Checklist
-- [ ] Контекстное меню selection: `Note`.
-- [ ] Диалог ввода текста (минимум: multiline, кнопки Save/Cancel).
-- [ ] Сохранять сущность Note:
-  - [ ] `id`, `bookId`, `anchor`, `excerpt`
-  - [ ] `text`
-  - [ ] `createdAt`, `updatedAt`
-- [ ] Persist в Hive через `LibraryStore`.
+- [x] Контекстное меню selection: `Note`.
+- [x] Диалог ввода текста (минимум: multiline, кнопки Save/Cancel).
+- [x] Сохранять сущность Note:
+  - [x] `id`, `bookId`, `anchor`, `excerpt`
+  - [x] `text`
+  - [x] `createdAt`, `updatedAt`
+- [x] Persist в Hive через `LibraryStore`.
 
 ### Acceptance Criteria
 - Note сохраняется и переживает перезапуск.
