@@ -814,6 +814,17 @@ const Map<String, String> _fb2CoverExtensions = <String, String>{
   'image/webp': '.webp',
 };
 
+@visibleForTesting
+_BookMetadata readFb2MetadataForTest(
+  List<int> bytes,
+  String fallbackTitle,
+) =>
+    _readFb2MetadataFromBytes(bytes, fallbackTitle);
+
+@visibleForTesting
+_CoverPayload? readFb2CoverForTest(List<int> bytes) =>
+    _readFb2CoverFromBytes(bytes);
+
 Future<_CoverPayload?> _readCoverBytes(EpubBookRef bookRef) async {
   try {
     final manifestItems = bookRef.Schema?.Package?.Manifest?.Items;
