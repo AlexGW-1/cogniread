@@ -6,6 +6,7 @@ import 'package:cogniread/src/core/services/storage_service.dart';
 import 'package:cogniread/src/core/services/storage_service_impl.dart';
 import 'package:cogniread/src/core/types/toc.dart';
 import 'package:cogniread/src/core/utils/logger.dart';
+import 'package:cogniread/src/features/library/data/library_preferences_store.dart';
 import 'package:cogniread/src/features/library/data/library_store.dart';
 import 'package:epubx/epubx.dart';
 import 'package:file_picker/file_picker.dart';
@@ -62,6 +63,11 @@ class LibraryBookItem {
   final List<Highlight> highlights;
 }
 
+enum LibraryViewMode {
+  list,
+  grid,
+}
+
 enum LibrarySearchResultType {
   book,
   note,
@@ -92,15 +98,18 @@ class LibraryController extends ChangeNotifier {
   LibraryController({
     StorageService? storageService,
     LibraryStore? store,
+    LibraryPreferencesStore? preferencesStore,
     Future<String?> Function()? pickEpubPath,
     bool stubImport = false,
   })  : _storageService = storageService ?? AppStorageService(),
         _store = store ?? LibraryStore(),
+        _preferencesStore = preferencesStore ?? LibraryPreferencesStore(),
         _pickEpubPath = pickEpubPath,
         _stubImport = stubImport;
 
   final StorageService _storageService;
   final LibraryStore _store;
+  final LibraryPreferencesStore _preferencesStore;
   final Future<String?> Function()? _pickEpubPath;
   final bool _stubImport;
   Future<void>? _storeReady;
@@ -111,6 +120,7 @@ class LibraryController extends ChangeNotifier {
   String? _infoMessage;
   String _query = '';
   final List<LibraryBookItem> _books = <LibraryBookItem>[];
+  LibraryViewMode _viewMode = LibraryViewMode.list;
   String _globalSearchQuery = '';
   bool _globalSearching = false;
   List<LibrarySearchResult> _globalSearchResults =
@@ -123,6 +133,7 @@ class LibraryController extends ChangeNotifier {
   String? get errorMessage => _errorMessage;
   String? get infoMessage => _infoMessage;
   String get query => _query;
+  LibraryViewMode get viewMode => _viewMode;
   String get globalSearchQuery => _globalSearchQuery;
   bool get globalSearching => _globalSearching;
   List<LibrarySearchResult> get globalSearchResults =>
@@ -143,8 +154,39 @@ class LibraryController extends ChangeNotifier {
   }
 
   Future<void> init() async {
-    _storeReady = _stubImport ? Future<void>.value() : _store.init();
+    if (_stubImport) {
+      _storeReady = Future<void>.value();
+      _addStubBook();
+      _setInfo('Книга добавлена');
+      _loading = false;
+      notifyListeners();
+      return;
+    }
+    _storeReady = _store.init();
+    await _preferencesStore.init();
+    await _loadViewMode();
     await _loadLibrary();
+  }
+
+  Future<void> _loadViewMode() async {
+    final stored = await _preferencesStore.loadViewMode();
+    if (stored == 'grid') {
+      _viewMode = LibraryViewMode.grid;
+    } else {
+      _viewMode = LibraryViewMode.list;
+    }
+    notifyListeners();
+  }
+
+  Future<void> setViewMode(LibraryViewMode mode) async {
+    if (_viewMode == mode) {
+      return;
+    }
+    _viewMode = mode;
+    notifyListeners();
+    await _preferencesStore.saveViewMode(
+      mode == LibraryViewMode.grid ? 'grid' : 'list',
+    );
   }
 
   void setQuery(String value) {

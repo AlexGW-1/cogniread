@@ -291,6 +291,13 @@ class _LibraryScreenState extends State<LibraryScreen> {
     );
   }
 
+  Future<void> _toggleViewMode() async {
+    final next = _controller.viewMode == LibraryViewMode.list
+        ? LibraryViewMode.grid
+        : LibraryViewMode.list;
+    await _controller.setViewMode(next);
+  }
+
   Future<void> _showEventLogDebug() async {
     final store = EventLogStore();
     await store.init();
@@ -409,6 +416,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   Widget _buildMobileScaffold() {
     final scheme = Theme.of(context).colorScheme;
     final filtered = _controller.filteredBooks;
+    final viewMode = _controller.viewMode;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Library'),
@@ -417,6 +425,17 @@ class _LibraryScreenState extends State<LibraryScreen> {
             tooltip: 'Очистить библиотеку',
             onPressed: _controller.books.isEmpty ? null : _clearLibrary,
             icon: const Icon(Icons.delete_outline),
+          ),
+          IconButton(
+            tooltip: viewMode == LibraryViewMode.list
+                ? 'Плитка'
+                : 'Список',
+            onPressed: _controller.books.isEmpty ? null : _toggleViewMode,
+            icon: Icon(
+              viewMode == LibraryViewMode.list
+                  ? Icons.grid_view_outlined
+                  : Icons.view_list_outlined,
+            ),
           ),
           IconButton(
             tooltip: 'Event log',
@@ -487,30 +506,58 @@ class _LibraryScreenState extends State<LibraryScreen> {
                           ? const Center(
                               child: Text('Ничего не найдено.'),
                             )
-                          : ListView.separated(
-                              itemCount: filtered.length,
-                              separatorBuilder: (context, index) =>
-                                  const Divider(height: 1),
-                              itemBuilder: (context, i) {
-                                final book = filtered[i];
-                                return ListTile(
-                                  key: ValueKey('library-book-tile-$i'),
-                                  leading: _BookCover(
-                                    title: book.title,
-                                    coverPath: book.coverPath,
-                                  ),
-                                  title: Text(book.title),
-                                  subtitle: _buildBookSubtitle(book, scheme),
-                                  trailing: IconButton(
-                                    key: ValueKey('library-delete-$i'),
-                                    icon: const Icon(Icons.delete_outline),
-                                    onPressed: () => _deleteBook(i),
-                                    tooltip: 'Удалить книгу',
-                                  ),
-                                  onTap: () => _open(book.id),
-                                );
-                              },
-                            ),
+                          : viewMode == LibraryViewMode.list
+                              ? ListView.separated(
+                                  itemCount: filtered.length,
+                                  separatorBuilder: (context, index) =>
+                                      const Divider(height: 1),
+                                  itemBuilder: (context, i) {
+                                    final book = filtered[i];
+                                    return ListTile(
+                                      key: ValueKey('library-book-tile-$i'),
+                                      leading: _BookCover(
+                                        title: book.title,
+                                        coverPath: book.coverPath,
+                                      ),
+                                      title: Text(book.title),
+                                      subtitle: _buildBookSubtitle(book, scheme),
+                                      trailing: IconButton(
+                                        key: ValueKey('library-delete-$i'),
+                                        icon: const Icon(Icons.delete_outline),
+                                        onPressed: () => _deleteBook(i),
+                                        tooltip: 'Удалить книгу',
+                                      ),
+                                      onTap: () => _open(book.id),
+                                    );
+                                  },
+                                )
+                              : LayoutBuilder(
+                                  builder: (context, constraints) {
+                                    final width = constraints.maxWidth;
+                                    final crossAxisCount =
+                                        width >= 600 ? 4 : 3;
+                                    return GridView.builder(
+                                      padding: const EdgeInsets.all(12),
+                                      gridDelegate:
+                                          SliverGridDelegateWithFixedCrossAxisCount(
+                                        crossAxisCount: crossAxisCount,
+                                        mainAxisSpacing: 12,
+                                        crossAxisSpacing: 12,
+                                        childAspectRatio: 0.68,
+                                      ),
+                                      itemCount: filtered.length,
+                                      itemBuilder: (context, i) {
+                                        final book = filtered[i];
+                                        return _BookGridTile(
+                                          key: ValueKey('library-book-grid-$i'),
+                                          book: book,
+                                          onTap: () => _open(book.id),
+                                          onDelete: () => _deleteBook(i),
+                                        );
+                                      },
+                                    );
+                                  },
+                                ),
                     ),
                   ],
                 ),
@@ -525,6 +572,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   Widget _buildDesktopScaffold() {
     final scheme = Theme.of(context).colorScheme;
     final filtered = _controller.filteredBooks;
+    final viewMode = _controller.viewMode;
     return Scaffold(
       body: Container(
         decoration: BoxDecoration(
@@ -606,6 +654,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
                           onQueryChanged: (value) {
                             _controller.setQuery(value);
                           },
+                          viewMode: viewMode,
+                          onToggleViewMode: _toggleViewMode,
                           onToggleSearch: _toggleSearch,
                           onGlobalSearch:
                               _controller.books.isEmpty ? null : _showGlobalSearch,
@@ -668,6 +718,8 @@ class _LibraryPanel extends StatelessWidget {
     required this.showSearch,
     required this.searchController,
     required this.onQueryChanged,
+    required this.viewMode,
+    required this.onToggleViewMode,
     required this.onToggleSearch,
     required this.onGlobalSearch,
     required this.onEventLog,
@@ -685,6 +737,8 @@ class _LibraryPanel extends StatelessWidget {
   final bool showSearch;
   final TextEditingController searchController;
   final ValueChanged<String> onQueryChanged;
+  final LibraryViewMode viewMode;
+  final VoidCallback onToggleViewMode;
   final VoidCallback onToggleSearch;
   final VoidCallback? onGlobalSearch;
   final VoidCallback onEventLog;
@@ -732,6 +786,18 @@ class _LibraryPanel extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               IconButton(
+                tooltip: viewMode == LibraryViewMode.list
+                    ? 'Плитка'
+                    : 'Список',
+                onPressed: onToggleViewMode,
+                icon: Icon(
+                  viewMode == LibraryViewMode.list
+                      ? Icons.grid_view_outlined
+                      : Icons.view_list_outlined,
+                ),
+              ),
+              const SizedBox(width: 4),
+              IconButton(
                 tooltip: 'Event log',
                 onPressed: onEventLog,
                 icon: const Icon(Icons.bug_report_outlined),
@@ -775,25 +841,59 @@ class _LibraryPanel extends StatelessWidget {
                 ? const Center(child: CircularProgressIndicator())
                 : books.isEmpty
                     ? _LibraryEmpty(onImport: onImport)
-                    : ListView.separated(
-                        itemCount: books.length,
-                        separatorBuilder: (_, _) =>
-                            const SizedBox(height: 12),
-                        itemBuilder: (context, index) {
-                          final book = books[index];
-                          return _BookCard(
-                            key: ValueKey('library-book-card-$index'),
-                            book: book,
-                            index: index,
-                            selected: book.id == selectedId,
-                            onTap: () {
-                              onSelect(book.id);
-                              onOpen(index);
+                    : viewMode == LibraryViewMode.list
+                        ? ListView.separated(
+                            itemCount: books.length,
+                            separatorBuilder: (_, _) =>
+                                const SizedBox(height: 12),
+                            itemBuilder: (context, index) {
+                              final book = books[index];
+                              return _BookCard(
+                                key: ValueKey('library-book-card-$index'),
+                                book: book,
+                                index: index,
+                                selected: book.id == selectedId,
+                                onTap: () {
+                                  onSelect(book.id);
+                                  onOpen(index);
+                                },
+                                onDelete: () => onDelete(index),
+                              );
                             },
-                            onDelete: () => onDelete(index),
-                          );
-                        },
-                      ),
+                          )
+                        : LayoutBuilder(
+                            builder: (context, constraints) {
+                              final crossAxisCount =
+                                  (constraints.maxWidth / 200).floor().clamp(
+                                        3,
+                                        5,
+                                      );
+                              return GridView.builder(
+                                padding: const EdgeInsets.all(8),
+                                gridDelegate:
+                                    SliverGridDelegateWithFixedCrossAxisCount(
+                                  crossAxisCount: crossAxisCount,
+                                  mainAxisSpacing: 12,
+                                  crossAxisSpacing: 12,
+                                  childAspectRatio: 0.68,
+                                ),
+                                itemCount: books.length,
+                                itemBuilder: (context, index) {
+                                  final book = books[index];
+                                  return _BookGridTile(
+                                    key: ValueKey('library-book-grid-$index'),
+                                    book: book,
+                                    selected: book.id == selectedId,
+                                    onTap: () {
+                                      onSelect(book.id);
+                                      onOpen(index);
+                                    },
+                                    onDelete: () => onDelete(index),
+                                  );
+                                },
+                              );
+                            },
+                          ),
           ),
         ],
       ),
@@ -890,10 +990,19 @@ class _BookCard extends StatelessWidget {
 }
 
 class _BookCover extends StatelessWidget {
-  const _BookCover({required this.title, required this.coverPath});
+  const _BookCover({
+    required this.title,
+    required this.coverPath,
+    this.width = 56,
+    this.height = 72,
+    this.borderRadius = 12,
+  });
 
   final String title;
   final String? coverPath;
+  final double width;
+  final double height;
+  final double borderRadius;
 
   @override
   Widget build(BuildContext context) {
@@ -909,20 +1018,29 @@ class _BookCover extends StatelessWidget {
     }
     if (coverFile != null) {
       return ClipRRect(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(borderRadius),
         child: Image.file(
           coverFile,
-          width: 56,
-          height: 72,
+          width: width,
+          height: height,
           fit: BoxFit.cover,
           errorBuilder: (context, error, stackTrace) => _BookCoverPlaceholder(
             initial: initial,
             scheme: scheme,
+            width: width,
+            height: height,
+            borderRadius: borderRadius,
           ),
         ),
       );
     }
-    return _BookCoverPlaceholder(initial: initial, scheme: scheme);
+    return _BookCoverPlaceholder(
+      initial: initial,
+      scheme: scheme,
+      width: width,
+      height: height,
+      borderRadius: borderRadius,
+    );
   }
 }
 
@@ -930,16 +1048,22 @@ class _BookCoverPlaceholder extends StatelessWidget {
   const _BookCoverPlaceholder({
     required this.initial,
     required this.scheme,
+    required this.width,
+    required this.height,
+    required this.borderRadius,
   });
 
   final String initial;
   final ColorScheme scheme;
+  final double width;
+  final double height;
+  final double borderRadius;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: 56,
-      height: 72,
+      width: width,
+      height: height,
       decoration: BoxDecoration(
         gradient: LinearGradient(
           colors: [
@@ -949,7 +1073,7 @@ class _BookCoverPlaceholder extends StatelessWidget {
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(borderRadius),
       ),
       child: Center(
         child: Text(
@@ -958,6 +1082,91 @@ class _BookCoverPlaceholder extends StatelessWidget {
                 fontWeight: FontWeight.w700,
                 color: scheme.onPrimaryContainer,
               ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BookGridTile extends StatelessWidget {
+  const _BookGridTile({
+    super.key,
+    required this.book,
+    required this.onTap,
+    required this.onDelete,
+    this.selected = false,
+  });
+
+  final LibraryBookItem book;
+  final VoidCallback onTap;
+  final VoidCallback onDelete;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final accent = selected ? scheme.primaryContainer : scheme.surface;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onTap,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(
+              child: Container(
+                decoration: BoxDecoration(
+                  color: accent.withAlpha(230),
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withAlpha(30),
+                      blurRadius: 18,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                ),
+                padding: const EdgeInsets.all(10),
+                child: AspectRatio(
+                  aspectRatio: 2 / 3,
+                  child: _BookCover(
+                    title: book.title,
+                    coverPath: book.coverPath,
+                    width: 120,
+                    height: 180,
+                    borderRadius: 12,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                if (book.isMissing)
+                  Expanded(
+                    child: Text(
+                      'Файл отсутствует',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                            color: scheme.error,
+                          ),
+                    ),
+                  )
+                else
+                  const Spacer(),
+                IconButton(
+                  key: ValueKey('library-delete-grid-${book.id}'),
+                  onPressed: onDelete,
+                  icon: const Icon(Icons.more_horiz, size: 18),
+                  tooltip: 'Удалить книгу',
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );
