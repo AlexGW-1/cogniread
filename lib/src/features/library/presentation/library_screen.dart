@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:cogniread/src/core/services/storage_service.dart';
@@ -5,6 +6,7 @@ import 'package:cogniread/src/features/library/presentation/library_controller.d
 import 'package:cogniread/src/features/reader/presentation/reader_screen.dart';
 import 'package:cogniread/src/features/sync/data/event_log_store.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 class LibraryScreen extends StatefulWidget {
   const LibraryScreen({
@@ -300,27 +302,80 @@ class _LibraryScreenState extends State<LibraryScreen> {
       context: context,
       builder: (context) {
         return SafeArea(
-          child: events.isEmpty
-              ? const Center(
-                  child: Padding(
-                    padding: EdgeInsets.all(24),
-                    child: Text('Пока нет событий в журнале.'),
-                  ),
-                )
-              : ListView.separated(
-                  itemCount: events.length,
-                  separatorBuilder: (_, __) => const Divider(height: 1),
-                  itemBuilder: (context, index) {
-                    final event = events[index];
-                    return ListTile(
-                      title: Text('${event.entityType} · ${event.op}'),
-                      subtitle: Text(
-                        '${event.entityId} · ${event.createdAt.toIso8601String()}',
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Event log',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
-                      dense: true,
-                    );
-                  },
+                    ),
+                    IconButton(
+                      tooltip: 'Копировать JSON',
+                      onPressed: events.isEmpty
+                          ? null
+                          : () async {
+                              final payload = events
+                                  .map((event) => event.toMap())
+                                  .toList();
+                              final json = jsonEncode(payload);
+                              await Clipboard.setData(
+                                ClipboardData(text: json),
+                              );
+                              if (!context.mounted) {
+                                return;
+                              }
+                              Navigator.of(context).pop();
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content:
+                                      Text('Event log скопирован в буфер'),
+                                ),
+                              );
+                            },
+                      icon: const Icon(Icons.copy_outlined),
+                    ),
+                    IconButton(
+                      tooltip: 'Закрыть',
+                      onPressed: () => Navigator.of(context).pop(),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
                 ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: events.isEmpty
+                    ? const Center(
+                        child: Padding(
+                          padding: EdgeInsets.all(24),
+                          child: Text('Пока нет событий в журнале.'),
+                        ),
+                      )
+                    : ListView.separated(
+                        itemCount: events.length,
+                        separatorBuilder: (_, __) => const Divider(height: 1),
+                        itemBuilder: (context, index) {
+                          final event = events[index];
+                          return ListTile(
+                            title: Text('${event.entityType} · ${event.op}'),
+                            subtitle: Text(
+                              '${event.entityId} · ${event.createdAt.toIso8601String()}',
+                            ),
+                            dense: true,
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
         );
       },
     );
