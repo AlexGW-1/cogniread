@@ -719,6 +719,14 @@ class LibraryController extends ChangeNotifier {
       return 'Нет доступа к файлу';
     }
 
+    final ext = p.extension(path).toLowerCase();
+    if (ext == '.zip') {
+      final error = await _validateZipContainsBook(file);
+      if (error != null) {
+        return error;
+      }
+    }
+
     return null;
   }
 
@@ -982,6 +990,28 @@ bool _isSupportedExtension(String path) {
     return false;
   }
   return LibraryController._supportedExtensions.contains(ext);
+}
+
+Future<String?> _validateZipContainsBook(File zipFile) async {
+  try {
+    final bytes = await zipFile.readAsBytes();
+    final archive = ZipDecoder().decodeBytes(bytes, verify: false);
+    for (final file in archive.files) {
+      if (!file.isFile) {
+        continue;
+      }
+      final name = file.name.toLowerCase();
+      if (name.endsWith('.fb2') ||
+          name.endsWith('.xml') ||
+          name.endsWith('.epub')) {
+        return null;
+      }
+    }
+    return 'Архив не содержит книгу (.fb2/.xml/.epub)';
+  } catch (e) {
+    Log.d('Failed to validate zip: $e');
+    return 'Не удалось прочитать архив';
+  }
 }
 
 int _sortByLastOpenedAt(LibraryBookItem a, LibraryBookItem b) {
