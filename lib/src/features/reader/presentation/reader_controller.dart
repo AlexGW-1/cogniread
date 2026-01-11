@@ -26,6 +26,24 @@ class ReaderChapter {
   final String? href;
 }
 
+class SearchResult {
+  const SearchResult({
+    required this.chapterIndex,
+    required this.chapterHref,
+    required this.chapterTitle,
+    required this.offset,
+    required this.matchLength,
+    required this.snippet,
+  });
+
+  final int chapterIndex;
+  final String chapterHref;
+  final String chapterTitle;
+  final int offset;
+  final int matchLength;
+  final String snippet;
+}
+
 class ReaderController extends ChangeNotifier {
   ReaderController({LibraryStore? store, bool? perfLogsEnabled})
       : _store = store ?? LibraryStore(),
@@ -49,6 +67,11 @@ class ReaderController extends ChangeNotifier {
   List<Note> _notes = const <Note>[];
   List<Bookmark> _bookmarks = const <Bookmark>[];
   Bookmark? _bookmark;
+  String _searchQuery = '';
+  bool _searching = false;
+  List<SearchResult> _searchResults = const <SearchResult>[];
+  Timer? _searchDebounce;
+  int _searchNonce = 0;
   String? _activeBookId;
   TocMode _tocMode = TocMode.official;
   List<_TocEntry> _officialTocEntries = const <_TocEntry>[];
@@ -66,6 +89,10 @@ class ReaderController extends ChangeNotifier {
   List<Note> get notes => List<Note>.unmodifiable(_notes);
   List<Bookmark> get bookmarks => List<Bookmark>.unmodifiable(_bookmarks);
   Bookmark? get bookmark => _bookmark;
+  String get searchQuery => _searchQuery;
+  bool get searching => _searching;
+  List<SearchResult> get searchResults =>
+      List<SearchResult>.unmodifiable(_searchResults);
   TocMode get tocMode => _tocMode;
   bool get hasGeneratedToc => _tocGeneratedNodes.isNotEmpty;
 
@@ -169,6 +196,76 @@ class ReaderController extends ChangeNotifier {
       return;
     }
     await load(bookId);
+  }
+
+  @override
+  void dispose() {
+    _searchDebounce?.cancel();
+    super.dispose();
+  }
+
+  void setSearchQuery(String query, {int limit = 50}) {
+    _searchQuery = query;
+    _searchDebounce?.cancel();
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) {
+      _searching = false;
+      _searchResults = const <SearchResult>[];
+      notifyListeners();
+      return;
+    }
+    _searching = true;
+    notifyListeners();
+    final nonce = ++_searchNonce;
+    _searchDebounce = Timer(const Duration(milliseconds: 300), () {
+      final results = searchMatches(trimmed, limit: limit);
+      if (nonce != _searchNonce) {
+        return;
+      }
+      _searchResults = results;
+      _searching = false;
+      notifyListeners();
+    });
+  }
+
+  List<SearchResult> searchMatches(String query, {int limit = 50}) {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty || _chapters.isEmpty) {
+      return const <SearchResult>[];
+    }
+    final results = <SearchResult>[];
+    final needle = trimmed.toLowerCase();
+    for (var i = 0; i < _chapters.length; i += 1) {
+      final chapter = _chapters[i];
+      final text = _chapterSearchText(chapter);
+      if (text.isEmpty) {
+        continue;
+      }
+      final lower = text.toLowerCase();
+      var start = 0;
+      while (results.length < limit) {
+        final index = lower.indexOf(needle, start);
+        if (index == -1) {
+          break;
+        }
+        final snippet = _buildSnippet(text, index, trimmed.length);
+        results.add(
+          SearchResult(
+            chapterIndex: i,
+            chapterHref: chapter.href ?? 'index:$i',
+            chapterTitle: chapter.title,
+            offset: index,
+            matchLength: trimmed.length,
+            snippet: snippet,
+          ),
+        );
+        start = index + trimmed.length;
+      }
+      if (results.length >= limit) {
+        break;
+      }
+    }
+    return results;
   }
 
   Future<bool> addHighlight({
@@ -924,6 +1021,26 @@ String _combineChapterTitle(String marker, String title) {
     return '$cleanMarker $cleanTitle';
   }
   return '$cleanMarker. $cleanTitle';
+}
+
+String _chapterSearchText(ReaderChapter chapter) {
+  final buffer = StringBuffer();
+  buffer.write(chapter.title);
+  for (final paragraph in chapter.paragraphs) {
+    buffer.write(paragraph);
+  }
+  return buffer.toString();
+}
+
+String _buildSnippet(String text, int matchIndex, int matchLength) {
+  const context = 40;
+  final start = max(0, matchIndex - context);
+  final end = min(text.length, matchIndex + matchLength + context);
+  final raw = text.substring(start, end);
+  final normalized = raw.replaceAll(RegExp(r'\s+'), ' ').trim();
+  final prefix = start > 0 ? '…' : '';
+  final suffix = end < text.length ? '…' : '';
+  return '$prefix$normalized$suffix';
 }
 
 String _extractChapterTitle(String html, String fallback) {

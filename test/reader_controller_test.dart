@@ -172,4 +172,19 @@ void main() {
     expect(controller.error, isNull);
     expect(controller.chapters, isNotEmpty);
   });
+
+  test('ReaderController searchMatches finds snippet', () async {
+    final epub = await _writeTestEpub('Chapter One');
+    final store = _FakeLibraryStore(_makeEntry('book-3', epub.path));
+    final controller = ReaderController(store: store, perfLogsEnabled: false);
+
+    await controller.load('book-3');
+
+    final results = controller.searchMatches('Hello');
+
+    expect(results, isNotEmpty);
+    expect(results.first.snippet.toLowerCase(), contains('hello'));
+    expect(results.first.chapterIndex, 0);
+    expect(results.first.offset, greaterThanOrEqualTo(0));
+  });
 }

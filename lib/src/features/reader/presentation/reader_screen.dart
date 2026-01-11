@@ -41,10 +41,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
   String? _selectionText;
   ReadingPosition? _initialPosition;
   Timer? _positionDebounce;
+  Timer? _searchHighlightTimer;
   bool _didRestore = false;
   int _restoreAttempts = 0;
   double _viewportExtent = 0;
   double? _textWidth;
+  _HighlightRange? _searchHighlightRange;
+  int? _searchHighlightChapterIndex;
 
   @override
   void initState() {
@@ -85,6 +88,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   @override
   void dispose() {
     _positionDebounce?.cancel();
+    _searchHighlightTimer?.cancel();
     if (widget.persistReadingPosition) {
       _persistReadingPosition();
     }
@@ -686,6 +690,107 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
+  void _showSearch() {
+    final textController =
+        TextEditingController(text: _controller.searchQuery);
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) {
+        return AnimatedBuilder(
+          animation: _controller,
+          builder: (context, _) {
+            final query = _controller.searchQuery.trim();
+            final results = _controller.searchResults;
+            final searching = _controller.searching;
+            return SafeArea(
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 16,
+                  right: 16,
+                  top: 12,
+                  bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
+                ),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        const Expanded(
+                          child: Text(
+                            'Поиск по книге',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Закрыть',
+                          onPressed: () => Navigator.of(context).pop(),
+                          icon: const Icon(Icons.close),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: textController,
+                      autofocus: true,
+                      onChanged: _controller.setSearchQuery,
+                      decoration: const InputDecoration(
+                        hintText: 'Введите запрос',
+                        prefixIcon: Icon(Icons.search),
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    if (searching)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 16),
+                        child: CircularProgressIndicator(),
+                      )
+                    else if (query.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 16),
+                        child: Text('Введите запрос для поиска.'),
+                      )
+                    else if (results.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 16),
+                        child: Text('Ничего не найдено.'),
+                      )
+                    else
+                      Expanded(
+                        child: ListView.separated(
+                          itemCount: results.length,
+                          separatorBuilder: (_, _) =>
+                              const Divider(height: 1),
+                          itemBuilder: (context, index) {
+                            final result = results[index];
+                            return ListTile(
+                              title: Text(
+                                result.snippet,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              subtitle: Text(result.chapterTitle),
+                              onTap: () {
+                                Navigator.of(context).pop();
+                                _scrollToSearchResult(result);
+                              },
+                            );
+                          },
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   void _showPositioningError(String message) {
     if (!mounted) {
       return;
@@ -904,6 +1009,46 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
+  void _scrollToSearchResult(SearchResult result) {
+    _setSearchHighlight(result);
+    final offsetWithin = _estimateAnchorScrollOffset(
+      result.chapterIndex,
+      result.offset,
+    );
+    if (offsetWithin == null || offsetWithin < 0) {
+      _showPositioningError('Не удалось точно позиционировать результат');
+      return;
+    }
+    _scrollToChapterOffset(
+      result.chapterIndex,
+      offsetWithin,
+      'Не удалось перейти к результату',
+    );
+  }
+
+  void _setSearchHighlight(SearchResult result) {
+    _searchHighlightTimer?.cancel();
+    final start = result.offset;
+    final end = start + result.matchLength;
+    setState(() {
+      _searchHighlightChapterIndex = result.chapterIndex;
+      _searchHighlightRange = _HighlightRange(
+        start: start,
+        end: end,
+        color: const Color(0xFFFFF59D),
+      );
+    });
+    _searchHighlightTimer = Timer(const Duration(seconds: 2), () {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _searchHighlightChapterIndex = null;
+        _searchHighlightRange = null;
+      });
+    });
+  }
+
   void _scrollToChapterOffset(
     int chapterIndex,
     double targetOffset,
@@ -1074,6 +1219,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   List<_HighlightRange> _highlightRangesForChapter(int chapterIndex) {
     final ranges = <_HighlightRange>[];
+    if (_searchHighlightChapterIndex == chapterIndex &&
+        _searchHighlightRange != null) {
+      ranges.add(_searchHighlightRange!);
+    }
     for (final highlight in _controller.highlights) {
       final anchor = Anchor.parse(highlight.anchor);
       if (anchor == null) {
@@ -1176,6 +1325,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
         title: Text(_controller.title ?? 'Reader'),
         actions: [
           IconButton(
+            tooltip: 'Поиск',
+            onPressed: _showSearch,
+            icon: const Icon(Icons.search),
+          ),
+          IconButton(
             tooltip: _controller.bookmark == null
                 ? 'Добавить закладку'
                 : 'Удалить закладку',
@@ -1266,6 +1420,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                               onMarksTap: _showNotesHighlights,
                               onBookmarkToggle: _toggleBookmark,
                               onBookmarksTap: _showBookmarks,
+                              onSearchTap: _showSearch,
                             ),
                             const SizedBox(height: 16),
                             Expanded(
@@ -1836,6 +1991,7 @@ class _ReaderHeader extends StatelessWidget {
     required this.onMarksTap,
     required this.onBookmarkToggle,
     required this.onBookmarksTap,
+    required this.onSearchTap,
   });
 
   final String title;
@@ -1847,6 +2003,7 @@ class _ReaderHeader extends StatelessWidget {
   final VoidCallback onMarksTap;
   final VoidCallback onBookmarkToggle;
   final VoidCallback onBookmarksTap;
+  final VoidCallback onSearchTap;
 
   @override
   Widget build(BuildContext context) {
@@ -1869,6 +2026,11 @@ class _ReaderHeader extends StatelessWidget {
           onPressed: hasToc ? onTocTap : null,
           key: const ValueKey('reader-toc-button-inline'),
           icon: Icon(Icons.list, color: scheme.primary),
+        ),
+        IconButton(
+          tooltip: 'Поиск',
+          onPressed: onSearchTap,
+          icon: Icon(Icons.search, color: scheme.primary),
         ),
         IconButton(
           tooltip: hasBookmark ? 'Удалить закладку' : 'Добавить закладку',
