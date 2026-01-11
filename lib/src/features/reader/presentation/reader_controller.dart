@@ -49,13 +49,12 @@ enum ReaderLoadState { loading, content, error }
 enum _ReaderLoadErrorType { timeout, parseFailed, fileAccess, unknown }
 
 class _ReaderLoadException implements Exception {
-  const _ReaderLoadException(this.type, {this.details});
+  const _ReaderLoadException(this.type);
 
   final _ReaderLoadErrorType type;
-  final String? details;
 
   @override
-  String toString() => 'ReaderLoadException($type, $details)';
+  String toString() => 'ReaderLoadException($type)';
 }
 
 class ReaderController extends ChangeNotifier {
@@ -159,12 +158,12 @@ class ReaderController extends ChangeNotifier {
       _logCache('Reader cache miss ($bookId)');
 
       final readWatch = Stopwatch()..start();
-      final bytes = await file.readAsBytes().catchError((error) {
-        if (error is FileSystemException) {
-          throw const _ReaderLoadException(_ReaderLoadErrorType.fileAccess);
-        }
-        throw error;
-      });
+      late final List<int> bytes;
+      try {
+        bytes = await file.readAsBytes();
+      } on FileSystemException {
+        throw const _ReaderLoadException(_ReaderLoadErrorType.fileAccess);
+      }
       readWatch.stop();
       _logPerf(
         'Reader perf: read bytes ${readWatch.elapsedMilliseconds}ms'
@@ -665,19 +664,36 @@ class ReaderController extends ChangeNotifier {
       if (chapters.isNotEmpty) {
         return chapters;
       }
-      throw Exception('Не удалось извлечь главы');
+      throw const _ReaderLoadException(_ReaderLoadErrorType.parseFailed);
     } on ArchiveException catch (e) {
-      Log.d('Failed to decode EPUB archive: $e');
-      throw const _ReaderLoadException(_ReaderLoadErrorType.parseFailed);
+      Log.d('Failed to decode archive: $e');
+      return _extractPlainFb2(bytes);
     } on FormatException catch (e) {
-      Log.d('Failed to decode EPUB archive: $e');
-      throw const _ReaderLoadException(_ReaderLoadErrorType.parseFailed);
+      Log.d('Failed to decode archive: $e');
+      return _extractPlainFb2(bytes);
     } catch (e) {
-      Log.d('Failed to decode EPUB archive: $e');
+      Log.d('Failed to decode archive: $e');
       if (e is _ReaderLoadException) {
         rethrow;
       }
       throw const _ReaderLoadException(_ReaderLoadErrorType.parseFailed);
+    }
+  }
+
+  List<_ChapterSource> _extractPlainFb2(List<int> bytes) {
+    final decoded = _decodeFb2Xml(bytes);
+    final chapters = _chaptersFromFb2(decoded);
+    if (chapters.isNotEmpty) {
+      return chapters;
+    }
+    throw const _ReaderLoadException(_ReaderLoadErrorType.parseFailed);
+  }
+
+  String _decodeFb2Xml(List<int> bytes) {
+    try {
+      return utf8.decode(bytes);
+    } on FormatException {
+      return latin1.decode(bytes);
     }
   }
 
@@ -1257,26 +1273,27 @@ String _normalizeFb2ChapterTitle(
   int chapterIndex,
   bool isSpecial,
 ) {
+  final trimmed = title.trim();
+  if (trimmed.isEmpty) {
+    return chapterIndex > 0 ? 'Глава $chapterIndex' : '';
+  }
   if (isSpecial) {
-    if (_isFb2Prologue(title)) {
+    if (_isFb2Prologue(trimmed)) {
       return 'Пролог';
     }
-    if (_isFb2Epilogue(title)) {
+    if (_isFb2Epilogue(trimmed)) {
       return 'Эпилог';
     }
   }
-  final lower = title.toLowerCase();
+  final lower = trimmed.toLowerCase();
   final match = RegExp(r'глава\s*(\d+)', caseSensitive: false).firstMatch(lower);
   if (match != null) {
     return 'Глава ${match.group(1)}';
   }
-  if (RegExp(r'^\d+$').hasMatch(title.trim())) {
-    return 'Глава ${title.trim()}';
+  if (RegExp(r'^\d+$').hasMatch(trimmed)) {
+    return 'Глава $trimmed';
   }
-  if (chapterIndex > 0) {
-    return 'Глава $chapterIndex';
-  }
-  return title;
+  return trimmed;
 }
 
 List<_ChapterSource> _chaptersFromArchive(Archive archive) {

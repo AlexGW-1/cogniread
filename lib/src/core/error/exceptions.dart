@@ -8,6 +8,5 @@ class AppException implements Exception {
 }
 
 class NotImplementedYetException extends AppException {
-  NotImplementedYetException(String message, {Object? cause})
-      : super(message, cause: cause);
+  NotImplementedYetException(super.message, {super.cause});
 }

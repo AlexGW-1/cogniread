@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:convert';
 import 'dart:math';
 
+import 'package:archive/archive.dart';
 import 'package:cogniread/src/core/services/storage_service.dart';
 import 'package:cogniread/src/core/services/storage_service_impl.dart';
 import 'package:cogniread/src/core/types/toc.dart';
@@ -12,6 +14,7 @@ import 'package:epubx/epubx.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
+import 'package:xml/xml.dart';
 
 class LibraryBookItem {
   const LibraryBookItem({
@@ -720,13 +723,19 @@ class LibraryController extends ChangeNotifier {
   }
 
   Future<String?> _readCoverPath(String path, String bookId) async {
-    if (!_isSupportedExtension(path) || p.extension(path).toLowerCase() != '.epub') {
-      return null;
-    }
     try {
-      final bytes = await File(path).readAsBytes();
-      final bookRef = await EpubReader.openBook(bytes);
-      final cover = await _readCoverBytes(bookRef);
+      final extension = p.extension(path).toLowerCase();
+      _CoverPayload? cover;
+      if (extension == '.epub') {
+        final bytes = await File(path).readAsBytes();
+        final bookRef = await EpubReader.openBook(bytes);
+        cover = await _readCoverBytes(bookRef);
+      } else if (extension == '.fb2') {
+        cover = _readFb2CoverFromBytes(await File(path).readAsBytes());
+      } else if (extension == '.zip') {
+        cover =
+            _readFb2CoverFromZipBytes(await File(path).readAsBytes());
+      }
       if (cover == null || cover.bytes.isEmpty) {
         return null;
       }
@@ -735,8 +744,8 @@ class LibraryController extends ChangeNotifier {
       if (!await coversDir.exists()) {
         await coversDir.create(recursive: true);
       }
-      final extension = cover.extension ?? '.img';
-      final coverPath = p.join(coversDir.path, '$bookId$extension');
+      final coverExt = cover.extension ?? '.img';
+      final coverPath = p.join(coversDir.path, '$bookId$coverExt');
       await File(coverPath).writeAsBytes(cover.bytes, flush: true);
       return coverPath;
     } catch (e) {
@@ -788,6 +797,14 @@ class _CoverPayload {
   final List<int> bytes;
   final String? extension;
 }
+
+const Map<String, String> _fb2CoverExtensions = <String, String>{
+  'image/jpeg': '.jpg',
+  'image/jpg': '.jpg',
+  'image/png': '.png',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+};
 
 Future<_CoverPayload?> _readCoverBytes(EpubBookRef bookRef) async {
   try {
@@ -986,23 +1003,30 @@ class _BookMetadata {
 
 Future<_BookMetadata> _readMetadata(String path, String fallbackTitle) async {
   try {
-    if (p.extension(path).toLowerCase() != '.epub') {
-      return _BookMetadata(title: fallbackTitle, author: null);
-    }
+    final extension = p.extension(path).toLowerCase();
     final bytes = await File(path).readAsBytes();
-    try {
-      final bookRef = await EpubReader.openBook(bytes);
-      return _extractMetadata(
-        fallbackTitle: fallbackTitle,
-        title: bookRef.Title,
-        author: bookRef.Author,
-        authorList: bookRef.AuthorList,
-        schema: bookRef.Schema,
-      );
-    } catch (e) {
-      Log.d('Failed to open EPUB metadata: $e');
-      return _BookMetadata(title: fallbackTitle, author: null);
+    if (extension == '.epub') {
+      try {
+        final bookRef = await EpubReader.openBook(bytes);
+        return _extractMetadata(
+          fallbackTitle: fallbackTitle,
+          title: bookRef.Title,
+          author: bookRef.Author,
+          authorList: bookRef.AuthorList,
+          schema: bookRef.Schema,
+        );
+      } catch (e) {
+        Log.d('Failed to open EPUB metadata: $e');
+        return _BookMetadata(title: fallbackTitle, author: null);
+      }
     }
+    if (extension == '.fb2') {
+      return _readFb2MetadataFromBytes(bytes, fallbackTitle);
+    }
+    if (extension == '.zip') {
+      return _readFb2MetadataFromZip(bytes, fallbackTitle);
+    }
+    return _BookMetadata(title: fallbackTitle, author: null);
   } catch (e) {
     Log.d('Failed to read EPUB bytes: $e');
     return _BookMetadata(title: fallbackTitle, author: null);
@@ -1048,4 +1072,330 @@ _BookMetadata _extractMetadata({
   final resolvedAuthor =
       (rawAuthor == null || rawAuthor.isEmpty) ? null : rawAuthor;
   return _BookMetadata(title: resolvedTitle, author: resolvedAuthor);
+}
+
+_BookMetadata _readFb2MetadataFromBytes(
+  List<int> bytes,
+  String fallbackTitle,
+) {
+  try {
+    final xml = _decodeFb2Xml(bytes);
+    return _extractFb2Metadata(xml, fallbackTitle);
+  } catch (e) {
+    Log.d('Failed to parse FB2 metadata: $e');
+    return _BookMetadata(title: fallbackTitle, author: null);
+  }
+}
+
+_BookMetadata _readFb2MetadataFromZip(
+  List<int> bytes,
+  String fallbackTitle,
+) {
+  try {
+    final archive = ZipDecoder().decodeBytes(bytes, verify: false);
+    final xml = _extractFb2XmlFromArchive(archive);
+    if (xml == null) {
+      return _BookMetadata(title: fallbackTitle, author: null);
+    }
+    return _extractFb2Metadata(xml, fallbackTitle);
+  } catch (e) {
+    Log.d('Failed to parse FB2.zip metadata: $e');
+    return _BookMetadata(title: fallbackTitle, author: null);
+  }
+}
+
+_CoverPayload? _readFb2CoverFromBytes(List<int> bytes) {
+  try {
+    final xml = _decodeFb2Xml(bytes);
+    return _extractFb2Cover(xml);
+  } catch (e) {
+    Log.d('Failed to parse FB2 cover: $e');
+    return null;
+  }
+}
+
+_CoverPayload? _readFb2CoverFromZipBytes(List<int> bytes) {
+  try {
+    final archive = ZipDecoder().decodeBytes(bytes, verify: false);
+    final xml = _extractFb2XmlFromArchive(archive);
+    if (xml == null) {
+      return null;
+    }
+    return _extractFb2Cover(xml);
+  } catch (e) {
+    Log.d('Failed to parse FB2.zip cover: $e');
+    return null;
+  }
+}
+
+String _decodeFb2Xml(List<int> bytes) {
+  final encoding = _detectXmlEncoding(bytes);
+  final normalized = encoding?.toLowerCase();
+  if (normalized == 'windows-1251' ||
+      normalized == 'win-1251' ||
+      normalized == 'cp1251') {
+    return _decodeCp1251(bytes);
+  }
+  if (normalized == 'utf-8' || normalized == 'utf8') {
+    return utf8.decode(bytes);
+  }
+  if (normalized == 'latin1' || normalized == 'iso-8859-1') {
+    return latin1.decode(bytes);
+  }
+  try {
+    return utf8.decode(bytes);
+  } on FormatException {
+    try {
+      return _decodeCp1251(bytes);
+    } catch (_) {
+      return latin1.decode(bytes);
+    }
+  }
+}
+
+String? _detectXmlEncoding(List<int> bytes) {
+  final header = String.fromCharCodes(bytes.take(200));
+  final match = RegExp('encoding=["\\\']([^"\\\']+)["\\\']')
+      .firstMatch(header);
+  return match?.group(1);
+}
+
+String _decodeCp1251(List<int> bytes) {
+  const table = <int>[
+    0x0402,
+    0x0403,
+    0x201A,
+    0x0453,
+    0x201E,
+    0x2026,
+    0x2020,
+    0x2021,
+    0x20AC,
+    0x2030,
+    0x0409,
+    0x2039,
+    0x040A,
+    0x040C,
+    0x040B,
+    0x040F,
+    0x0452,
+    0x2018,
+    0x2019,
+    0x201C,
+    0x201D,
+    0x2022,
+    0x2013,
+    0x2014,
+    0xFFFD,
+    0x2122,
+    0x0459,
+    0x203A,
+    0x045A,
+    0x045C,
+    0x045B,
+    0x045F,
+    0x00A0,
+    0x040E,
+    0x045E,
+    0x0408,
+    0x00A4,
+    0x0490,
+    0x00A6,
+    0x00A7,
+    0x0401,
+    0x00A9,
+    0x0404,
+    0x00AB,
+    0x00AC,
+    0x00AD,
+    0x00AE,
+    0x0407,
+    0x00B0,
+    0x00B1,
+    0x0406,
+    0x0456,
+    0x0491,
+    0x00B5,
+    0x00B6,
+    0x00B7,
+    0x0451,
+    0x2116,
+    0x0454,
+    0x00BB,
+    0x0458,
+    0x0405,
+    0x0455,
+    0x0457,
+    0x0410,
+    0x0411,
+    0x0412,
+    0x0413,
+    0x0414,
+    0x0415,
+    0x0416,
+    0x0417,
+    0x0418,
+    0x0419,
+    0x041A,
+    0x041B,
+    0x041C,
+    0x041D,
+    0x041E,
+    0x041F,
+    0x0420,
+    0x0421,
+    0x0422,
+    0x0423,
+    0x0424,
+    0x0425,
+    0x0426,
+    0x0427,
+    0x0428,
+    0x0429,
+    0x042A,
+    0x042B,
+    0x042C,
+    0x042D,
+    0x042E,
+    0x042F,
+    0x0430,
+    0x0431,
+    0x0432,
+    0x0433,
+    0x0434,
+    0x0435,
+    0x0436,
+    0x0437,
+    0x0438,
+    0x0439,
+    0x043A,
+    0x043B,
+    0x043C,
+    0x043D,
+    0x043E,
+    0x043F,
+    0x0440,
+    0x0441,
+    0x0442,
+    0x0443,
+    0x0444,
+    0x0445,
+    0x0446,
+    0x0447,
+    0x0448,
+    0x0449,
+    0x044A,
+    0x044B,
+    0x044C,
+    0x044D,
+    0x044E,
+    0x044F,
+  ];
+  final runes = List<int>.generate(bytes.length, (index) {
+    final value = bytes[index];
+    if (value < 0x80) {
+      return value;
+    }
+    return table[value - 0x80];
+  });
+  return String.fromCharCodes(runes);
+}
+
+String? _extractFb2XmlFromArchive(Archive archive) {
+  for (final file in archive.files) {
+    if (!file.isFile) {
+      continue;
+    }
+    final name = file.name.toLowerCase();
+    if (!name.endsWith('.fb2') && !name.endsWith('.xml')) {
+      continue;
+    }
+    final content = file.content;
+    if (content is List<int>) {
+      return _decodeFb2Xml(content);
+    }
+  }
+  return null;
+}
+
+_BookMetadata _extractFb2Metadata(String xml, String fallbackTitle) {
+  final doc = XmlDocument.parse(xml);
+  final title = _firstNonEmpty(
+        doc.findAllElements('book-title').map((element) => element.innerText),
+      ) ??
+      fallbackTitle;
+  final author = _extractFb2Author(doc);
+  return _BookMetadata(title: title, author: author);
+}
+
+String? _extractFb2Author(XmlDocument doc) {
+  final author = doc.findAllElements('author').firstWhere(
+        (_) => true,
+        orElse: () => XmlElement(XmlName('author')),
+      );
+  if (author.name.local != 'author') {
+    return null;
+  }
+  final parts = <String>[];
+  final first = _firstNonEmpty(
+    author.findElements('first-name').map((element) => element.innerText),
+  );
+  final middle = _firstNonEmpty(
+    author.findElements('middle-name').map((element) => element.innerText),
+  );
+  final last = _firstNonEmpty(
+    author.findElements('last-name').map((element) => element.innerText),
+  );
+  if (first != null) {
+    parts.add(first);
+  }
+  if (middle != null) {
+    parts.add(middle);
+  }
+  if (last != null) {
+    parts.add(last);
+  }
+  if (parts.isEmpty) {
+    return null;
+  }
+  return parts.join(' ');
+}
+
+_CoverPayload? _extractFb2Cover(String xml) {
+  final doc = XmlDocument.parse(xml);
+  final image = doc.findAllElements('coverpage').expand((node) {
+    return node.findAllElements('image');
+  }).firstWhere(
+        (_) => true,
+        orElse: () => XmlElement(XmlName('image')),
+      );
+  if (image.name.local != 'image') {
+    return null;
+  }
+  String? href;
+  for (final attr in image.attributes) {
+    if (attr.name.local == 'href') {
+      href = attr.value;
+      break;
+    }
+  }
+  if (href == null || href.isEmpty) {
+    return null;
+  }
+  final id = href.startsWith('#') ? href.substring(1) : href;
+  final binary = doc.findAllElements('binary').firstWhere(
+        (node) => node.getAttribute('id') == id,
+        orElse: () => XmlElement(XmlName('binary')),
+      );
+  if (binary.name.local != 'binary') {
+    return null;
+  }
+  final contentType = binary.getAttribute('content-type');
+  final extension = _fb2CoverExtensions[contentType ?? ''];
+  final raw = binary.innerText.replaceAll(RegExp(r'\s+'), '');
+  if (raw.isEmpty) {
+    return null;
+  }
+  final bytes = base64.decode(raw);
+  return _CoverPayload(bytes: bytes, extension: extension);
 }
