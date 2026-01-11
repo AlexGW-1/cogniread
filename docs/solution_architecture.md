@@ -20,10 +20,14 @@ Solution Architecture
 
 # 2.1 Next stage plan (Current → Target)
 
-- Sync gateway: контракт API (upload/download event log), минимальная auth‑модель.
-- Storage: серверные схемы для event log и состояний чтения.
-- Sync pipeline: LWW‑конфликты + идемпотентность событий.
-- Observability: базовые метрики/логи для операций синхронизации.
+- Sync gateway: контракт API (upload/download event log), минимальная auth‑модель.  
+  Документ: `docs/sync_gateway_api.md` (draft v0.1)
+- Storage: серверные схемы для event log и состояний чтения.  
+  Документ: `docs/sync_gateway_storage.md` (draft v0.1)
+- Sync pipeline: LWW‑конфликты + идемпотентность событий.  
+  Документ: `docs/sync_policy.md` (draft v0.1)
+- Observability: базовые метрики/логи для операций синхронизации.  
+  Документ: `docs/sync_observability.md` (draft v0.1)
 
 # 3. Цели и принципы
 
