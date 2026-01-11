@@ -199,6 +199,8 @@ class Note {
       };
 
   static Note fromMap(Map<String, Object?> map) {
+    final createdAt = _parseDate(map['createdAt']);
+    final updatedAt = _parseDate(map['updatedAt'], fallback: createdAt);
     return Note(
       id: map['id'] as String,
       bookId: map['bookId'] as String,
@@ -207,8 +209,8 @@ class Note {
       excerpt: map['excerpt'] as String? ?? '',
       noteText: map['noteText'] as String? ?? '',
       color: map['color'] as String? ?? 'yellow',
-      createdAt: DateTime.parse(map['createdAt'] as String),
-      updatedAt: DateTime.parse(map['updatedAt'] as String),
+      createdAt: createdAt,
+      updatedAt: updatedAt,
     );
   }
 }
@@ -246,6 +248,8 @@ class Highlight {
       };
 
   static Highlight fromMap(Map<String, Object?> map) {
+    final createdAt = _parseDate(map['createdAt']);
+    final updatedAt = _parseDate(map['updatedAt'], fallback: createdAt);
     return Highlight(
       id: map['id'] as String,
       bookId: map['bookId'] as String,
@@ -253,8 +257,8 @@ class Highlight {
       endOffset: (map['endOffset'] as num?)?.toInt(),
       excerpt: map['excerpt'] as String? ?? '',
       color: map['color'] as String? ?? '',
-      createdAt: DateTime.parse(map['createdAt'] as String),
-      updatedAt: DateTime.parse(map['updatedAt'] as String),
+      createdAt: createdAt,
+      updatedAt: updatedAt,
     );
   }
 }
@@ -291,10 +295,8 @@ class Bookmark {
       bookId: map['bookId'] as String,
       anchor: map['anchor'] as String?,
       label: map['label'] as String? ?? '',
-      createdAt: DateTime.parse(map['createdAt'] as String),
-      updatedAt: map['updatedAt'] == null
-          ? null
-          : DateTime.parse(map['updatedAt'] as String),
+      createdAt: _parseDate(map['createdAt']),
+      updatedAt: _parseDateOrNull(map['updatedAt']),
     );
   }
 }
@@ -331,6 +333,33 @@ Map<String, Object?> _coerceMap(Object? value) {
     return Map<String, Object?>.from(value);
   }
   return const <String, Object?>{};
+}
+
+DateTime _parseDate(Object? value, {DateTime? fallback}) {
+  if (value is DateTime) {
+    return value;
+  }
+  if (value is String) {
+    try {
+      return DateTime.parse(value);
+    } catch (_) {}
+  }
+  return fallback ?? DateTime.fromMillisecondsSinceEpoch(0);
+}
+
+DateTime? _parseDateOrNull(Object? value) {
+  if (value == null) {
+    return null;
+  }
+  if (value is DateTime) {
+    return value;
+  }
+  if (value is String) {
+    try {
+      return DateTime.parse(value);
+    } catch (_) {}
+  }
+  return null;
 }
 
 class LibraryStore {

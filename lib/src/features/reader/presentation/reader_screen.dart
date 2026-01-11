@@ -17,10 +17,12 @@ class ReaderScreen extends StatefulWidget {
     super.key,
     required this.bookId,
     this.embedded = false,
+    this.persistReadingPosition = true,
   });
 
   final String bookId;
   final bool embedded;
+  final bool persistReadingPosition;
 
   @override
   State<ReaderScreen> createState() => _ReaderScreenState();
@@ -58,7 +60,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
       _scheduleRestorePosition();
     };
     _controller.addListener(_controllerListener);
-    _itemPositionsListener.itemPositions.addListener(_onScroll);
+    if (widget.persistReadingPosition) {
+      _itemPositionsListener.itemPositions.addListener(_onScroll);
+    }
     _controller.load(widget.bookId);
   }
 
@@ -81,10 +85,14 @@ class _ReaderScreenState extends State<ReaderScreen> {
   @override
   void dispose() {
     _positionDebounce?.cancel();
-    _persistReadingPosition();
+    if (widget.persistReadingPosition) {
+      _persistReadingPosition();
+    }
     _controller.removeListener(_controllerListener);
     _controller.dispose();
-    _itemPositionsListener.itemPositions.removeListener(_onScroll);
+    if (widget.persistReadingPosition) {
+      _itemPositionsListener.itemPositions.removeListener(_onScroll);
+    }
     super.dispose();
   }
 

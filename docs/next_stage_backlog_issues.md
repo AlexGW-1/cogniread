@@ -437,9 +437,9 @@
 Расширение моделей должно быть backward-compatible, иначе старые записи сломаются.
 
 ### Checklist
-- [ ] Убедиться, что `fromMap`/`adapter` корректно обрабатывает отсутствующие поля.
-- [ ] Добавить defaults (null-safe) для новых полей.
-- [ ] Добавить тест чтения “старой” записи (fixture map без новых полей).
+- [x] Убедиться, что `fromMap`/`adapter` корректно обрабатывает отсутствующие поля.
+- [x] Добавить defaults (null-safe) для новых полей.
+- [x] Добавить тест чтения “старой” записи (fixture map без новых полей).
 
 ### Acceptance Criteria
 - Старые записи загружаются без падений.
@@ -452,10 +452,10 @@
 **Suggested branch:** `test/active-reading-e2e-min`
 
 ### Checklist
-- [ ] Unit: add/update/delete note.
-- [ ] Unit: add/remove highlight.
-- [ ] Unit: toggle bookmark.
-- [ ] Widget: создать note → появляется в списке.
+- [x] Unit: add/update/delete note.
+- [x] Unit: add/remove highlight.
+- [x] Unit: toggle bookmark.
+- [x] Widget: создать note → появляется в списке.
 
 ### Acceptance Criteria
 - Минимальный набор тестов закрывает критичный happy-path.
