@@ -661,9 +661,9 @@
 Чтобы синк/сервер не ломали клиент, нужны стабильные DTO + мапперы.
 
 ### Checklist
-- [ ] DTO для: Note/Highlight/Bookmark/ReadingPosition/Event.
-- [ ] Mapper’ы domain↔dto.
-- [ ] Версионирование: `schemaVersion` (минимум).
+- [x] DTO для: Note/Highlight/Bookmark/ReadingPosition/Event.
+- [x] Mapper’ы domain↔dto.
+- [x] Версионирование: `schemaVersion` (минимум).
 
 ### Acceptance Criteria
 - Любая доменная сущность может быть сериализована в DTO и обратно без потерь (в рамках v1).
