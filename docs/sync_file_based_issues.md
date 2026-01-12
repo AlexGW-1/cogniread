@@ -7,9 +7,9 @@
 **Цель:** единый интерфейс для провайдеров (Drive/Dropbox/OneDrive/Yandex/NAS).
 
 **Checklist**
-- Интерфейс `SyncAdapter` (list/get/put/delete).
-- Обёртки для OAuth‑токенов и ошибок.
-- Моки для тестов.
+- [x] Интерфейс `SyncAdapter` (list/get/put/delete).
+- [ ] Обёртки для OAuth‑токенов и ошибок.
+- [x] Моки для тестов.
 
 ---
 ## 2) File format v1
