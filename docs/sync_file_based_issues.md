@@ -16,9 +16,9 @@
 **Цель:** финализировать структуру файлов `event_log.json`, `state.json`, `meta.json`.
 
 **Checklist**
-- Версионирование (`schemaVersion`).
-- Формат cursors + updatedAt.
-- Политика merge (LWW).
+- [x] Версионирование (`schemaVersion`).
+- [x] Формат cursors + updatedAt.
+- [x] Политика merge (LWW).
 
 ---
 ## 3) Local sync engine
