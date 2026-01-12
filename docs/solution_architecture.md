@@ -20,14 +20,10 @@ Solution Architecture
 
 # 2.1 Next stage plan (Current → Target)
 
-- Sync gateway: контракт API (upload/download event log), минимальная auth‑модель.  
-  Документ: `docs/sync_gateway_api.md` (draft v0.1)
-- Storage: серверные схемы для event log и состояний чтения.  
-  Документ: `docs/sync_gateway_storage.md` (draft v0.1)
-- Sync pipeline: LWW‑конфликты + идемпотентность событий.  
-  Документ: `docs/sync_policy.md` (draft v0.1)
-- Observability: базовые метрики/логи для операций синхронизации.  
-  Документ: `docs/sync_observability.md` (draft v0.1)
+- Этап 1 (server‑less sync): синхронизация через облачные диски/NAS с единым клиентским адаптером.  
+  Документ: `docs/sync_file_based.md` (draft v0.1)
+- Этап 2 (future): собственный sync‑gateway (API + storage + LWW).  
+  Документы: `docs/sync_gateway_api.md`, `docs/sync_gateway_storage.md`, `docs/sync_policy.md`, `docs/sync_observability.md`
 
 # 3. Цели и принципы
 
@@ -50,7 +46,7 @@ Solution Architecture
 | Vector DB | Qdrant |
 | Graph DB | Neo4j |
 | Хранилище файлов | S3-compatible |
-| Синхронизация | WebSockets + собственный sync‑gateway |
+| Синхронизация | Этап 1: облачные диски/NAS, этап 2: собственный sync‑gateway |
 | DevOps/Observability | Docker + GitHub Actions + Grafana + Sentry |
 
 # 5. System Context
