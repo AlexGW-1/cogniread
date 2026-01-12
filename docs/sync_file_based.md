@@ -28,6 +28,7 @@
   "schemaVersion": 1,
   "deviceId": "uuid",
   "generatedAt": "2026-01-12T12:00:00.000Z",
+  "cursor": "opaque_cursor",
   "events": [
     {
       "id": "uuid",
@@ -48,6 +49,7 @@
 {
   "schemaVersion": 1,
   "generatedAt": "2026-01-12T12:00:00.000Z",
+  "cursor": "opaque_cursor",
   "readingPositions": [
     {
       "bookId": "book-1",
@@ -74,6 +76,7 @@
 ### Merge rules
 - `event_log.json`: merge по `id` (идемпотентность), сортировка по `createdAt`.
 - `state.json`: LWW по `updatedAt` для каждой записи.
+- `cursor`: opaque идентификатор последнего события, из которого собран `state.json`.
 
 ---
 ## Конфликты

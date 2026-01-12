@@ -10,6 +10,9 @@ import 'package:cogniread/src/core/types/toc.dart';
 import 'package:cogniread/src/core/utils/logger.dart';
 import 'package:cogniread/src/features/library/data/library_preferences_store.dart';
 import 'package:cogniread/src/features/library/data/library_store.dart';
+import 'package:cogniread/src/features/sync/data/event_log_store.dart';
+import 'package:cogniread/src/features/sync/file_sync/file_sync_engine.dart';
+import 'package:cogniread/src/features/sync/file_sync/sync_adapter.dart';
 import 'package:epubx/epubx.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
@@ -103,19 +106,25 @@ class LibraryController extends ChangeNotifier {
     LibraryStore? store,
     LibraryPreferencesStore? preferencesStore,
     Future<String?> Function()? pickEpubPath,
+    SyncAdapter? syncAdapter,
     bool stubImport = false,
   })  : _storageService = storageService ?? AppStorageService(),
         _store = store ?? LibraryStore(),
         _preferencesStore = preferencesStore ?? LibraryPreferencesStore(),
         _pickEpubPath = pickEpubPath,
+        _syncAdapter = syncAdapter,
         _stubImport = stubImport;
 
   final StorageService _storageService;
   final LibraryStore _store;
   final LibraryPreferencesStore _preferencesStore;
   final Future<String?> Function()? _pickEpubPath;
+  final SyncAdapter? _syncAdapter;
   final bool _stubImport;
   Future<void>? _storeReady;
+  final EventLogStore _syncEventLogStore = EventLogStore();
+  FileSyncEngine? _syncEngine;
+  bool _syncInProgress = false;
   bool _coverSyncInProgress = false;
 
   bool _loading = true;
@@ -173,8 +182,11 @@ class LibraryController extends ChangeNotifier {
     }
     _storeReady = _store.init();
     await _preferencesStore.init();
+    await _ensureDeviceId();
     await _loadViewMode();
     await _loadLibrary();
+    await _initSyncEngine();
+    await _runFileSync();
   }
 
   Future<void> _loadViewMode() async {
@@ -340,6 +352,10 @@ class LibraryController extends ChangeNotifier {
     _errorMessage = null;
     _infoMessage = null;
     notifyListeners();
+  }
+
+  Future<void> syncNow() async {
+    await _runFileSync();
   }
 
   Future<void> importEpub() async {
@@ -733,7 +749,7 @@ class LibraryController extends ChangeNotifier {
   Future<String?> _readCoverPath(String path, String bookId) async {
     try {
       final extension = p.extension(path).toLowerCase();
-      _CoverPayload? cover;
+      CoverPayload? cover;
       if (extension == '.epub') {
         final bytes = await File(path).readAsBytes();
         final bookRef = await EpubReader.openBook(bytes);
@@ -772,6 +788,53 @@ class LibraryController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> _initSyncEngine() async {
+    final adapter = _syncAdapter;
+    if (adapter == null) {
+      return;
+    }
+    await _storeReady;
+    await _syncEventLogStore.init();
+    final deviceId = await _ensureDeviceId();
+    _syncEngine = FileSyncEngine(
+      adapter: adapter,
+      libraryStore: _store,
+      eventLogStore: _syncEventLogStore,
+      deviceId: deviceId,
+    );
+  }
+
+  Future<void> _runFileSync() async {
+    final engine = _syncEngine;
+    if (engine == null || _syncInProgress) {
+      return;
+    }
+    _syncInProgress = true;
+    try {
+      final result = await engine.sync();
+      if (result.appliedEvents > 0 || result.appliedState > 0) {
+        await _loadLibrary();
+      }
+    } catch (e) {
+      Log.d('File sync failed: $e');
+    } finally {
+      _syncInProgress = false;
+    }
+  }
+
+  Future<String> _ensureDeviceId() async {
+    final existing = await _preferencesStore.loadDeviceId();
+    if (existing != null && existing.isNotEmpty) {
+      return existing;
+    }
+    final randomSeed = Random().nextInt(1 << 32);
+    final generated =
+        'dev-${DateTime.now().microsecondsSinceEpoch.toRadixString(16)}'
+        '-${randomSeed.toRadixString(16)}';
+    await _preferencesStore.saveDeviceId(generated);
+    return generated;
+  }
+
   void _addStubBook() {
     _books.add(
       LibraryBookItem(
@@ -799,8 +862,8 @@ class LibraryController extends ChangeNotifier {
   }
 }
 
-class _CoverPayload {
-  const _CoverPayload({required this.bytes, required this.extension});
+class CoverPayload {
+  const CoverPayload({required this.bytes, required this.extension});
 
   final List<int> bytes;
   final String? extension;
@@ -815,17 +878,17 @@ const Map<String, String> _fb2CoverExtensions = <String, String>{
 };
 
 @visibleForTesting
-_BookMetadata readFb2MetadataForTest(
+BookMetadata readFb2MetadataForTest(
   List<int> bytes,
   String fallbackTitle,
 ) =>
     _readFb2MetadataFromBytes(bytes, fallbackTitle);
 
 @visibleForTesting
-_CoverPayload? readFb2CoverForTest(List<int> bytes) =>
+CoverPayload? readFb2CoverForTest(List<int> bytes) =>
     _readFb2CoverFromBytes(bytes);
 
-Future<_CoverPayload?> _readCoverBytes(EpubBookRef bookRef) async {
+Future<CoverPayload?> _readCoverBytes(EpubBookRef bookRef) async {
   try {
     final manifestItems = bookRef.Schema?.Package?.Manifest?.Items;
     if (manifestItems != null) {
@@ -858,14 +921,14 @@ Future<_CoverPayload?> _readCoverBytes(EpubBookRef bookRef) async {
 
     final images = bookRef.Content?.Images;
     if (images != null && images.isNotEmpty) {
-      _CoverPayload? bestPayload;
+      CoverPayload? bestPayload;
       for (final entry in images.entries) {
         try {
           final bytes = await entry.value.readContentAsBytes();
           if (bytes.isNotEmpty &&
               (bestPayload == null ||
                   bytes.length > bestPayload.bytes.length)) {
-            bestPayload = _CoverPayload(
+            bestPayload = CoverPayload(
               bytes: bytes,
               extension: _extensionFromPath(entry.key),
             );
@@ -915,7 +978,7 @@ bool _looksLikeCover(String? value) {
   return value.toLowerCase().contains('cover');
 }
 
-Future<_CoverPayload?> _readImageBytesFromHref(
+Future<CoverPayload?> _readImageBytesFromHref(
   EpubBookRef bookRef,
   String? href, {
   String? mediaType,
@@ -933,7 +996,7 @@ Future<_CoverPayload?> _readImageBytesFromHref(
   if (direct != null) {
     try {
       final bytes = await direct.readContentAsBytes();
-      return _CoverPayload(
+      return CoverPayload(
         bytes: bytes,
         extension: _extensionFromMediaType(mediaType) ??
             _extensionFromPath(normalized),
@@ -948,7 +1011,7 @@ Future<_CoverPayload?> _readImageBytesFromHref(
     if (p.basename(entry.key).toLowerCase() == targetBase) {
       try {
         final bytes = await entry.value.readContentAsBytes();
-        return _CoverPayload(
+        return CoverPayload(
           bytes: bytes,
           extension: _extensionFromPath(entry.key),
         );
@@ -1035,14 +1098,14 @@ int _sortByLastOpenedAt(LibraryBookItem a, LibraryBookItem b) {
   return a.title.compareTo(b.title);
 }
 
-class _BookMetadata {
-  const _BookMetadata({required this.title, required this.author});
+class BookMetadata {
+  const BookMetadata({required this.title, required this.author});
 
   final String title;
   final String? author;
 }
 
-Future<_BookMetadata> _readMetadata(String path, String fallbackTitle) async {
+Future<BookMetadata> _readMetadata(String path, String fallbackTitle) async {
   try {
     final extension = p.extension(path).toLowerCase();
     final bytes = await File(path).readAsBytes();
@@ -1058,7 +1121,7 @@ Future<_BookMetadata> _readMetadata(String path, String fallbackTitle) async {
         );
       } catch (e) {
         Log.d('Failed to open EPUB metadata: $e');
-        return _BookMetadata(title: fallbackTitle, author: null);
+        return BookMetadata(title: fallbackTitle, author: null);
       }
     }
     if (extension == '.fb2') {
@@ -1067,10 +1130,10 @@ Future<_BookMetadata> _readMetadata(String path, String fallbackTitle) async {
     if (extension == '.zip') {
       return _readFb2MetadataFromZip(bytes, fallbackTitle);
     }
-    return _BookMetadata(title: fallbackTitle, author: null);
+    return BookMetadata(title: fallbackTitle, author: null);
   } catch (e) {
     Log.d('Failed to read EPUB bytes: $e');
-    return _BookMetadata(title: fallbackTitle, author: null);
+    return BookMetadata(title: fallbackTitle, author: null);
   }
 }
 
@@ -1084,7 +1147,7 @@ String? _firstNonEmpty(Iterable<String?> candidates) {
   return null;
 }
 
-_BookMetadata _extractMetadata({
+BookMetadata _extractMetadata({
   required String fallbackTitle,
   required String? title,
   required String? author,
@@ -1112,10 +1175,10 @@ _BookMetadata _extractMetadata({
       (rawTitle == null || rawTitle.isEmpty) ? fallbackTitle : rawTitle;
   final resolvedAuthor =
       (rawAuthor == null || rawAuthor.isEmpty) ? null : rawAuthor;
-  return _BookMetadata(title: resolvedTitle, author: resolvedAuthor);
+  return BookMetadata(title: resolvedTitle, author: resolvedAuthor);
 }
 
-_BookMetadata _readFb2MetadataFromBytes(
+BookMetadata _readFb2MetadataFromBytes(
   List<int> bytes,
   String fallbackTitle,
 ) {
@@ -1124,11 +1187,11 @@ _BookMetadata _readFb2MetadataFromBytes(
     return _extractFb2Metadata(xml, fallbackTitle);
   } catch (e) {
     Log.d('Failed to parse FB2 metadata: $e');
-    return _BookMetadata(title: fallbackTitle, author: null);
+    return BookMetadata(title: fallbackTitle, author: null);
   }
 }
 
-_BookMetadata _readFb2MetadataFromZip(
+BookMetadata _readFb2MetadataFromZip(
   List<int> bytes,
   String fallbackTitle,
 ) {
@@ -1136,16 +1199,16 @@ _BookMetadata _readFb2MetadataFromZip(
     final archive = ZipDecoder().decodeBytes(bytes, verify: false);
     final xml = _extractFb2XmlFromArchive(archive);
     if (xml == null) {
-      return _BookMetadata(title: fallbackTitle, author: null);
+      return BookMetadata(title: fallbackTitle, author: null);
     }
     return _extractFb2Metadata(xml, fallbackTitle);
   } catch (e) {
     Log.d('Failed to parse FB2.zip metadata: $e');
-    return _BookMetadata(title: fallbackTitle, author: null);
+    return BookMetadata(title: fallbackTitle, author: null);
   }
 }
 
-_CoverPayload? _readFb2CoverFromBytes(List<int> bytes) {
+CoverPayload? _readFb2CoverFromBytes(List<int> bytes) {
   try {
     final xml = _decodeFb2Xml(bytes);
     return _extractFb2Cover(xml);
@@ -1155,7 +1218,7 @@ _CoverPayload? _readFb2CoverFromBytes(List<int> bytes) {
   }
 }
 
-_CoverPayload? _readFb2CoverFromZipBytes(List<int> bytes) {
+CoverPayload? _readFb2CoverFromZipBytes(List<int> bytes) {
   try {
     final archive = ZipDecoder().decodeBytes(bytes, verify: false);
     final xml = _extractFb2XmlFromArchive(archive);
@@ -1359,7 +1422,7 @@ String? _extractFb2XmlFromArchive(Archive archive) {
   return null;
 }
 
-_BookMetadata _extractFb2Metadata(String xml, String fallbackTitle) {
+BookMetadata _extractFb2Metadata(String xml, String fallbackTitle) {
   final doc = XmlDocument.parse(xml);
   final titleInfo = doc.findAllElements('title-info').firstWhere(
         (_) => true,
@@ -1371,7 +1434,7 @@ _BookMetadata _extractFb2Metadata(String xml, String fallbackTitle) {
       ) ??
       fallbackTitle;
   final author = _extractFb2Author(scope);
-  return _BookMetadata(title: title, author: author);
+  return BookMetadata(title: title, author: author);
 }
 
 String? _extractFb2Author(XmlNode node) {
@@ -1407,7 +1470,7 @@ String? _extractFb2Author(XmlNode node) {
   return parts.join(' ');
 }
 
-_CoverPayload? _extractFb2Cover(String xml) {
+CoverPayload? _extractFb2Cover(String xml) {
   final doc = XmlDocument.parse(xml);
   final image = doc.findAllElements('coverpage').expand((node) {
     return node.findAllElements('image');
@@ -1443,5 +1506,5 @@ _CoverPayload? _extractFb2Cover(String xml) {
     return null;
   }
   final bytes = base64.decode(raw);
-  return _CoverPayload(bytes: bytes, extension: extension);
+  return CoverPayload(bytes: bytes, extension: extension);
 }

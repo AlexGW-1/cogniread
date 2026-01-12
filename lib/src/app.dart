@@ -1,5 +1,6 @@
 import 'package:cogniread/src/core/services/storage_service.dart';
 import 'package:cogniread/src/features/library/presentation/library_screen.dart';
+import 'package:cogniread/src/features/sync/file_sync/sync_adapter.dart';
 import 'package:flutter/material.dart';
 
 class CogniReadApp extends StatelessWidget {
@@ -7,11 +8,13 @@ class CogniReadApp extends StatelessWidget {
     super.key,
     this.pickEpubPath,
     this.storageService,
+    this.syncAdapter,
     this.stubImport,
   });
 
   final Future<String?> Function()? pickEpubPath;
   final StorageService? storageService;
+  final SyncAdapter? syncAdapter;
   final bool? stubImport;
 
   @override
@@ -37,6 +40,7 @@ class CogniReadApp extends StatelessWidget {
       home: LibraryScreen(
         pickEpubPath: pickEpubPath,
         storageService: storageService,
+        syncAdapter: syncAdapter,
         stubImport: stubImport ?? false,
       ),
     );

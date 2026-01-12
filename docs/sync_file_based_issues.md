@@ -25,9 +25,9 @@
 **Цель:** локальная синхронизация через файлы.
 
 **Checklist**
-- Upload: сериализовать event log → cloud.
-- Download: читать файлы → merge по LWW.
-- Conflict handling: idempotent events.
+- [x] Upload: сериализовать event log → cloud.
+- [x] Download: читать файлы → merge по LWW.
+- [x] Conflict handling: idempotent events.
 
 ---
 ## 4) Provider: Google Drive

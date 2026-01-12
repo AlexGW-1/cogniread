@@ -1,4 +1,3 @@
-import 'sync_adapter.dart';
 import 'sync_errors.dart';
 
 class OAuthToken {

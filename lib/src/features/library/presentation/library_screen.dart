@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:cogniread/src/core/services/storage_service.dart';
 import 'package:cogniread/src/features/library/presentation/library_controller.dart';
 import 'package:cogniread/src/features/reader/presentation/reader_screen.dart';
+import 'package:cogniread/src/features/sync/file_sync/sync_adapter.dart';
 import 'package:flutter/material.dart';
 
 class LibraryScreen extends StatefulWidget {
@@ -10,11 +11,13 @@ class LibraryScreen extends StatefulWidget {
     super.key,
     this.pickEpubPath,
     this.storageService,
+    this.syncAdapter,
     this.stubImport = false,
   });
 
   final Future<String?> Function()? pickEpubPath;
   final StorageService? storageService;
+  final SyncAdapter? syncAdapter;
   final bool stubImport;
 
   @override
@@ -38,6 +41,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _controller = LibraryController(
       storageService: widget.storageService,
       pickEpubPath: widget.pickEpubPath,
+      syncAdapter: widget.syncAdapter,
       stubImport: widget.stubImport,
     );
     _controllerListener = () {

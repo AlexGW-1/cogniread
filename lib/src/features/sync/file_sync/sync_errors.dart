@@ -1,16 +1,13 @@
 import 'sync_adapter.dart';
 
 class SyncAuthException extends SyncAdapterException {
-  SyncAuthException(String message)
-      : super(message, code: 'auth_failed');
+  SyncAuthException(super.message) : super(code: 'auth_failed');
 }
 
 class SyncRateLimitException extends SyncAdapterException {
-  SyncRateLimitException(String message)
-      : super(message, code: 'rate_limited');
+  SyncRateLimitException(super.message) : super(code: 'rate_limited');
 }
 
 class SyncNetworkException extends SyncAdapterException {
-  SyncNetworkException(String message)
-      : super(message, code: 'network_error');
+  SyncNetworkException(super.message) : super(code: 'network_error');
 }
