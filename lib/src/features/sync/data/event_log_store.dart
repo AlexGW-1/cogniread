@@ -1,3 +1,4 @@
+import 'package:cogniread/src/core/services/hive_bootstrap.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 class EventLogEntry {
@@ -40,15 +41,10 @@ class EventLogEntry {
 
 class EventLogStore {
   static const String _boxName = 'event_log';
-  static bool _initialized = false;
   Box<dynamic>? _box;
 
   Future<void> init() async {
-    if (!_initialized) {
-      await Hive.initFlutter();
-      _initialized = true;
-    }
-    _box = await Hive.openBox<dynamic>(_boxName);
+    _box = await HiveBootstrap.openBoxSafe<dynamic>(_boxName);
   }
 
   Box<dynamic> get _requireBox {

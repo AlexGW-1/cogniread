@@ -1,6 +1,7 @@
 import 'package:cogniread/src/core/types/toc.dart';
 import 'package:cogniread/src/core/utils/logger.dart';
 import 'package:cogniread/src/features/sync/data/event_log_store.dart';
+import 'package:cogniread/src/core/services/hive_bootstrap.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 class LibraryEntry {
@@ -366,7 +367,6 @@ DateTime? _parseDateOrNull(Object? value) {
 
 class LibraryStore {
   static const String _boxName = 'library_books';
-  static bool _initialized = false;
   static const Duration _positionEventDebounce = Duration(seconds: 5);
   static const int _positionOffsetDelta = 120;
   Box<dynamic>? _box;
@@ -376,11 +376,7 @@ class LibraryStore {
       <String, ReadingPosition>{};
 
   Future<void> init() async {
-    if (!_initialized) {
-      await Hive.initFlutter();
-      _initialized = true;
-    }
-    _box = await Hive.openBox<dynamic>(_boxName);
+    _box = await HiveBootstrap.openBoxSafe<dynamic>(_boxName);
     await _eventStore.init();
   }
 

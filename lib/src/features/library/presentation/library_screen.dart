@@ -4,6 +4,7 @@ import 'package:cogniread/src/core/services/storage_service.dart';
 import 'package:cogniread/src/features/library/presentation/library_controller.dart';
 import 'package:cogniread/src/features/reader/presentation/reader_screen.dart';
 import 'package:cogniread/src/features/sync/file_sync/sync_adapter.dart';
+import 'package:cogniread/src/features/sync/file_sync/sync_provider.dart';
 import 'package:flutter/material.dart';
 
 class LibraryScreen extends StatefulWidget {
@@ -34,6 +35,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   bool _showSearch = false;
   String? _pendingNoteId;
   String? _pendingHighlightId;
+  int _sectionIndex = 0;
 
   @override
   void initState() {
@@ -183,15 +185,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
       );
       _controller.clearNotices();
     });
-  }
-
-  void _showError(String message) {
-    if (!mounted) {
-      return;
-    }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
   }
 
   void _toggleSearch() {
@@ -496,16 +489,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
           child: Row(
             children: [
               NavigationRail(
-                selectedIndex: 0,
+                selectedIndex: _sectionIndex,
                 onDestinationSelected: (index) {
-                  if (index == 0) {
-                    return;
-                  }
+                  setState(() {
+                    _sectionIndex = index;
+                  });
                   if (index == 1) {
                     _showGlobalSearch();
-                    return;
                   }
-                  _showError('Этот раздел появится позже');
                 },
                 labelType: NavigationRailLabelType.all,
                 leading: Padding(
@@ -548,47 +539,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
               Expanded(
                 child: Padding(
                   padding: const EdgeInsets.all(20),
-                  child: Row(
-                    children: [
-                      Flexible(
-                        flex: 4,
-                        child: _LibraryPanel(
-                          loading: _controller.loading,
-                          books: filtered,
-                          query: _controller.query,
-                          showSearch: _showSearch,
-                          searchController: _searchController,
-                          onQueryChanged: (value) {
-                            _controller.setQuery(value);
-                          },
-                          viewMode: viewMode,
-                          onToggleViewMode: _toggleViewMode,
-                          onToggleSearch: _toggleSearch,
-                          onGlobalSearch:
-                              _controller.books.isEmpty ? null : _showGlobalSearch,
-                          onClearLibrary:
-                              _controller.books.isEmpty ? null : _clearLibrary,
-                          onImport: _importEpub,
-                          onOpen: (index) => _open(filtered[index].id),
-                          onDelete: (index) => _deleteBook(index),
-                          selectedId: _selectedBookId,
-                          onSelect: (id) {
-                            setState(() {
-                              _selectedBookId = id;
-                            });
-                          },
-                        ),
-                      ),
-                      const SizedBox(width: 20),
-                      Flexible(
-                        flex: 7,
-                        child: _ReaderPanel(
-                          bookId: _selectedBookId,
-                          initialNoteId: _pendingNoteId,
-                          initialHighlightId: _pendingHighlightId,
-                        ),
-                      ),
-                    ],
+                  child: _buildSection(
+                    filtered: filtered,
+                    viewMode: viewMode,
                   ),
                 ),
               ),
@@ -597,6 +550,80 @@ class _LibraryScreenState extends State<LibraryScreen> {
         ),
       ),
     );
+  }
+
+  Widget _buildSection({
+    required List<LibraryBookItem> filtered,
+    required LibraryViewMode viewMode,
+  }) {
+    if (_sectionIndex == 4) {
+      return _SettingsPanel(controller: _controller);
+    }
+    if (_sectionIndex != 0) {
+      return _SectionPlaceholder(
+        title: _sectionTitle(_sectionIndex),
+        subtitle: 'Раздел в разработке',
+      );
+    }
+    return Row(
+      children: [
+        Flexible(
+          flex: 4,
+          child: _LibraryPanel(
+            loading: _controller.loading,
+            books: filtered,
+            query: _controller.query,
+            showSearch: _showSearch,
+            searchController: _searchController,
+            onQueryChanged: (value) {
+              _controller.setQuery(value);
+            },
+            viewMode: viewMode,
+            onToggleViewMode: _toggleViewMode,
+            onToggleSearch: _toggleSearch,
+            onGlobalSearch:
+                _controller.books.isEmpty ? null : _showGlobalSearch,
+            onClearLibrary:
+                _controller.books.isEmpty ? null : _clearLibrary,
+            onImport: _importEpub,
+            onOpen: (index) => _open(filtered[index].id),
+            onDelete: (index) => _deleteBook(index),
+            selectedId: _selectedBookId,
+            onSelect: (id) {
+              setState(() {
+                _selectedBookId = id;
+              });
+            },
+          ),
+        ),
+        const SizedBox(width: 20),
+        Flexible(
+          flex: 7,
+          child: _ReaderPanel(
+            bookId: _selectedBookId,
+            initialNoteId: _pendingNoteId,
+            initialHighlightId: _pendingHighlightId,
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _sectionTitle(int index) {
+    switch (index) {
+      case 0:
+        return 'Библиотека';
+      case 1:
+        return 'Поиск';
+      case 2:
+        return 'Читалка';
+      case 3:
+        return 'Заметки';
+      case 4:
+        return 'Настройки';
+      default:
+        return 'Раздел';
+    }
   }
 
   Widget? _buildBookSubtitle(LibraryBookItem book, ColorScheme scheme) {
@@ -613,6 +640,409 @@ class _LibraryScreenState extends State<LibraryScreen> {
       return null;
     }
     return Text(book.author!);
+  }
+}
+
+class _SettingsPanel extends StatelessWidget {
+  const _SettingsPanel({required this.controller});
+
+  final LibraryController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        final lastSync = controller.lastSyncAt;
+        final syncSummary = controller.lastSyncSummary;
+        final syncLabel = controller.syncAdapterLabel;
+        final syncAvailable = syncLabel != 'none';
+        final oauthConnected = controller.isSyncProviderConnected;
+        final isWebDav = controller.isWebDavProvider;
+        final authInProgress = controller.authInProgress;
+        final connectionInProgress = controller.connectionInProgress;
+        final deleteInProgress = controller.deleteInProgress;
+        final authError = controller.authError;
+        final webDavCredentials = controller.webDavCredentials;
+        return Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: scheme.surface,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: scheme.outlineVariant),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Синхронизация',
+                style: Theme.of(context).textTheme.headlineSmall,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Провайдер',
+                style: Theme.of(context).textTheme.labelLarge,
+              ),
+              const SizedBox(height: 8),
+              DropdownButton<SyncProvider>(
+                value: controller.syncProvider,
+                onChanged: (value) {
+                  if (value != null) {
+                    controller.setSyncProvider(value);
+                  }
+                },
+                items: SyncProvider.values
+                    .map(
+                      (provider) => DropdownMenuItem(
+                        value: provider,
+                        child: Text(_providerLabel(provider)),
+                      ),
+                    )
+                    .toList(),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Адаптер: $syncLabel',
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+              if (!syncAvailable) ...[
+                const SizedBox(height: 6),
+                Text(
+                  'Адаптер не подключен. Проверь настройки подключения.',
+                  style: TextStyle(color: scheme.error),
+                ),
+              ],
+              const SizedBox(height: 18),
+              FilledButton.icon(
+                onPressed: controller.syncInProgress || !syncAvailable
+                    ? null
+                    : controller.syncNow,
+                icon: controller.syncInProgress
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.sync),
+                label: Text(
+                  controller.syncInProgress
+                      ? 'Синхронизация...'
+                      : 'Синхронизировать сейчас',
+                ),
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: deleteInProgress || !syncAvailable
+                    ? null
+                    : () => _confirmDeleteRemote(context, controller),
+                icon: deleteInProgress
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.delete_forever),
+                label: const Text('Удалить файлы синка в облаке'),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                lastSync == null
+                    ? 'Последняя синхронизация: ещё не выполнялась'
+                    : 'Последняя синхронизация: ${lastSync.toLocal()}',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              if (syncSummary != null) ...[
+                const SizedBox(height: 6),
+                Text(
+                  'Результат: $syncSummary',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+              const SizedBox(height: 24),
+              Text(
+                'Подключение',
+                style: Theme.of(context).textTheme.labelLarge,
+              ),
+              if (isWebDav) ...[
+                const SizedBox(height: 6),
+                Text(
+                  'WebDAV использует логин/пароль.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                if (webDavCredentials != null) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    'URL: ${webDavCredentials.baseUrl}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  Text(
+                    'Логин: ${webDavCredentials.username}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ],
+              const SizedBox(height: 10),
+              Text(
+                oauthConnected ? 'Статус: подключено' : 'Статус: не подключено',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              if (authError != null) ...[
+                const SizedBox(height: 6),
+                Text(
+                  authError,
+                  style: TextStyle(color: scheme.error),
+                ),
+              ],
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  if (!oauthConnected)
+                    FilledButton.icon(
+                      onPressed: authInProgress
+                          ? null
+                          : () {
+                              if (isWebDav) {
+                                _showWebDavDialog(context, controller);
+                              } else {
+                                controller.connectSyncProvider();
+                              }
+                            },
+                      icon: authInProgress
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.login),
+                      label: Text(
+                        authInProgress
+                            ? 'Открываем браузер...'
+                            : (isWebDav
+                                ? 'Настроить'
+                                : 'Подключить ${_providerLabel(controller.syncProvider)}'),
+                      ),
+                    ),
+                  if (oauthConnected)
+                    OutlinedButton.icon(
+                      onPressed:
+                          authInProgress ? null : controller.disconnectSyncProvider,
+                      icon: const Icon(Icons.logout),
+                      label: const Text('Отключить'),
+                    ),
+                  OutlinedButton.icon(
+                    onPressed: connectionInProgress || !oauthConnected
+                        ? null
+                        : controller.testSyncConnection,
+                    icon: connectionInProgress
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.cloud_done),
+                    label: const Text('Проверить'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  String _providerLabel(SyncProvider provider) {
+    switch (provider) {
+      case SyncProvider.googleDrive:
+        return 'Google Drive';
+      case SyncProvider.dropbox:
+        return 'Dropbox';
+      case SyncProvider.oneDrive:
+        return 'OneDrive';
+      case SyncProvider.yandexDisk:
+        return 'Yandex Disk';
+      case SyncProvider.webDav:
+        return 'NAS (WebDAV)';
+    }
+  }
+
+  Future<void> _showWebDavDialog(
+    BuildContext context,
+    LibraryController controller,
+  ) async {
+    final credentials = controller.webDavCredentials;
+    final baseController = TextEditingController(
+      text: credentials?.baseUrl ?? '',
+    );
+    final userController = TextEditingController(
+      text: credentials?.username ?? '',
+    );
+    final passController = TextEditingController(
+      text: credentials?.password ?? '',
+    );
+    bool obscurePassword = true;
+    bool testingConnection = false;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('WebDAV'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: baseController,
+                  decoration: const InputDecoration(
+                    labelText: 'Base URL',
+                    hintText: 'https://nas.local/dav/',
+                  ),
+                  keyboardType: TextInputType.url,
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: userController,
+                  decoration: const InputDecoration(labelText: 'Логин'),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: passController,
+                  decoration: InputDecoration(
+                    labelText: 'Пароль',
+                    suffixIcon: IconButton(
+                      onPressed: () {
+                        setDialogState(() {
+                          obscurePassword = !obscurePassword;
+                        });
+                      },
+                      icon: Icon(
+                        obscurePassword
+                            ? Icons.visibility
+                            : Icons.visibility_off,
+                      ),
+                    ),
+                  ),
+                  obscureText: obscurePassword,
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Отмена'),
+            ),
+            OutlinedButton(
+              onPressed: testingConnection
+                  ? null
+                  : () async {
+                      setDialogState(() {
+                        testingConnection = true;
+                      });
+                      await controller.testWebDavCredentials(
+                        baseUrl: baseController.text,
+                        username: userController.text,
+                        password: passController.text,
+                      );
+                      if (context.mounted) {
+                        setDialogState(() {
+                          testingConnection = false;
+                        });
+                      }
+                    },
+              child: testingConnection
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('Проверить'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                await controller.saveWebDavCredentials(
+                  baseUrl: baseController.text,
+                  username: userController.text,
+                  password: passController.text,
+                );
+                if (context.mounted) {
+                  Navigator.of(context).pop();
+                }
+              },
+              child: const Text('Сохранить'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _confirmDeleteRemote(
+    BuildContext context,
+    LibraryController controller,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Удалить файлы синка?'),
+        content: const Text(
+          'Будут удалены event_log.json, state.json и meta.json из облака.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Удалить'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await controller.deleteRemoteSyncFiles();
+    }
+  }
+}
+
+class _SectionPlaceholder extends StatelessWidget {
+  const _SectionPlaceholder({
+    required this.title,
+    required this.subtitle,
+  });
+
+  final String title;
+  final String subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: scheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: Theme.of(context).textTheme.headlineSmall,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            subtitle,
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+        ],
+      ),
+    );
   }
 }
 

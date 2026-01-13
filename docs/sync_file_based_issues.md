@@ -34,42 +34,42 @@
 **Цель:** первый рабочий провайдер.
 
 **Checklist**
-- OAuth flow.
-- CRUD файлов синка.
-- Тест на upload/download.
+- [x] OAuth flow.
+- [x] CRUD файлов синка.
+- [x] Тест на upload/download.
 
 ---
 ## 5) Provider: Dropbox
 **Цель:** второй провайдер.
 
 **Checklist**
-- OAuth flow.
-- CRUD файлов синка.
-- Тест на upload/download.
+- [x] OAuth flow.
+- [x] CRUD файлов синка.
+- [x] Тест на upload/download.
 
 ---
 ## 6) Provider: OneDrive
 **Цель:** третий провайдер.
 
 **Checklist**
-- OAuth flow.
-- CRUD файлов синка.
-- Тест на upload/download.
+- [x] OAuth flow.
+- [x] CRUD файлов синка.
+- [x] Тест на upload/download.
 
 ---
 ## 7) Provider: Yandex Disk
 **Цель:** четвёртый провайдер.
 
 **Checklist**
-- OAuth flow.
-- CRUD файлов синка.
-- Тест на upload/download.
+- [x] OAuth flow.
+- [x] CRUD файлов синка.
+- [x] Тест на upload/download.
 
 ---
 ## 8) Provider: NAS (WebDAV/SMB)
 **Цель:** персональные NAS.
 
 **Checklist**
-- WebDAV клиент (минимальный).
-- CRUD файлов синка.
-- Тест на upload/download.
+- [x] WebDAV клиент (минимальный).
+- [x] CRUD файлов синка.
+- [x] Тест на upload/download.
