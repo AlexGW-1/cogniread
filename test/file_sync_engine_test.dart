@@ -9,6 +9,8 @@ import 'package:cogniread/src/features/sync/file_sync/sync_file_models.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
+import 'package:cogniread/src/core/services/storage_service.dart';
+import 'package:path/path.dart' as p;
 
 class _TestPathProviderPlatform extends PathProviderPlatform {
   _TestPathProviderPlatform(this.supportPath);
@@ -29,6 +31,7 @@ void main() {
   late Directory supportDir;
   late LibraryStore libraryStore;
   late EventLogStore eventLogStore;
+  late StorageService storageService;
 
   setUpAll(() async {
     originalPlatform = PathProviderPlatform.instance;
@@ -37,6 +40,7 @@ void main() {
         _TestPathProviderPlatform(supportDir.path);
     libraryStore = LibraryStore();
     eventLogStore = EventLogStore();
+    storageService = _FakeStorageService(supportDir.path);
     await libraryStore.init();
     await eventLogStore.init();
     await libraryStore.clear();
@@ -116,6 +120,7 @@ void main() {
       libraryStore: libraryStore,
       eventLogStore: eventLogStore,
       deviceId: 'device-local',
+      storageService: storageService,
     );
 
     final first = await engine.sync();
@@ -133,4 +138,32 @@ void main() {
     expect(eventLogStore.listEvents().length, 1);
     expect(second.appliedEvents, 0);
   });
+}
+
+class _FakeStorageService implements StorageService {
+  _FakeStorageService(this.basePath);
+
+  final String basePath;
+
+  @override
+  Future<String> appStoragePath() async {
+    final dir = Directory(basePath);
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
+    }
+    return dir.path;
+  }
+
+  @override
+  Future<String> copyToAppStorage(String sourcePath) async {
+    final dest = p.join(basePath, p.basename(sourcePath));
+    await File(sourcePath).copy(dest);
+    return dest;
+  }
+
+  @override
+  Future<StoredFile> copyToAppStorageWithHash(String sourcePath) async {
+    final dest = await copyToAppStorage(sourcePath);
+    return StoredFile(path: dest, hash: 'hash', alreadyExists: false);
+  }
 }

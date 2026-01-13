@@ -169,3 +169,93 @@ class SyncMetaFile {
     );
   }
 }
+
+class SyncBookDescriptor {
+  const SyncBookDescriptor({
+    required this.id,
+    required this.title,
+    required this.fingerprint,
+    required this.size,
+    required this.updatedAt,
+    required this.extension,
+    this.author,
+    this.path,
+    this.deleted = false,
+  });
+
+  final String id;
+  final String title;
+  final String? author;
+  final String fingerprint;
+  final int size;
+  final DateTime updatedAt;
+  final String extension;
+  final String? path;
+  final bool deleted;
+
+  Map<String, Object?> toMap() => <String, Object?>{
+        'id': id,
+        'title': title,
+        'author': author,
+        'fingerprint': fingerprint,
+        'size': size,
+        'updatedAt': updatedAt.toIso8601String(),
+        'extension': extension,
+        'path': path,
+        'deleted': deleted,
+      };
+
+  static SyncBookDescriptor fromMap(Map<String, Object?> map) {
+    final updated = map['updatedAt'];
+    final path = map['path'] as String?;
+    return SyncBookDescriptor(
+      id: map['id'] as String? ?? '',
+      title: map['title'] as String? ?? '',
+      author: map['author'] as String?,
+      fingerprint: map['fingerprint'] as String? ?? '',
+      size: (map['size'] as num?)?.toInt() ?? 0,
+      updatedAt: updated is String
+          ? DateTime.tryParse(updated) ?? DateTime.fromMillisecondsSinceEpoch(0)
+          : DateTime.fromMillisecondsSinceEpoch(0),
+      extension: map['extension'] as String? ?? '',
+      path: path?.isEmpty == true ? null : path,
+      deleted: map['deleted'] as bool? ?? false,
+    );
+  }
+}
+
+class SyncBooksIndexFile {
+  const SyncBooksIndexFile({
+    required this.schemaVersion,
+    required this.generatedAt,
+    required this.books,
+  });
+
+  final int schemaVersion;
+  final DateTime generatedAt;
+  final List<SyncBookDescriptor> books;
+
+  Map<String, Object?> toMap() => <String, Object?>{
+        'schemaVersion': schemaVersion,
+        'generatedAt': generatedAt.toIso8601String(),
+        'books': books.map((book) => book.toMap()).toList(),
+      };
+
+  List<int> toJsonBytes() => utf8.encode(jsonEncode(toMap()));
+
+  static SyncBooksIndexFile fromMap(Map<String, Object?> map) {
+    final booksRaw = map['books'];
+    final books = booksRaw is List
+        ? booksRaw
+            .whereType<Map<Object?, Object?>>()
+            .map((raw) => SyncBookDescriptor.fromMap(_coerceMap(raw)))
+            .toList()
+        : <SyncBookDescriptor>[];
+    return SyncBooksIndexFile(
+      schemaVersion: (map['schemaVersion'] as num?)?.toInt() ?? 1,
+      generatedAt: DateTime.tryParse(map['generatedAt'] as String? ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0),
+      books: books,
+    );
+  }
+}

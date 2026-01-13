@@ -1,9 +1,14 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:cogniread/src/features/library/data/library_store.dart';
+import 'package:cogniread/src/core/types/toc.dart';
 import 'package:cogniread/src/features/sync/data/event_log_store.dart';
 import 'package:cogniread/src/features/sync/file_sync/sync_adapter.dart';
 import 'package:cogniread/src/features/sync/file_sync/sync_file_models.dart';
+import 'package:cogniread/src/core/utils/logger.dart';
+import 'package:cogniread/src/core/services/storage_service.dart';
+import 'package:path/path.dart' as p;
 
 class FileSyncEngine {
   FileSyncEngine({
@@ -11,22 +16,26 @@ class FileSyncEngine {
     required LibraryStore libraryStore,
     required EventLogStore eventLogStore,
     required String deviceId,
+    required StorageService storageService,
     this.basePath = '',
   })  : _adapter = adapter,
         _libraryStore = libraryStore,
         _eventLogStore = eventLogStore,
-        _deviceId = deviceId;
+        _deviceId = deviceId,
+        _storageService = storageService;
 
   final SyncAdapter _adapter;
   final LibraryStore _libraryStore;
   final EventLogStore _eventLogStore;
   final String _deviceId;
+  final StorageService _storageService;
   final String basePath;
 
   Future<FileSyncResult> sync() async {
     final now = DateTime.now().toUtc();
     final remoteEvents = await _readEventLog();
     final remoteState = await _readState();
+    final booksSync = await _syncBooks();
 
     final localEvents = _eventLogStore.listEvents();
     final localEventIds = localEvents.map((event) => event.id).toSet();
@@ -86,12 +95,268 @@ class FileSyncEngine {
       appliedState: appliedState,
       uploadedEvents: mergedEvents.length,
       uploadedAt: now,
+      booksUploaded: booksSync.uploaded,
+      booksDownloaded: booksSync.downloaded,
     );
   }
 
+  Future<_BookSyncResult> _syncBooks() async {
+    try {
+      final remoteIndex = await _readBooksIndex();
+      final localEntries = await _libraryStore.loadAll();
+      final now = DateTime.now().toUtc();
+      final result = await _mergeBooks(remoteIndex, localEntries, now);
+      final nextIndex = SyncBooksIndexFile(
+        schemaVersion: 1,
+        generatedAt: now,
+        books: result.nextIndex.values.toList(),
+      );
+      await _adapter.putFile(
+        _booksIndexPath(),
+        nextIndex.toJsonBytes(),
+        contentType: 'application/json',
+      );
+      return _BookSyncResult(
+        uploaded: result.uploaded,
+        downloaded: result.downloaded,
+      );
+    } on SyncAdapterException catch (error) {
+      Log.d('Book sync skipped due to adapter error: $error');
+      return const _BookSyncResult(uploaded: 0, downloaded: 0);
+    } catch (error) {
+      Log.d('Book sync failed: $error');
+      return const _BookSyncResult(uploaded: 0, downloaded: 0);
+    }
+  }
+
+  Future<_MergeBooksResult> _mergeBooks(
+    SyncBooksIndexFile remoteIndex,
+    List<LibraryEntry> localEntries,
+    DateTime now,
+  ) async {
+    final remoteByFp = <String, SyncBookDescriptor>{
+      for (final book in remoteIndex.books) book.fingerprint: book,
+    };
+    final localByFp = <String, LibraryEntry>{
+      for (final entry in localEntries) entry.fingerprint: entry,
+    };
+
+    final nextIndex = <String, SyncBookDescriptor>{};
+    var uploaded = 0;
+    var downloaded = 0;
+
+    // Upload or keep local books.
+    for (final entry in localEntries) {
+      final file = File(entry.localPath);
+      if (!await file.exists()) {
+        continue;
+      }
+      final stat = await file.stat();
+      final localDesc = _descriptorFromEntry(entry, stat);
+      final remote = remoteByFp[entry.fingerprint];
+      final shouldUpload = remote == null ||
+          remote.deleted ||
+          _isNewer(localDesc.updatedAt, remote.updatedAt) ||
+          remote.size != localDesc.size;
+      if (shouldUpload) {
+        final bytes = await file.readAsBytes();
+        await _adapter.putFile(
+          _bookPath(localDesc),
+          bytes,
+          contentType: _contentTypeForExt(localDesc.extension),
+        );
+        uploaded += 1;
+        nextIndex[localDesc.fingerprint] = localDesc;
+      } else {
+        nextIndex[localDesc.fingerprint] = remote;
+      }
+    }
+
+    // Handle remote-only or deleted books.
+    for (final remote in remoteIndex.books) {
+      if (nextIndex.containsKey(remote.fingerprint)) {
+        continue;
+      }
+      final local = localByFp[remote.fingerprint];
+      if (remote.deleted) {
+        if (local != null) {
+          await _removeLocalBook(local);
+        }
+        nextIndex[remote.fingerprint] = remote;
+        continue;
+      }
+      // Download missing book.
+      final remotePath = remote.path ?? _defaultBookPath(remote);
+      final file = await _adapter.getFile(remotePath);
+      if (file == null) {
+        nextIndex[remote.fingerprint] = remote;
+        continue;
+      }
+      final savedPath = await _saveBookFile(
+        remote.fingerprint,
+        remote.extension,
+        file.bytes,
+      );
+      final entry = _entryFromDescriptor(remote, savedPath, now);
+      await _libraryStore.upsert(entry);
+      nextIndex[remote.fingerprint] = remote;
+      downloaded += 1;
+    }
+
+    return _MergeBooksResult(
+      nextIndex: nextIndex,
+      uploaded: uploaded,
+      downloaded: downloaded,
+    );
+  }
+
+  Future<SyncBooksIndexFile> _readBooksIndex() async {
+    try {
+      final file = await _adapter.getFile(_booksIndexPath());
+      if (file == null) {
+        return SyncBooksIndexFile(
+          schemaVersion: 1,
+          generatedAt: DateTime.now().toUtc(),
+          books: const <SyncBookDescriptor>[],
+        );
+      }
+      final decoded = _decodeJsonMap(file.bytes);
+      return SyncBooksIndexFile.fromMap(decoded);
+    } on SyncAdapterException catch (error) {
+      Log.d('FileSyncEngine: failed to read books_index.json: $error');
+      return SyncBooksIndexFile(
+        schemaVersion: 1,
+        generatedAt: DateTime.now().toUtc(),
+        books: const <SyncBookDescriptor>[],
+      );
+    }
+  }
+
+  SyncBookDescriptor _descriptorFromEntry(
+    LibraryEntry entry,
+    FileStat stat,
+  ) {
+    final ext = p.extension(entry.localPath);
+    final path = _bookPathForFingerprint(entry.fingerprint, ext);
+    final updatedAt = stat.modified.toUtc();
+    return SyncBookDescriptor(
+      id: entry.id,
+      title: entry.title,
+      author: entry.author,
+      fingerprint: entry.fingerprint,
+      size: stat.size,
+      updatedAt: updatedAt,
+      extension: ext,
+      path: path,
+      deleted: false,
+    );
+  }
+
+  Future<String> _saveBookFile(
+    String fingerprint,
+    String extension,
+    List<int> bytes,
+  ) async {
+    final dir = await _storageService.appStoragePath();
+    final ext = extension.startsWith('.') ? extension : '.$extension';
+    final path = p.join(dir, '$fingerprint$ext');
+    final file = File(path);
+    await file.writeAsBytes(bytes, flush: true);
+    return path;
+  }
+
+  Future<void> _removeLocalBook(LibraryEntry entry) async {
+    try {
+      final file = File(entry.localPath);
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (_) {}
+    await _libraryStore.remove(entry.id);
+  }
+
+  LibraryEntry _entryFromDescriptor(
+    SyncBookDescriptor desc,
+    String localPath,
+    DateTime now,
+  ) {
+    final title = desc.title.isEmpty ? 'Book ${desc.fingerprint}' : desc.title;
+    return LibraryEntry(
+      id: desc.id.isEmpty ? desc.fingerprint : desc.id,
+      title: title,
+      author: desc.author,
+      localPath: localPath,
+      coverPath: null,
+      addedAt: desc.updatedAt,
+      fingerprint: desc.fingerprint,
+      sourcePath: localPath,
+      readingPosition: const ReadingPosition(
+        chapterHref: null,
+        anchor: null,
+        offset: null,
+        updatedAt: null,
+      ),
+      progress: const ReadingProgress(
+        percent: null,
+        chapterIndex: null,
+        totalChapters: null,
+        updatedAt: null,
+      ),
+      lastOpenedAt: null,
+      notes: const <Note>[],
+      highlights: const <Highlight>[],
+      bookmarks: const <Bookmark>[],
+      tocOfficial: const <TocNode>[],
+      tocGenerated: const <TocNode>[],
+      tocMode: TocMode.official,
+    );
+  }
+
+  String _bookPath(SyncBookDescriptor desc) {
+    return desc.path ?? _defaultBookPath(desc);
+  }
+
+  String _defaultBookPath(SyncBookDescriptor desc) {
+    final ext = desc.extension.startsWith('.') ? desc.extension : '.${desc.extension}';
+    return 'books/${desc.fingerprint}$ext';
+  }
+
+  String _bookPathForFingerprint(String fingerprint, String ext) {
+    final normalized = ext.startsWith('.') ? ext : '.$ext';
+    return 'books/$fingerprint$normalized';
+  }
+
+  String _booksIndexPath() => _path('books_index.json');
+
+  String _contentTypeForExt(String ext) {
+    final lower = ext.toLowerCase();
+    switch (lower) {
+      case '.epub':
+        return 'application/epub+zip';
+      case '.fb2':
+      case '.fb2.zip':
+      case '.zip':
+        return 'application/zip';
+      default:
+        return 'application/octet-stream';
+    }
+  }
+
   Future<SyncEventLogFile> _readEventLog() async {
-    final file = await _adapter.getFile(_path('event_log.json'));
-    if (file == null) {
+    try {
+      final file = await _adapter.getFile(_path('event_log.json'));
+      if (file == null) {
+        return SyncEventLogFile(
+          schemaVersion: 1,
+          deviceId: _deviceId,
+          generatedAt: DateTime.now().toUtc(),
+          events: const <EventLogEntry>[],
+        );
+      }
+      final decoded = _decodeJsonMap(file.bytes);
+      return SyncEventLogFile.fromMap(decoded);
+    } on SyncAdapterException catch (error) {
+      Log.d('FileSyncEngine: failed to read event_log.json: ${error.toString()}');
       return SyncEventLogFile(
         schemaVersion: 1,
         deviceId: _deviceId,
@@ -99,21 +364,28 @@ class FileSyncEngine {
         events: const <EventLogEntry>[],
       );
     }
-    final decoded = _decodeJsonMap(file.bytes);
-    return SyncEventLogFile.fromMap(decoded);
   }
 
   Future<SyncStateFile> _readState() async {
-    final file = await _adapter.getFile(_path('state.json'));
-    if (file == null) {
+    try {
+      final file = await _adapter.getFile(_path('state.json'));
+      if (file == null) {
+        return SyncStateFile(
+          schemaVersion: 1,
+          generatedAt: DateTime.now().toUtc(),
+          readingPositions: const <SyncReadingPosition>[],
+        );
+      }
+      final decoded = _decodeJsonMap(file.bytes);
+      return SyncStateFile.fromMap(decoded);
+    } on SyncAdapterException catch (error) {
+      Log.d('FileSyncEngine: failed to read state.json: ${error.toString()}');
       return SyncStateFile(
         schemaVersion: 1,
         generatedAt: DateTime.now().toUtc(),
         readingPositions: const <SyncReadingPosition>[],
       );
     }
-    final decoded = _decodeJsonMap(file.bytes);
-    return SyncStateFile.fromMap(decoded);
   }
 
   Future<SyncStateFile> _buildStateFile({
@@ -373,12 +645,38 @@ class FileSyncResult {
     required this.appliedState,
     required this.uploadedEvents,
     required this.uploadedAt,
+    required this.booksUploaded,
+    required this.booksDownloaded,
   });
 
   final int appliedEvents;
   final int appliedState;
   final int uploadedEvents;
   final DateTime uploadedAt;
+  final int booksUploaded;
+  final int booksDownloaded;
+}
+
+class _MergeBooksResult {
+  const _MergeBooksResult({
+    required this.nextIndex,
+    required this.uploaded,
+    required this.downloaded,
+  });
+
+  final Map<String, SyncBookDescriptor> nextIndex;
+  final int uploaded;
+  final int downloaded;
+}
+
+class _BookSyncResult {
+  const _BookSyncResult({
+    required this.uploaded,
+    required this.downloaded,
+  });
+
+  final int uploaded;
+  final int downloaded;
 }
 
 LibraryEntry _copyEntry(

@@ -12,11 +12,34 @@ import 'package:cogniread/src/features/library/data/library_preferences_store.da
 import 'package:cogniread/src/features/library/data/library_store.dart';
 import 'package:cogniread/src/features/sync/data/event_log_store.dart';
 import 'package:cogniread/src/features/sync/file_sync/file_sync_engine.dart';
+import 'package:cogniread/src/features/sync/file_sync/dropbox_api_client.dart';
+import 'package:cogniread/src/features/sync/file_sync/dropbox_oauth.dart';
+import 'package:cogniread/src/features/sync/file_sync/dropbox_sync_adapter.dart';
+import 'package:cogniread/src/features/sync/file_sync/google_drive_api_client.dart';
+import 'package:cogniread/src/features/sync/file_sync/google_drive_oauth.dart';
+import 'package:cogniread/src/features/sync/file_sync/google_drive_sync_adapter.dart';
+import 'package:cogniread/src/features/sync/file_sync/onedrive_api_client.dart';
+import 'package:cogniread/src/features/sync/file_sync/onedrive_oauth.dart';
+import 'package:cogniread/src/features/sync/file_sync/onedrive_sync_adapter.dart';
+import 'package:cogniread/src/features/sync/file_sync/webdav_api_client.dart';
+import 'package:cogniread/src/features/sync/file_sync/webdav_credentials.dart';
+import 'package:cogniread/src/features/sync/file_sync/webdav_sync_adapter.dart';
+import 'package:cogniread/src/features/sync/file_sync/yandex_disk_api_client.dart';
+import 'package:cogniread/src/features/sync/file_sync/yandex_disk_oauth.dart';
+import 'package:cogniread/src/features/sync/file_sync/yandex_disk_sync_adapter.dart';
+import 'package:cogniread/src/features/sync/file_sync/oauth.dart';
 import 'package:cogniread/src/features/sync/file_sync/sync_adapter.dart';
+import 'package:cogniread/src/features/sync/file_sync/sync_auth_store.dart';
+import 'package:cogniread/src/features/sync/file_sync/sync_errors.dart';
+import 'package:cogniread/src/features/sync/file_sync/sync_oauth_config.dart';
+import 'package:cogniread/src/features/sync/file_sync/sync_provider.dart';
+import 'package:cogniread/src/features/sync/file_sync/stored_oauth_token_provider.dart';
 import 'package:epubx/epubx.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
+import 'package:app_links/app_links.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:xml/xml.dart';
 
 class LibraryBookItem {
@@ -112,6 +135,7 @@ class LibraryController extends ChangeNotifier {
         _store = store ?? LibraryStore(),
         _preferencesStore = preferencesStore ?? LibraryPreferencesStore(),
         _pickEpubPath = pickEpubPath,
+        _fallbackSyncAdapter = syncAdapter,
         _syncAdapter = syncAdapter,
         _stubImport = stubImport;
 
@@ -119,13 +143,27 @@ class LibraryController extends ChangeNotifier {
   final LibraryStore _store;
   final LibraryPreferencesStore _preferencesStore;
   final Future<String?> Function()? _pickEpubPath;
-  final SyncAdapter? _syncAdapter;
+  final SyncAdapter? _fallbackSyncAdapter;
+  SyncAdapter? _syncAdapter;
   final bool _stubImport;
   Future<void>? _storeReady;
   final EventLogStore _syncEventLogStore = EventLogStore();
+  final SyncAuthStore _syncAuthStore = SyncAuthStore();
+  SyncOAuthConfig? _oauthConfig;
   FileSyncEngine? _syncEngine;
   bool _syncInProgress = false;
   bool _coverSyncInProgress = false;
+  bool _authInProgress = false;
+  bool _connectionInProgress = false;
+  bool _deleteInProgress = false;
+  String? _authError;
+  String? _authState;
+  SyncProvider? _pendingAuthProvider;
+  WebDavCredentials? _webDavCredentials;
+  final AppLinks _appLinks = AppLinks();
+  StreamSubscription<Uri?>? _authLinkSub;
+  final Map<SyncProvider, bool> _providerConnected =
+      <SyncProvider, bool>{};
 
   bool _loading = true;
   String? _errorMessage;
@@ -139,12 +177,15 @@ class LibraryController extends ChangeNotifier {
   String _query = '';
   final List<LibraryBookItem> _books = <LibraryBookItem>[];
   LibraryViewMode _viewMode = LibraryViewMode.list;
+  SyncProvider _syncProvider = SyncProvider.googleDrive;
   String _globalSearchQuery = '';
   bool _globalSearching = false;
   List<LibrarySearchResult> _globalSearchResults =
       const <LibrarySearchResult>[];
   Timer? _globalSearchDebounce;
   int _globalSearchNonce = 0;
+  DateTime? _lastSyncAt;
+  String? _lastSyncSummary;
 
   bool get loading => _loading;
   List<LibraryBookItem> get books => List<LibraryBookItem>.unmodifiable(_books);
@@ -152,6 +193,23 @@ class LibraryController extends ChangeNotifier {
   String? get infoMessage => _infoMessage;
   String get query => _query;
   LibraryViewMode get viewMode => _viewMode;
+  SyncProvider get syncProvider => _syncProvider;
+  bool get syncInProgress => _syncInProgress;
+  bool get authInProgress => _authInProgress;
+  bool get connectionInProgress => _connectionInProgress;
+  bool get deleteInProgress => _deleteInProgress;
+  String? get authError => _authError;
+  SyncOAuthConfig? get oauthConfig => _oauthConfig;
+  bool get isSyncProviderConnected =>
+      _providerConnected[_syncProvider] ?? false;
+  bool get isWebDavProvider => _syncProvider == SyncProvider.webDav;
+  bool get isSyncProviderConfigured =>
+      _oauthConfig?.isConfigured(_syncProvider) ?? false;
+  WebDavCredentials? get webDavCredentials => _webDavCredentials;
+  DateTime? get lastSyncAt => _lastSyncAt;
+  String? get lastSyncSummary => _lastSyncSummary;
+  String get syncAdapterLabel =>
+      _syncAdapter == null ? 'none' : _syncAdapter.runtimeType.toString();
   String get globalSearchQuery => _globalSearchQuery;
   bool get globalSearching => _globalSearching;
   List<LibrarySearchResult> get globalSearchResults =>
@@ -182,11 +240,21 @@ class LibraryController extends ChangeNotifier {
     }
     _storeReady = _store.init();
     await _preferencesStore.init();
+    await _syncAuthStore.init();
+    await _loadOAuthConfig();
+    await _initAuthLinks();
     await _ensureDeviceId();
     await _loadViewMode();
+    await _loadSyncProvider();
+    await _loadProviderConnection(_syncProvider);
+    await _refreshSyncAdapter();
     await _loadLibrary();
-    await _initSyncEngine();
-    await _runFileSync();
+    try {
+      await _runFileSync();
+    } catch (error) {
+      _setAuthError('Автосинхронизация отключена. Проверь подключение.');
+      Log.d('Auto sync failed: $error');
+    }
   }
 
   Future<void> _loadViewMode() async {
@@ -208,6 +276,17 @@ class LibraryController extends ChangeNotifier {
     await _preferencesStore.saveViewMode(
       mode == LibraryViewMode.grid ? 'grid' : 'list',
     );
+  }
+
+  Future<void> setSyncProvider(SyncProvider provider) async {
+    if (_syncProvider == provider) {
+      return;
+    }
+    _syncProvider = provider;
+    notifyListeners();
+    await _preferencesStore.saveSyncProvider(provider.name);
+    await _loadProviderConnection(provider);
+    await _refreshSyncAdapter();
   }
 
   void setQuery(String value) {
@@ -788,9 +867,741 @@ class LibraryController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _setAuthError(String message) {
+    _authError = message;
+    notifyListeners();
+  }
+
+  Future<void> _loadOAuthConfig() async {
+    final stored = await _preferencesStore.loadSyncOAuthConfig();
+    if (stored != null) {
+      final fromStore = SyncOAuthConfig.fromMap(stored);
+      if (fromStore != null &&
+          (fromStore.googleDrive != null ||
+              fromStore.dropbox != null ||
+              fromStore.oneDrive != null ||
+              fromStore.yandexDisk != null)) {
+        _oauthConfig = fromStore;
+        return;
+      }
+    }
+    _oauthConfig = await SyncOAuthConfig.load();
+  }
+
+  Future<void> saveOAuthConfig({
+    required SyncProvider provider,
+    required String clientId,
+    required String clientSecret,
+    required String redirectUri,
+    String? tenant,
+  }) async {
+    if (provider == SyncProvider.webDav) {
+      _setAuthError('WebDAV не требует OAuth ключей');
+      return;
+    }
+    final trimmedClientId = clientId.trim();
+    final trimmedClientSecret = clientSecret.trim();
+    final trimmedRedirect = redirectUri.trim();
+    if (trimmedClientId.isEmpty ||
+        trimmedClientSecret.isEmpty ||
+        trimmedRedirect.isEmpty) {
+      _setAuthError('Заполни clientId, clientSecret и redirectUri');
+      return;
+    }
+
+    final current = _oauthConfig ?? const SyncOAuthConfig();
+    SyncOAuthConfig updated;
+    switch (provider) {
+      case SyncProvider.googleDrive:
+        updated = SyncOAuthConfig(
+          googleDrive: GoogleDriveOAuthConfig(
+            clientId: trimmedClientId,
+            clientSecret: trimmedClientSecret,
+            redirectUri: trimmedRedirect,
+          ),
+          dropbox: current.dropbox,
+          oneDrive: current.oneDrive,
+          yandexDisk: current.yandexDisk,
+        );
+        break;
+      case SyncProvider.dropbox:
+        updated = SyncOAuthConfig(
+          googleDrive: current.googleDrive,
+          dropbox: DropboxOAuthConfig(
+            clientId: trimmedClientId,
+            clientSecret: trimmedClientSecret,
+            redirectUri: trimmedRedirect,
+          ),
+          oneDrive: current.oneDrive,
+          yandexDisk: current.yandexDisk,
+        );
+        break;
+      case SyncProvider.oneDrive:
+        updated = SyncOAuthConfig(
+          googleDrive: current.googleDrive,
+          dropbox: current.dropbox,
+          oneDrive: OneDriveOAuthConfig(
+            clientId: trimmedClientId,
+            clientSecret: trimmedClientSecret,
+            redirectUri: trimmedRedirect,
+            tenant: (tenant == null || tenant.trim().isEmpty)
+                ? 'common'
+                : tenant.trim(),
+          ),
+          yandexDisk: current.yandexDisk,
+        );
+        break;
+      case SyncProvider.yandexDisk:
+        updated = SyncOAuthConfig(
+          googleDrive: current.googleDrive,
+          dropbox: current.dropbox,
+          oneDrive: current.oneDrive,
+          yandexDisk: YandexDiskOAuthConfig(
+            clientId: trimmedClientId,
+            clientSecret: trimmedClientSecret,
+            redirectUri: trimmedRedirect,
+          ),
+        );
+        break;
+      case SyncProvider.webDav:
+        return;
+    }
+
+    _oauthConfig = updated;
+    await _preferencesStore.saveSyncOAuthConfig(updated.toMap());
+    _authError = null;
+    await _refreshSyncAdapter();
+    notifyListeners();
+  }
+
+  Future<void> clearOAuthConfig(SyncProvider provider) async {
+    final current = _oauthConfig;
+    if (current == null) {
+      return;
+    }
+    SyncOAuthConfig updated;
+    switch (provider) {
+      case SyncProvider.googleDrive:
+        updated = SyncOAuthConfig(
+          dropbox: current.dropbox,
+          oneDrive: current.oneDrive,
+          yandexDisk: current.yandexDisk,
+        );
+        break;
+      case SyncProvider.dropbox:
+        updated = SyncOAuthConfig(
+          googleDrive: current.googleDrive,
+          oneDrive: current.oneDrive,
+          yandexDisk: current.yandexDisk,
+        );
+        break;
+      case SyncProvider.oneDrive:
+        updated = SyncOAuthConfig(
+          googleDrive: current.googleDrive,
+          dropbox: current.dropbox,
+          yandexDisk: current.yandexDisk,
+        );
+        break;
+      case SyncProvider.yandexDisk:
+        updated = SyncOAuthConfig(
+          googleDrive: current.googleDrive,
+          dropbox: current.dropbox,
+          oneDrive: current.oneDrive,
+        );
+        break;
+      case SyncProvider.webDav:
+        return;
+    }
+    _oauthConfig = updated;
+    await _preferencesStore.saveSyncOAuthConfig(updated.toMap());
+    await _refreshSyncAdapter();
+    notifyListeners();
+  }
+
+  Future<void> _initAuthLinks() async {
+    _authLinkSub?.cancel();
+    _authLinkSub = _appLinks.uriLinkStream.listen(
+      _handleAuthRedirect,
+      onError: (Object error, StackTrace stackTrace) {
+        _setAuthError('OAuth link error: $error');
+      },
+    );
+    try {
+      _handleAuthRedirect(await _appLinks.getInitialLink());
+    } catch (error) {
+      _setAuthError('OAuth init failed: $error');
+    }
+  }
+
+  Future<void> _loadProviderConnection(SyncProvider provider) async {
+    if (provider == SyncProvider.webDav) {
+      _webDavCredentials = await _syncAuthStore.loadWebDavCredentials();
+      _providerConnected[provider] = _webDavCredentials != null;
+      notifyListeners();
+      return;
+    }
+    final token = await _syncAuthStore.loadToken(provider);
+    _providerConnected[provider] = token != null;
+    notifyListeners();
+  }
+
+  Future<void> _refreshSyncAdapter() async {
+    if (_providerConnected[_syncProvider] != true) {
+      _syncAdapter = _fallbackSyncAdapter;
+      await _initSyncEngine();
+      notifyListeners();
+      return;
+    }
+    final adapter = await _buildAdapter(_syncProvider);
+    _syncAdapter = adapter ?? _fallbackSyncAdapter;
+    await _initSyncEngine();
+    notifyListeners();
+  }
+
+  Future<SyncAdapter?> _buildAdapter(SyncProvider provider) async {
+    final config = _oauthConfig;
+    if (config == null) {
+      return null;
+    }
+    switch (provider) {
+      case SyncProvider.googleDrive:
+        final googleConfig = config.googleDrive;
+        if (googleConfig == null) {
+          return null;
+        }
+        final oauthClient = GoogleDriveOAuthClient(googleConfig);
+        final tokenProvider = StoredOAuthTokenProvider(
+          provider: provider,
+          store: _syncAuthStore,
+          refreshToken: oauthClient.refreshToken,
+        );
+        final apiClient = HttpGoogleDriveApiClient(
+          tokenProvider: tokenProvider,
+        );
+        return GoogleDriveSyncAdapter(apiClient: apiClient);
+      case SyncProvider.dropbox:
+        final dropboxConfig = config.dropbox;
+        if (dropboxConfig == null) {
+          return null;
+        }
+        final oauthClient = DropboxOAuthClient(dropboxConfig);
+        final tokenProvider = StoredOAuthTokenProvider(
+          provider: provider,
+          store: _syncAuthStore,
+          refreshToken: oauthClient.refreshToken,
+        );
+        final apiClient = HttpDropboxApiClient(tokenProvider: tokenProvider);
+        // Пишем в корень App Folder Dropbox (без дополнительных вложенных папок),
+        // чтобы избежать неожиданных конфликтов пути.
+        const basePath = '';
+        return DropboxSyncAdapter(
+          apiClient: apiClient,
+          basePath: basePath,
+        );
+      case SyncProvider.oneDrive:
+        final oneDriveConfig = config.oneDrive;
+        if (oneDriveConfig == null) {
+          return null;
+        }
+        final oauthClient = OneDriveOAuthClient(oneDriveConfig);
+        final tokenProvider = StoredOAuthTokenProvider(
+          provider: provider,
+          store: _syncAuthStore,
+          refreshToken: oauthClient.refreshToken,
+        );
+        final apiClient = HttpOneDriveApiClient(tokenProvider: tokenProvider);
+        return OneDriveSyncAdapter(apiClient: apiClient);
+      case SyncProvider.yandexDisk:
+        final yandexConfig = config.yandexDisk;
+        if (yandexConfig == null) {
+          return null;
+        }
+        final oauthClient = YandexDiskOAuthClient(yandexConfig);
+        final tokenProvider = StoredOAuthTokenProvider(
+          provider: provider,
+          store: _syncAuthStore,
+          refreshToken: oauthClient.refreshToken,
+        );
+        final apiClient = HttpYandexDiskApiClient(tokenProvider: tokenProvider);
+        return YandexDiskSyncAdapter(apiClient: apiClient);
+      case SyncProvider.webDav:
+        final credentials = _webDavCredentials;
+        if (credentials == null) {
+          return null;
+        }
+        final baseUri = Uri.tryParse(credentials.baseUrl);
+        if (baseUri == null) {
+          return null;
+        }
+        final apiClient = HttpWebDavApiClient(
+          baseUri: baseUri,
+          auth: WebDavAuth.basic(
+            credentials.username,
+            credentials.password,
+          ),
+        );
+        return WebDavSyncAdapter(apiClient: apiClient);
+    }
+  }
+
+  Future<void> connectSyncProvider() async {
+    if (_authInProgress) {
+      return;
+    }
+    await _loadOAuthConfig();
+    if (!isSyncProviderConfigured) {
+      Log.d('Sync provider not configured: $_syncProvider');
+      _setAuthError('Подключение недоступно. Проверь настройки подключения.');
+      return;
+    }
+    if (_syncProvider == SyncProvider.webDav) {
+      _setAuthError('WebDAV подключается через логин/пароль');
+      return;
+    }
+    final authUrl = _buildAuthorizationUrl(_syncProvider);
+    if (authUrl == null) {
+      Log.d('Auth URL not built for provider: $_syncProvider');
+      _setAuthError('Подключение недоступно. Проверь настройки подключения.');
+      return;
+    }
+    final loopback = _loopbackRedirect(_syncProvider);
+    _authInProgress = true;
+    _authError = null;
+    notifyListeners();
+    if (loopback != null) {
+      await _connectWithLoopback(authUrl, loopback);
+      return;
+    }
+    final launched = await launchUrl(
+      authUrl,
+      mode: LaunchMode.externalApplication,
+    );
+    if (!launched) {
+      _authInProgress = false;
+      _authState = null;
+      _pendingAuthProvider = null;
+      _setAuthError('Не удалось открыть браузер');
+      notifyListeners();
+    }
+  }
+
+  Future<void> disconnectSyncProvider() async {
+    if (_syncProvider == SyncProvider.webDav) {
+      await _syncAuthStore.clearWebDavCredentials();
+      _webDavCredentials = null;
+      await _loadProviderConnection(_syncProvider);
+      await _refreshSyncAdapter();
+      return;
+    }
+    await _syncAuthStore.clearToken(_syncProvider);
+    await _loadProviderConnection(_syncProvider);
+    await _refreshSyncAdapter();
+  }
+
+  Future<void> saveWebDavCredentials({
+    required String baseUrl,
+    required String username,
+    required String password,
+  }) async {
+    final trimmedBase = baseUrl.trim();
+    final trimmedUser = username.trim();
+    if (trimmedBase.isEmpty || trimmedUser.isEmpty) {
+      _setAuthError('Заполни URL и логин');
+      return;
+    }
+    final parsed = Uri.tryParse(trimmedBase);
+    final scheme = parsed?.scheme.toLowerCase();
+    if (parsed == null ||
+        parsed.host.isEmpty ||
+        (scheme != 'http' && scheme != 'https')) {
+      _setAuthError('URL должен начинаться с http:// или https://');
+      return;
+    }
+    final normalizedBase =
+        trimmedBase.endsWith('/') ? trimmedBase : '$trimmedBase/';
+    final creds = WebDavCredentials(
+      baseUrl: normalizedBase,
+      username: trimmedUser,
+      password: password,
+    );
+    await _syncAuthStore.saveWebDavCredentials(creds);
+    _webDavCredentials = creds;
+    _providerConnected[SyncProvider.webDav] = true;
+    _authError = null;
+    await _refreshSyncAdapter();
+    notifyListeners();
+  }
+
+  Future<void> testSyncConnection() async {
+    if (_connectionInProgress) {
+      return;
+    }
+    final adapter = _syncAdapter;
+    if (adapter == null) {
+      _setAuthError('Адаптер не подключен');
+      return;
+    }
+    _connectionInProgress = true;
+    _authError = null;
+    notifyListeners();
+    try {
+      final files = await adapter.listFiles();
+      _setInfo('Подключение успешно (файлов: ${files.length})');
+    } catch (error) {
+      _setAuthError('Проверка не удалась: $error');
+    } finally {
+      _connectionInProgress = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> testWebDavCredentials({
+    required String baseUrl,
+    required String username,
+    required String password,
+  }) async {
+    if (_connectionInProgress) {
+      return;
+    }
+    final trimmedBase = baseUrl.trim();
+    final trimmedUser = username.trim();
+    if (trimmedBase.isEmpty || trimmedUser.isEmpty) {
+      _setAuthError('Заполни URL и логин');
+      return;
+    }
+    final parsed = Uri.tryParse(trimmedBase);
+    final scheme = parsed?.scheme.toLowerCase();
+    if (parsed == null ||
+        parsed.host.isEmpty ||
+        (scheme != 'http' && scheme != 'https')) {
+      _setAuthError('URL должен начинаться с http:// или https://');
+      return;
+    }
+    _connectionInProgress = true;
+    _authError = null;
+    notifyListeners();
+    try {
+      final apiClient = HttpWebDavApiClient(
+        baseUri: parsed,
+        auth: WebDavAuth.basic(trimmedUser, password),
+      );
+      await apiClient.listFolder('/');
+      _setInfo('WebDAV подключение успешно');
+    } catch (error) {
+      _setAuthError('WebDAV проверка не удалась: $error');
+    } finally {
+      _connectionInProgress = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> deleteRemoteSyncFiles() async {
+    if (_deleteInProgress) {
+      return;
+    }
+    final adapter = _syncAdapter;
+    if (adapter == null) {
+      _setAuthError('Адаптер не подключен');
+      return;
+    }
+    _deleteInProgress = true;
+    _authError = null;
+    notifyListeners();
+    try {
+      for (final name in _syncFileNames) {
+        await adapter.deleteFile(_buildSyncPath(name));
+      }
+      _setInfo('Файлы синка удалены в облаке');
+    } catch (error) {
+      _setAuthError('Не удалось удалить файлы: $error');
+    } finally {
+      _deleteInProgress = false;
+      notifyListeners();
+    }
+  }
+
+  String _buildSyncPath(String name) {
+    final base = _syncEngine?.basePath ?? '';
+    if (base.isEmpty) {
+      return name;
+    }
+    if (base.endsWith('/')) {
+      return '$base$name';
+    }
+    return '$base/$name';
+  }
+
+  static const List<String> _syncFileNames = <String>[
+    'event_log.json',
+    'state.json',
+    'meta.json',
+  ];
+
+  Uri? _buildAuthorizationUrl(SyncProvider provider) {
+    final config = _oauthConfig;
+    if (config == null) {
+      return null;
+    }
+    final state = _generateAuthState();
+    Uri? url;
+    switch (provider) {
+      case SyncProvider.googleDrive:
+        final google = config.googleDrive;
+        if (google == null) {
+          return null;
+        }
+        url = GoogleDriveOAuthClient(google).authorizationUrl(state: state);
+        break;
+      case SyncProvider.dropbox:
+        final dropbox = config.dropbox;
+        if (dropbox == null) {
+          return null;
+        }
+        url = DropboxOAuthClient(dropbox).authorizationUrl(state: state);
+        break;
+      case SyncProvider.oneDrive:
+        final oneDrive = config.oneDrive;
+        if (oneDrive == null) {
+          return null;
+        }
+        url = OneDriveOAuthClient(oneDrive).authorizationUrl(state: state);
+        break;
+      case SyncProvider.yandexDisk:
+        final yandex = config.yandexDisk;
+        if (yandex == null) {
+          return null;
+        }
+        url = YandexDiskOAuthClient(yandex).authorizationUrl(state: state);
+        break;
+      case SyncProvider.webDav:
+        return null;
+    }
+    _authState = state;
+    _pendingAuthProvider = provider;
+    return url;
+  }
+
+  void _handleAuthRedirect(Uri? uri) {
+    if (uri == null) {
+      return;
+    }
+    unawaited(_handleAuthRedirectAsync(uri));
+  }
+
+  Future<void> _handleAuthRedirectAsync(Uri uri) async {
+    Log.d('Handle auth redirect: $uri');
+    final provider = _pendingAuthProvider;
+    final expectedState = _authState;
+    if (provider == null || expectedState == null) {
+      return;
+    }
+    final query = uri.queryParameters;
+    if (query.isEmpty) {
+      return;
+    }
+    if (query['state'] != expectedState) {
+      return;
+    }
+    final error = query['error'];
+    if (error != null && error.isNotEmpty) {
+      _finishAuthWithError('OAuth error: $error');
+      return;
+    }
+    final code = query['code'];
+    if (code == null || code.isEmpty) {
+      _finishAuthWithError('OAuth code отсутствует');
+      return;
+    }
+    try {
+      final token = await _exchangeAuthCode(provider, code);
+      await _syncAuthStore.saveToken(provider, token);
+      await _loadProviderConnection(provider);
+      await _refreshSyncAdapter();
+      _setInfo('${_providerLabel(provider)} подключен');
+      _authError = null;
+    } catch (error) {
+      _finishAuthWithError('OAuth ошибка: $error');
+      return;
+    } finally {
+      _authInProgress = false;
+      _pendingAuthProvider = null;
+      _authState = null;
+      notifyListeners();
+    }
+  }
+
+  Future<OAuthToken> _exchangeAuthCode(
+    SyncProvider provider,
+    String code,
+  ) async {
+    final config = _oauthConfig;
+    if (config == null) {
+      throw SyncAuthException('OAuth config missing');
+    }
+    switch (provider) {
+      case SyncProvider.googleDrive:
+        final google = config.googleDrive;
+        if (google == null) {
+          throw SyncAuthException('Google OAuth not configured');
+        }
+        return GoogleDriveOAuthClient(google).exchangeCode(code);
+      case SyncProvider.dropbox:
+        final dropbox = config.dropbox;
+        if (dropbox == null) {
+          throw SyncAuthException('Dropbox OAuth not configured');
+        }
+        return DropboxOAuthClient(dropbox).exchangeCode(code);
+      case SyncProvider.oneDrive:
+        final oneDrive = config.oneDrive;
+        if (oneDrive == null) {
+          throw SyncAuthException('OneDrive OAuth not configured');
+        }
+        return OneDriveOAuthClient(oneDrive).exchangeCode(code);
+      case SyncProvider.yandexDisk:
+        final yandex = config.yandexDisk;
+        if (yandex == null) {
+          throw SyncAuthException('Yandex OAuth not configured');
+        }
+        return YandexDiskOAuthClient(yandex).exchangeCode(code);
+      case SyncProvider.webDav:
+        throw SyncAuthException('OAuth provider not supported');
+    }
+  }
+
+  void _finishAuthWithError(String message) {
+    _authInProgress = false;
+    _authState = null;
+    _pendingAuthProvider = null;
+    _setAuthError(message);
+    notifyListeners();
+  }
+
+  String _generateAuthState() {
+    final seed = Random().nextInt(1 << 32);
+    return '${DateTime.now().microsecondsSinceEpoch}-${seed.toRadixString(16)}';
+  }
+
+  Uri? _loopbackRedirect(SyncProvider provider) {
+    if (!(Platform.isMacOS || Platform.isWindows || Platform.isLinux)) {
+      return null;
+    }
+    if (provider != SyncProvider.dropbox) {
+      return null;
+    }
+    final raw = _oauthConfig?.dropbox?.redirectUri;
+    if (raw == null || raw.trim().isEmpty) {
+      return null;
+    }
+    final uri = Uri.tryParse(raw.trim());
+    if (uri == null) {
+      return null;
+    }
+    final host = uri.host.toLowerCase();
+    if (uri.scheme != 'http' && uri.scheme != 'https') {
+      return null;
+    }
+    if (host != 'localhost' && host != '127.0.0.1') {
+      return null;
+    }
+    if (uri.port == 0) {
+      return null;
+    }
+    return uri;
+  }
+
+  Future<void> _connectWithLoopback(Uri authUrl, Uri redirectUri) async {
+    HttpServer? server;
+    try {
+      server = await HttpServer.bind(
+        InternetAddress.loopbackIPv4,
+        redirectUri.port,
+      );
+    } catch (error) {
+      Log.d('Loopback bind failed: $error');
+      _finishAuthWithError('Подключение недоступно. Проверь настройки подключения.');
+      return;
+    }
+
+    final launched = await launchUrl(
+      authUrl,
+      mode: LaunchMode.externalApplication,
+    );
+    if (!launched) {
+      await server.close(force: true);
+      _authInProgress = false;
+      _authState = null;
+      _pendingAuthProvider = null;
+      _setAuthError('Не удалось открыть браузер');
+      notifyListeners();
+      return;
+    }
+
+    final completer = Completer<void>();
+    StreamSubscription<HttpRequest>? subscription;
+    subscription = server.listen((request) async {
+      Log.d('Loopback auth request: ${request.uri}');
+      if (request.uri.path != redirectUri.path) {
+        request.response.statusCode = HttpStatus.notFound;
+        await request.response.close();
+        return;
+      }
+      final fullUri = Uri(
+        scheme: redirectUri.scheme,
+        host: redirectUri.host,
+        port: redirectUri.port,
+        path: request.uri.path,
+        query: request.uri.query,
+      );
+      request.response.headers.contentType = ContentType.html;
+      request.response.write(
+        '<html><body>Можно вернуться в приложение.</body></html>',
+      );
+      await request.response.close();
+      try {
+        await _handleAuthRedirectAsync(fullUri);
+      } catch (error) {
+        Log.d('Loopback auth handling error: $error');
+        _finishAuthWithError('Подключение не удалось');
+      }
+      await subscription?.cancel();
+      await server?.close(force: true);
+      if (!completer.isCompleted) {
+        completer.complete();
+      }
+    });
+
+    Future<void>.delayed(const Duration(minutes: 2), () async {
+      if (completer.isCompleted) {
+        return;
+      }
+      await subscription?.cancel();
+      await server?.close(force: true);
+      _finishAuthWithError('Время ожидания истекло');
+      completer.complete();
+    });
+
+    await completer.future;
+  }
+
+  String _providerLabel(SyncProvider provider) {
+    switch (provider) {
+      case SyncProvider.googleDrive:
+        return 'Google Drive';
+      case SyncProvider.dropbox:
+        return 'Dropbox';
+      case SyncProvider.oneDrive:
+        return 'OneDrive';
+      case SyncProvider.yandexDisk:
+        return 'Yandex Disk';
+      case SyncProvider.webDav:
+        return 'WebDAV';
+    }
+  }
+
   Future<void> _initSyncEngine() async {
     final adapter = _syncAdapter;
     if (adapter == null) {
+      _syncEngine = null;
       return;
     }
     await _storeReady;
@@ -801,6 +1612,7 @@ class LibraryController extends ChangeNotifier {
       libraryStore: _store,
       eventLogStore: _syncEventLogStore,
       deviceId: deviceId,
+      storageService: _storageService,
     );
   }
 
@@ -810,15 +1622,22 @@ class LibraryController extends ChangeNotifier {
       return;
     }
     _syncInProgress = true;
+    notifyListeners();
     try {
       final result = await engine.sync();
+      _lastSyncAt = result.uploadedAt;
+      _lastSyncSummary =
+          'Events: ${result.appliedEvents}, state: ${result.appliedState}';
       if (result.appliedEvents > 0 || result.appliedState > 0) {
         await _loadLibrary();
+      } else {
+        notifyListeners();
       }
     } catch (e) {
       Log.d('File sync failed: $e');
     } finally {
       _syncInProgress = false;
+      notifyListeners();
     }
   }
 
@@ -833,6 +1652,18 @@ class LibraryController extends ChangeNotifier {
         '-${randomSeed.toRadixString(16)}';
     await _preferencesStore.saveDeviceId(generated);
     return generated;
+  }
+
+  Future<void> _loadSyncProvider() async {
+    final stored = await _preferencesStore.loadSyncProvider();
+    if (stored == null || stored.isEmpty) {
+      return;
+    }
+    _syncProvider = SyncProvider.values.firstWhere(
+      (value) => value.name == stored,
+      orElse: () => SyncProvider.googleDrive,
+    );
+    notifyListeners();
   }
 
   void _addStubBook() {
@@ -858,6 +1689,7 @@ class LibraryController extends ChangeNotifier {
   @override
   void dispose() {
     _globalSearchDebounce?.cancel();
+    _authLinkSub?.cancel();
     super.dispose();
   }
 }
