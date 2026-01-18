@@ -6,92 +6,52 @@ class DropboxSyncAdapter implements SyncAdapter {
   DropboxSyncAdapter({
     required DropboxApiClient apiClient,
     String basePath = '',
-  })  : _apiClient = apiClient,
-        _basePath = basePath;
+    String? legacyBasePath,
+  }) : _apiClient = apiClient,
+       _basePath = basePath,
+       _legacyBasePath =
+           legacyBasePath ?? (basePath.isEmpty ? '/cogniread' : null);
 
   final DropboxApiClient _apiClient;
   final String _basePath;
+  final String? _legacyBasePath;
 
   @override
   Future<List<SyncFileRef>> listFiles() async {
-    _log('listFiles: ensuring base folder $_basePath');
-    await _ensureBaseFolder();
-    List<DropboxApiFile> files;
-    try {
-      _log('listFiles: requesting list for $_basePath');
-      files = await _apiClient.listFolder(_basePath);
-    } on SyncAdapterException catch (error) {
-      _log('listFiles error: ${error.code} ${error.message}');
-      if (_isPathNotFound(error)) {
-        await _ensureBaseFolder();
-        _log('listFiles retry after create');
-        files = await _apiClient.listFolder(_basePath);
-      } else if (_isFolderConflict(error)) {
-        _log('listFiles repair base folder');
-        await _repairBaseFolder();
-        files = await _apiClient.listFolder(_basePath);
-      } else {
-        rethrow;
+    final all = <SyncFileRef>[];
+    all.addAll(await _listFilesAtBase(_basePath, allowCreate: true));
+    final legacy = _legacyBasePath;
+    if (legacy != null && legacy.isNotEmpty && legacy != _basePath) {
+      all.addAll(await _listFilesAtBase(legacy, allowCreate: false));
+    }
+    final merged = <String, SyncFileRef>{};
+    for (final ref in all) {
+      final existing = merged[ref.path];
+      if (existing == null ||
+          (ref.updatedAt != null &&
+              (existing.updatedAt == null ||
+                  ref.updatedAt!.isAfter(existing.updatedAt!)))) {
+        merged[ref.path] = ref;
       }
     }
-    return files
-        .map(
-          (file) => SyncFileRef(
-            path: _stripBase(file.path),
-            updatedAt: file.modifiedTime,
-            size: file.size,
-          ),
-        )
-        .toList();
+    return merged.values.toList();
   }
 
   @override
   Future<SyncFile?> getFile(String path) async {
-    final fullPath = _fullPath(path);
-    _log('getFile: $path -> $fullPath');
-    DropboxApiFile? metadata;
-    await _ensureBaseFolder();
-    try {
-      metadata = await _apiClient.getMetadata(fullPath);
-    } on SyncAdapterException catch (error) {
-      _log('getFile metadata error: ${error.code} ${error.message}');
-      if (_isPathNotFound(error)) {
-        await _ensureBaseFolder();
-        return null;
-      }
-      if (_isFolderConflict(error)) {
-        await _deletePath(fullPath);
-        return null;
-      }
-      rethrow;
-    }
-    if (metadata == null) {
-      _log('getFile: no metadata for $fullPath');
-      return null;
-    }
-    List<int> bytes;
-    try {
-      _log('getFile: downloading $fullPath');
-      bytes = await _apiClient.download(fullPath);
-    } on SyncAdapterException catch (error) {
-      _log('getFile download error: ${error.code} ${error.message}');
-      if (_isPathNotFound(error)) {
-        return null;
-      }
-      if (_isFolderConflict(error)) {
-        await _deletePath(fullPath);
-        return null;
-      }
-      rethrow;
-    }
-    return SyncFile(
-      ref: SyncFileRef(
-        path: _stripBase(metadata.path),
-        updatedAt: metadata.modifiedTime,
-        size: bytes.length,
-      ),
-      bytes: bytes,
+    final primary = await _getFileAtBase(
+      path,
+      basePath: _basePath,
+      allowCreate: true,
     );
+    if (primary != null) {
+      return primary;
+    }
+    final legacy = _legacyBasePath;
+    if (legacy != null && legacy.isNotEmpty && legacy != _basePath) {
+      return _getFileAtBase(path, basePath: legacy, allowCreate: false);
+    }
+    return null;
   }
 
   @override
@@ -100,7 +60,7 @@ class DropboxSyncAdapter implements SyncAdapter {
     List<int> bytes, {
     String? contentType,
   }) async {
-    final fullPath = _fullPath(path);
+    final fullPath = _fullPath(path, basePath: _basePath);
     await _ensureFolderForPath(fullPath);
     _log('putFile: $path -> $fullPath bytes=${bytes.length}');
     await _ensureBaseFolder();
@@ -125,7 +85,7 @@ class DropboxSyncAdapter implements SyncAdapter {
 
   @override
   Future<void> deleteFile(String path) async {
-    final fullPath = _fullPath(path);
+    final fullPath = _fullPath(path, basePath: _basePath);
     _log('deleteFile: $path -> $fullPath');
     await _ensureBaseFolder();
     await _withBaseRetry<void>(
@@ -133,6 +93,15 @@ class DropboxSyncAdapter implements SyncAdapter {
       swallowNotFound: true,
       swallowFolderConflict: true,
     );
+    final legacy = _legacyBasePath;
+    if (legacy != null && legacy.isNotEmpty && legacy != _basePath) {
+      final legacyFullPath = _fullPath(path, basePath: legacy);
+      await _withBaseRetry<void>(
+        () => _apiClient.delete(legacyFullPath),
+        swallowNotFound: true,
+        swallowFolderConflict: true,
+      );
+    }
   }
 
   Future<void> _ensureBaseFolder() async {
@@ -181,7 +150,8 @@ class DropboxSyncAdapter implements SyncAdapter {
     final code = error.code ?? '';
     final message = error.message;
     return code.contains('path_not_found') ||
-        (code.startsWith('dropbox_409') && message.contains('path/not_found')) ||
+        (code.startsWith('dropbox_409') &&
+            message.contains('path/not_found')) ||
         error.toString().contains('path/not_found');
   }
 
@@ -214,7 +184,9 @@ class DropboxSyncAdapter implements SyncAdapter {
   }
 
   Future<void> _ensureFolders(String absolutePath) async {
-    final segments = absolutePath.split('/').where((segment) => segment.isNotEmpty);
+    final segments = absolutePath
+        .split('/')
+        .where((segment) => segment.isNotEmpty);
     var current = '';
     for (final segment in segments) {
       current = '$current/$segment';
@@ -228,8 +200,12 @@ class DropboxSyncAdapter implements SyncAdapter {
       await _apiClient.createFolder(path);
       return;
     } on SyncAdapterException catch (error) {
-      _log('ensureSingleFolder error for $path: ${error.code} ${error.message}');
-      if (_isFolderConflict(error) || _isNotFolder(error) || _isPathNotFound(error)) {
+      _log(
+        'ensureSingleFolder error for $path: ${error.code} ${error.message}',
+      );
+      if (_isFolderConflict(error) ||
+          _isNotFolder(error) ||
+          _isPathNotFound(error)) {
         _log('ensureSingleFolder: deleting/retrying $path');
         await _deletePath(path);
         // Retry once after delete; if it fails again, let it bubble up.
@@ -246,28 +222,30 @@ class DropboxSyncAdapter implements SyncAdapter {
 
   bool _isNotFolder(SyncAdapterException error) {
     final message = error.message;
-    return message.contains('path/not_folder') || error.toString().contains('path/not_folder');
+    return message.contains('path/not_folder') ||
+        error.toString().contains('path/not_folder');
   }
 
-  String _fullPath(String name) {
+  String _fullPath(String name, {required String basePath}) {
     final normalized = name.startsWith('/') ? name : '/$name';
-    if (_basePath.isEmpty || _basePath == '/') {
+    if (basePath.isEmpty || basePath == '/') {
       return normalized;
     }
-    final base = _basePath.startsWith('/') ? _basePath : '/$_basePath';
+    final base = basePath.startsWith('/') ? basePath : '/$basePath';
     return '$base$normalized';
   }
 
-  String _stripBase(String path) {
-    if (_basePath.isEmpty) {
-      return path;
+  String _stripBaseAt(String path, {required String basePath}) {
+    final normalized = path.startsWith('/') ? path.substring(1) : path;
+    if (basePath.isEmpty) {
+      return normalized;
     }
-    final base = _basePath.startsWith('/') ? _basePath : '/$_basePath';
-    if (path.startsWith(base)) {
-      final trimmed = path.substring(base.length);
-      return trimmed.isEmpty ? '/' : trimmed;
+    final base = basePath.startsWith('/') ? basePath.substring(1) : basePath;
+    final prefix = base.endsWith('/') ? base : '$base/';
+    if (normalized.startsWith(prefix)) {
+      return normalized.substring(prefix.length);
     }
-    return path;
+    return normalized;
   }
 
   String _dirName(String fullPath) {
@@ -280,5 +258,116 @@ class DropboxSyncAdapter implements SyncAdapter {
 
   void _log(String message) {
     Log.d('[DropboxSyncAdapter] $message');
+  }
+
+  Future<List<SyncFileRef>> _listFilesAtBase(
+    String basePath, {
+    required bool allowCreate,
+  }) async {
+    if (basePath.isNotEmpty && allowCreate) {
+      _log('listFiles: ensuring base folder $basePath');
+      await _ensureBaseFolder();
+    }
+
+    if (basePath.isNotEmpty && !allowCreate) {
+      try {
+        final exists = await _apiClient.getMetadata(basePath);
+        if (exists == null) {
+          return const <SyncFileRef>[];
+        }
+      } on SyncAdapterException catch (error) {
+        if (_isPathNotFound(error)) {
+          return const <SyncFileRef>[];
+        }
+        rethrow;
+      }
+    }
+
+    List<DropboxApiFile> files;
+    try {
+      _log('listFiles: requesting list for $basePath');
+      files = await _apiClient.listFolder(basePath);
+    } on SyncAdapterException catch (error) {
+      _log('listFiles error: ${error.code} ${error.message}');
+      if (allowCreate && _isPathNotFound(error)) {
+        await _ensureBaseFolder();
+        _log('listFiles retry after create');
+        files = await _apiClient.listFolder(basePath);
+      } else if (allowCreate && _isFolderConflict(error)) {
+        _log('listFiles repair base folder');
+        await _repairBaseFolder();
+        files = await _apiClient.listFolder(basePath);
+      } else if (!allowCreate && _isPathNotFound(error)) {
+        return const <SyncFileRef>[];
+      } else {
+        rethrow;
+      }
+    }
+
+    return files
+        .map(
+          (file) => SyncFileRef(
+            path: _stripBaseAt(file.path, basePath: basePath),
+            updatedAt: file.modifiedTime,
+            size: file.size,
+          ),
+        )
+        .toList();
+  }
+
+  Future<SyncFile?> _getFileAtBase(
+    String path, {
+    required String basePath,
+    required bool allowCreate,
+  }) async {
+    final fullPath = _fullPath(path, basePath: basePath);
+    _log('getFile: $path -> $fullPath');
+    DropboxApiFile? metadata;
+    if (allowCreate) {
+      await _ensureBaseFolder();
+    }
+    try {
+      metadata = await _apiClient.getMetadata(fullPath);
+    } on SyncAdapterException catch (error) {
+      _log('getFile metadata error: ${error.code} ${error.message}');
+      if (_isPathNotFound(error)) {
+        if (allowCreate) {
+          await _ensureBaseFolder();
+        }
+        return null;
+      }
+      if (_isFolderConflict(error)) {
+        await _deletePath(fullPath);
+        return null;
+      }
+      rethrow;
+    }
+    if (metadata == null) {
+      _log('getFile: no metadata for $fullPath');
+      return null;
+    }
+    List<int> bytes;
+    try {
+      _log('getFile: downloading $fullPath');
+      bytes = await _apiClient.download(fullPath);
+    } on SyncAdapterException catch (error) {
+      _log('getFile download error: ${error.code} ${error.message}');
+      if (_isPathNotFound(error)) {
+        return null;
+      }
+      if (_isFolderConflict(error)) {
+        await _deletePath(fullPath);
+        return null;
+      }
+      rethrow;
+    }
+    return SyncFile(
+      ref: SyncFileRef(
+        path: path,
+        updatedAt: metadata.modifiedTime,
+        size: bytes.length,
+      ),
+      bytes: bytes,
+    );
   }
 }

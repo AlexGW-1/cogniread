@@ -208,12 +208,12 @@ class SyncOAuthConfig {
             redirectUri: googleRedirectUri,
           );
     final dropbox = (dropboxClientId.isEmpty ||
-            dropboxClientSecret.isEmpty ||
             dropboxRedirectUri.isEmpty)
         ? null
         : DropboxOAuthConfig(
             clientId: dropboxClientId,
-            clientSecret: dropboxClientSecret,
+            clientSecret:
+                dropboxClientSecret.isEmpty ? null : dropboxClientSecret,
             redirectUri: dropboxRedirectUri,
           );
     final oneDrive = (oneDriveClientId.isEmpty ||
@@ -387,7 +387,7 @@ class SyncOAuthConfig {
         _string(map, 'clientSecret') ?? _string(map, 'client_secret');
     final redirectUri =
         _string(map, 'redirectUri') ?? _string(map, 'redirect_uri');
-    if (clientId == null || clientSecret == null || redirectUri == null) {
+    if (clientId == null || redirectUri == null) {
       return null;
     }
     return DropboxOAuthConfig(
@@ -461,11 +461,15 @@ class SyncOAuthConfig {
   }
 
   static Map<String, Object?> _encodeDropbox(DropboxOAuthConfig config) {
-    return <String, Object?>{
+    final map = <String, Object?>{
       'clientId': config.clientId,
-      'clientSecret': config.clientSecret,
       'redirectUri': config.redirectUri,
     };
+    final secret = config.clientSecret;
+    if (secret != null && secret.trim().isNotEmpty) {
+      map['clientSecret'] = secret;
+    }
+    return map;
   }
 
   static Map<String, Object?> _encodeOneDrive(OneDriveOAuthConfig config) {

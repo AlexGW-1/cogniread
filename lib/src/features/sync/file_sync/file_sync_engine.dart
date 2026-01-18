@@ -18,6 +18,7 @@ class FileSyncEngine {
     required String deviceId,
     required StorageService storageService,
     this.basePath = '',
+    this.maxConcurrentBookUploads = 2,
   })  : _adapter = adapter,
         _libraryStore = libraryStore,
         _eventLogStore = eventLogStore,
@@ -30,6 +31,7 @@ class FileSyncEngine {
   final String _deviceId;
   final StorageService _storageService;
   final String basePath;
+  final int maxConcurrentBookUploads;
 
   Future<FileSyncResult> sync() async {
     final stopwatch = Stopwatch()..start();
@@ -177,7 +179,8 @@ class FileSyncEngine {
     var uploaded = 0;
     var downloaded = 0;
 
-    // Upload or keep local books.
+    // Upload or keep local books. Uploads may be parallel, but are capped.
+    final uploadJobs = <Future<void> Function()>[];
     for (final entry in localEntries) {
       final file = File(entry.localPath);
       if (!await file.exists()) {
@@ -190,7 +193,11 @@ class FileSyncEngine {
           remote.deleted ||
           _isNewer(localDesc.updatedAt, remote.updatedAt) ||
           remote.size != localDesc.size;
-      if (shouldUpload) {
+      if (!shouldUpload) {
+        nextIndex[localDesc.fingerprint] = remote;
+        continue;
+      }
+      uploadJobs.add(() async {
         final bytes = await file.readAsBytes();
         await _adapter.putFile(
           _bookPath(localDesc),
@@ -199,10 +206,9 @@ class FileSyncEngine {
         );
         uploaded += 1;
         nextIndex[localDesc.fingerprint] = localDesc;
-      } else {
-        nextIndex[localDesc.fingerprint] = remote;
-      }
+      });
     }
+    await _runJobs(uploadJobs, maxConcurrentBookUploads);
 
     // Handle remote-only or deleted books.
     for (final remote in remoteIndex.books) {
@@ -239,6 +245,34 @@ class FileSyncEngine {
       nextIndex: nextIndex,
       uploaded: uploaded,
       downloaded: downloaded,
+    );
+  }
+
+  Future<void> _runJobs(
+    List<Future<void> Function()> jobs,
+    int maxConcurrent,
+  ) async {
+    if (jobs.isEmpty) {
+      return;
+    }
+    final concurrency = maxConcurrent <= 0 ? 1 : maxConcurrent;
+    var index = 0;
+    Future<void> worker() async {
+      while (true) {
+        if (index >= jobs.length) {
+          return;
+        }
+        final job = jobs[index];
+        index += 1;
+        await job();
+      }
+    }
+
+    await Future.wait(
+      List<Future<void>>.generate(
+        concurrency > jobs.length ? jobs.length : concurrency,
+        (_) => worker(),
+      ),
     );
   }
 

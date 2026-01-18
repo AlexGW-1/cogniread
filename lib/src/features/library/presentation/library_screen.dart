@@ -6,6 +6,7 @@ import 'package:cogniread/src/features/library/presentation/library_controller.d
 import 'package:cogniread/src/features/reader/presentation/reader_screen.dart';
 import 'package:cogniread/src/features/sync/file_sync/sync_adapter.dart';
 import 'package:cogniread/src/features/sync/file_sync/sync_provider.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -660,6 +661,7 @@ class _SettingsPanel extends StatelessWidget {
       animation: controller,
       builder: (context, _) {
         final lastSync = controller.lastSyncAt;
+        final lastSyncOk = controller.lastSyncOk;
         final syncSummary = controller.lastSyncSummary;
         final syncLabel = controller.syncAdapterLabel;
         final syncAvailable = syncLabel != 'none';
@@ -743,7 +745,9 @@ class _SettingsPanel extends StatelessWidget {
                 label: Text(
                   controller.syncInProgress
                       ? 'Синхронизация...'
-                      : 'Синхронизировать сейчас',
+                      : (lastSyncOk == false
+                          ? 'Повторить'
+                          : 'Синхронизировать сейчас'),
                 ),
               ),
               const SizedBox(height: 10),
@@ -767,6 +771,17 @@ class _SettingsPanel extends StatelessWidget {
                     : 'Последняя синхронизация: ${lastSync.toLocal()}',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
+              if (lastSyncOk != null) ...[
+                const SizedBox(height: 6),
+                Text(
+                  lastSyncOk
+                      ? 'Статус: успех'
+                      : 'Статус: ошибка',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: lastSyncOk ? scheme.primary : scheme.error,
+                      ),
+                ),
+              ],
               if (syncSummary != null) ...[
                 const SizedBox(height: 6),
                 Text(
@@ -844,18 +859,7 @@ class _SettingsPanel extends StatelessWidget {
                           FilledButton.icon(
                             onPressed: authInProgress
                                 ? null
-                                : () {
-                                    if (isNas) {
-                                      _showNasDialog(context, controller);
-                                    } else if (controller.requiresManualOAuthCode) {
-                                      _connectYandexWithManualCode(
-                                        context,
-                                        controller,
-                                      );
-                                    } else {
-                                      controller.connectSyncProvider();
-                                    }
-                                  },
+                                : () => _startConnectFlow(context, controller),
                             icon: authInProgress
                                 ? const SizedBox(
                                     width: 16,
@@ -881,6 +885,23 @@ class _SettingsPanel extends StatelessWidget {
                             icon: const Icon(Icons.logout),
                             label: const Text('Отключить'),
                           ),
+                        if (oauthConnected && !isNas)
+                          OutlinedButton.icon(
+                            onPressed: authInProgress
+                                ? null
+                                : () async {
+                                    await controller.disconnectSyncProvider();
+                                    if (!context.mounted) {
+                                      return;
+                                    }
+                                    await _startConnectFlow(
+                                      context,
+                                      controller,
+                                    );
+                                  },
+                            icon: const Icon(Icons.restart_alt),
+                            label: const Text('Переподключить'),
+                          ),
                         OutlinedButton.icon(
                           onPressed: connectionInProgress || !oauthConnected
                               ? null
@@ -897,6 +918,67 @@ class _SettingsPanel extends StatelessWidget {
                         ),
                       ],
                     ),
+              const SizedBox(height: 24),
+              Text(
+                'Диагностика',
+                style: Theme.of(context).textTheme.labelLarge,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Лог: ${controller.logFilePath ?? 'не доступен'}',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: controller.copyLogPath,
+                    icon: const Icon(Icons.copy),
+                    label: const Text('Копировать путь'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: controller.exportLog,
+                    icon: const Icon(Icons.upload_file),
+                    label: const Text('Экспорт лога'),
+                  ),
+                  if (kDebugMode)
+                    OutlinedButton.icon(
+                      onPressed: () async {
+                        final confirmed = await showDialog<bool>(
+                          context: context,
+                          builder: (context) => AlertDialog(
+                            title: const Text('Сбросить синхронизацию?'),
+                            content: const Text(
+                              'Будут удалены токены/настройки синхронизации и '
+                              'статус последней синхронизации. '
+                              'Нужно для “чистого” ручного теста.',
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () =>
+                                    Navigator.of(context).pop(false),
+                                child: const Text('Отмена'),
+                              ),
+                              FilledButton(
+                                onPressed: () =>
+                                    Navigator.of(context).pop(true),
+                                child: const Text('Сбросить'),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (confirmed != true || !context.mounted) {
+                          return;
+                        }
+                        await controller.resetSyncSettingsForTesting();
+                      },
+                      icon: const Icon(Icons.restart_alt),
+                      label: const Text('Сбросить (тест)'),
+                    ),
+                ],
+              ),
                   ],
                 ),
               ),
@@ -923,6 +1005,21 @@ class _SettingsPanel extends StatelessWidget {
       case SyncProvider.smb:
         return 'NAS (WebDAV/SMB)';
     }
+  }
+
+  Future<void> _startConnectFlow(
+    BuildContext context,
+    LibraryController controller,
+  ) async {
+    if (controller.isNasProvider) {
+      await _showNasDialog(context, controller);
+      return;
+    }
+    if (controller.requiresManualOAuthCode) {
+      await _connectYandexWithManualCode(context, controller);
+      return;
+    }
+    await controller.connectSyncProvider();
   }
 
   Future<void> _showNasDialog(

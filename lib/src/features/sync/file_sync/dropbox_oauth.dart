@@ -2,18 +2,19 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:cogniread/src/features/sync/file_sync/oauth.dart';
+import 'package:cogniread/src/features/sync/file_sync/oauth_pkce.dart';
 import 'package:cogniread/src/features/sync/file_sync/sync_errors.dart';
 import 'package:cogniread/src/core/utils/logger.dart';
 
 class DropboxOAuthConfig {
   const DropboxOAuthConfig({
     required this.clientId,
-    required this.clientSecret,
+    this.clientSecret,
     required this.redirectUri,
   });
 
   final String clientId;
-  final String clientSecret;
+  final String? clientSecret;
   final String redirectUri;
 }
 
@@ -24,6 +25,10 @@ class DropboxOAuthClient {
   final DropboxOAuthConfig config;
   final HttpClient _httpClient;
 
+  static OAuthPkcePair createPkce() {
+    return OAuthPkce.create();
+  }
+
   Uri authorizationUrl({
     required String state,
     List<String> scopes = const <String>[
@@ -33,6 +38,8 @@ class DropboxOAuthClient {
     ],
     String responseType = 'code',
     String tokenAccessType = 'offline',
+    String? codeChallenge,
+    String codeChallengeMethod = 'S256',
   }) {
     final params = <String, String>{
       'client_id': config.clientId,
@@ -42,6 +49,10 @@ class DropboxOAuthClient {
       'state': state,
       'scope': scopes.join(' '),
     };
+    if (codeChallenge != null && codeChallenge.isNotEmpty) {
+      params['code_challenge'] = codeChallenge;
+      params['code_challenge_method'] = codeChallengeMethod;
+    }
     Log.d(
       'Dropbox OAuth URL params: client_id=${config.clientId}, '
       'redirect_uri=${config.redirectUri}, '
@@ -53,53 +64,50 @@ class DropboxOAuthClient {
     return uri;
   }
 
-  Future<OAuthToken> exchangeCode(String code) async {
-    Log.d('Dropbox token exchange start');
+  Future<OAuthToken> exchangeCode(
+    String code, {
+    String? codeVerifier,
+  }) async {
     final uri = Uri.https('api.dropboxapi.com', '/oauth2/token');
     final payload = <String, String>{
       'code': code,
       'grant_type': 'authorization_code',
       'client_id': config.clientId,
-      'client_secret': config.clientSecret,
       'redirect_uri': config.redirectUri,
     };
+    final secret = config.clientSecret;
+    if (secret != null && secret.trim().isNotEmpty) {
+      payload['client_secret'] = secret.trim();
+    }
+    if (codeVerifier != null && codeVerifier.trim().isNotEmpty) {
+      payload['code_verifier'] = codeVerifier.trim();
+    }
     final body = payload.entries
         .map((entry) => '${entry.key}=${Uri.encodeComponent(entry.value)}')
         .join('&');
 
-    HttpClientRequest request;
-    HttpClientResponse response;
-    List<int> bytes;
-    String responseText = '';
     try {
-      Log.d('Dropbox token exchange: opening connection');
-      request = await _httpClient.postUrl(uri);
+      final request = await _httpClient.postUrl(uri);
       request.headers.set(
         HttpHeaders.contentTypeHeader,
         'application/x-www-form-urlencoded',
       );
-      Log.d('Dropbox token exchange: sending request');
       request.add(utf8.encode(body));
-      Log.d('Dropbox token exchange: awaiting response');
-      response = await request.close();
-      Log.d('Dropbox token exchange: response opened');
-      bytes = await response.fold<List<int>>(
+      final response = await request.close();
+      final bytes = await response.fold<List<int>>(
         <int>[],
         (buffer, chunk) => buffer..addAll(chunk),
       );
-      responseText = utf8.decode(bytes);
-      Log.d(
-        'Dropbox token exchange: status=${response.statusCode}, '
-        'body=$responseText',
-      );
       if (response.statusCode >= 400) {
-        throw SyncAuthException('Dropbox OAuth exchange failed');
+        throw SyncAuthException(
+          _formatOAuthError(
+            'Dropbox OAuth exchange failed',
+            statusCode: response.statusCode,
+            bytes: bytes,
+          ),
+        );
       }
-    } catch (error) {
-      Log.d('Dropbox token exchange error: $error');
-      throw SyncAuthException('Dropbox OAuth exchange failed: $error');
-    }
-    final decoded = jsonDecode(responseText);
+      final decoded = jsonDecode(utf8.decode(bytes, allowMalformed: true));
     if (decoded is! Map) {
       throw SyncAuthException('Unexpected Dropbox OAuth response');
     }
@@ -115,6 +123,10 @@ class DropboxOAuthClient {
       expiresAt: expiresAt,
       tokenType: decoded['token_type'] as String? ?? 'Bearer',
     );
+    } catch (error) {
+      Log.d('Dropbox token exchange error: $error');
+      throw SyncAuthException('Dropbox OAuth exchange failed');
+    }
   }
 
   Future<OAuthToken> refreshToken(OAuthToken token) async {
@@ -127,54 +139,78 @@ class DropboxOAuthClient {
       'grant_type': 'refresh_token',
       'refresh_token': refreshToken,
       'client_id': config.clientId,
-      'client_secret': config.clientSecret,
     };
+    final secret = config.clientSecret;
+    if (secret != null && secret.trim().isNotEmpty) {
+      payload['client_secret'] = secret.trim();
+    }
     final body = payload.entries
         .map((entry) => '${entry.key}=${Uri.encodeComponent(entry.value)}')
         .join('&');
 
-    HttpClientRequest request;
-    HttpClientResponse response;
-    List<int> bytes;
-    String responseText = '';
     try {
-      request = await _httpClient.postUrl(uri);
+      final request = await _httpClient.postUrl(uri);
       request.headers.set(
         HttpHeaders.contentTypeHeader,
         'application/x-www-form-urlencoded',
       );
       request.add(utf8.encode(body));
-      response = await request.close();
-      bytes = await response.fold<List<int>>(
+      final response = await request.close();
+      final bytes = await response.fold<List<int>>(
         <int>[],
         (buffer, chunk) => buffer..addAll(chunk),
       );
-      responseText = utf8.decode(bytes);
-      Log.d(
-        'Dropbox token refresh: status=${response.statusCode}, '
-        'body=$responseText',
-      );
       if (response.statusCode >= 400) {
-        throw SyncAuthException('Dropbox OAuth refresh failed');
+        throw SyncAuthException(
+          _formatOAuthError(
+            'Dropbox OAuth refresh failed',
+            statusCode: response.statusCode,
+            bytes: bytes,
+          ),
+        );
       }
+      final decoded = jsonDecode(utf8.decode(bytes, allowMalformed: true));
+      if (decoded is! Map) {
+        throw SyncAuthException('Unexpected Dropbox OAuth response');
+      }
+      final accessToken = decoded['access_token'] as String? ?? '';
+      final expiresIn = decoded['expires_in'];
+      final expiresAt = expiresIn is num
+          ? DateTime.now().toUtc().add(Duration(seconds: expiresIn.toInt()))
+          : null;
+      return OAuthToken(
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+        expiresAt: expiresAt,
+        tokenType: decoded['token_type'] as String? ?? 'Bearer',
+      );
     } catch (error) {
       Log.d('Dropbox token refresh error: $error');
-      throw SyncAuthException('Dropbox OAuth refresh failed: $error');
+      throw SyncAuthException('Dropbox OAuth refresh failed');
     }
-    final decoded = jsonDecode(responseText);
-    if (decoded is! Map) {
-      throw SyncAuthException('Unexpected Dropbox OAuth response');
-    }
-    final accessToken = decoded['access_token'] as String? ?? '';
-    final expiresIn = decoded['expires_in'];
-    final expiresAt = expiresIn is num
-        ? DateTime.now().toUtc().add(Duration(seconds: expiresIn.toInt()))
-        : null;
-    return OAuthToken(
-      accessToken: accessToken,
-      refreshToken: refreshToken,
-      expiresAt: expiresAt,
-      tokenType: decoded['token_type'] as String? ?? 'Bearer',
-    );
+  }
+
+  String _formatOAuthError(
+    String message, {
+    required int statusCode,
+    required List<int> bytes,
+  }) {
+    final raw = bytes.isEmpty ? '' : utf8.decode(bytes, allowMalformed: true);
+    String? error;
+    String? description;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        error = decoded['error']?.toString();
+        description = decoded['error_description']?.toString();
+      }
+    } catch (_) {}
+    final parts = <String>[
+      message,
+      'status=$statusCode',
+      if (error?.isNotEmpty == true) 'error=$error',
+      if (description?.isNotEmpty == true) 'description=$description',
+    ];
+    return parts.join(', ');
   }
 }

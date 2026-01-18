@@ -25,6 +25,17 @@ class _FakeDropboxApiClient implements DropboxApiClient {
   Future<DropboxApiFile?> getMetadata(String path) async {
     final file = _files[path];
     if (file == null) {
+      final normalized = path.endsWith('/') ? path : '$path/';
+      final folderExists = _files.keys.any((key) => key.startsWith(normalized));
+      if (folderExists) {
+        final parts = path.split('/').where((part) => part.isNotEmpty).toList();
+        return DropboxApiFile(
+          path: path,
+          name: parts.isEmpty ? '' : parts.last,
+          modifiedTime: null,
+          size: null,
+        );
+      }
       return null;
     }
     return DropboxApiFile(
@@ -94,7 +105,10 @@ class _FakeFile {
 void main() {
   test('DropboxSyncAdapter uploads and downloads files', () async {
     final apiClient = _FakeDropboxApiClient();
-    final adapter = DropboxSyncAdapter(apiClient: apiClient, basePath: '/cogniread');
+    final adapter = DropboxSyncAdapter(
+      apiClient: apiClient,
+      basePath: '/cogniread',
+    );
 
     await adapter.putFile('state.json', <int>[1, 2, 3]);
     await adapter.putFile('state.json', <int>[9, 8]);
@@ -107,7 +121,10 @@ void main() {
 
   test('DropboxSyncAdapter создаёт базовую папку при path/not_found', () async {
     final apiClient = _FolderAwareDropboxApiClient();
-    final adapter = DropboxSyncAdapter(apiClient: apiClient, basePath: '/testbase');
+    final adapter = DropboxSyncAdapter(
+      apiClient: apiClient,
+      basePath: '/testbase',
+    );
 
     await adapter.putFile('state.json', <int>[1, 2, 3]);
     final file = await adapter.getFile('state.json');
@@ -116,29 +133,60 @@ void main() {
     expect(file!.bytes, [1, 2, 3]);
   });
 
-  test('DropboxSyncAdapter удаляет конфликтующую папку и перезаписывает файл', () async {
-    final apiClient = _ConflictingDropboxApiClient(conflictPaths: <String>{
-      '/testbase/state.json',
-    });
-    final adapter = DropboxSyncAdapter(apiClient: apiClient, basePath: '/testbase');
+  test(
+    'DropboxSyncAdapter удаляет конфликтующую папку и перезаписывает файл',
+    () async {
+      final apiClient = _ConflictingDropboxApiClient(
+        conflictPaths: <String>{'/testbase/state.json'},
+      );
+      final adapter = DropboxSyncAdapter(
+        apiClient: apiClient,
+        basePath: '/testbase',
+      );
 
-    await adapter.putFile('state.json', <int>[4, 5, 6]);
-    final file = await adapter.getFile('state.json');
+      await adapter.putFile('state.json', <int>[4, 5, 6]);
+      final file = await adapter.getFile('state.json');
 
-    expect(file, isNotNull);
-    expect(file!.bytes, [4, 5, 6]);
-  });
+      expect(file, isNotNull);
+      expect(file!.bytes, [4, 5, 6]);
+    },
+  );
 
   test('DropboxSyncAdapter чинит базовую папку при конфликте', () async {
-    final apiClient = _ConflictingDropboxApiClient(conflictPaths: <String>{
-      '/testbase',
-    });
+    final apiClient = _ConflictingDropboxApiClient(
+      conflictPaths: <String>{'/testbase'},
+    );
     apiClient.baseIsConflict = true; // базовая папка "сломана" (конфликт).
-    final adapter = DropboxSyncAdapter(apiClient: apiClient, basePath: '/testbase');
+    final adapter = DropboxSyncAdapter(
+      apiClient: apiClient,
+      basePath: '/testbase',
+    );
 
     final files = await adapter.listFiles();
     expect(files, isEmpty);
   });
+
+  test(
+    'DropboxSyncAdapter reads legacy base path when base is empty',
+    () async {
+      final apiClient = _FakeDropboxApiClient();
+      // Legacy location from older builds.
+      await apiClient.upload(
+        path: '/cogniread/state.json',
+        bytes: <int>[7, 7],
+        overwrite: true,
+      );
+      final adapter = DropboxSyncAdapter(apiClient: apiClient, basePath: '');
+
+      final file = await adapter.getFile('state.json');
+
+      expect(file, isNotNull);
+      expect(file!.bytes, [7, 7]);
+
+      final refs = await adapter.listFiles();
+      expect(refs.map((ref) => ref.path), contains('state.json'));
+    },
+  );
 }
 
 class _FolderAwareDropboxApiClient implements DropboxApiClient {
@@ -232,7 +280,7 @@ class _FolderAwareDropboxApiClient implements DropboxApiClient {
 
 class _ConflictingDropboxApiClient implements DropboxApiClient {
   _ConflictingDropboxApiClient({Set<String>? conflictPaths})
-      : _conflictPaths = conflictPaths ?? <String>{} {
+    : _conflictPaths = conflictPaths ?? <String>{} {
     _folders.add('/testbase'); // базовая папка существует логически.
   }
 
@@ -244,11 +292,9 @@ class _ConflictingDropboxApiClient implements DropboxApiClient {
   @override
   Future<List<DropboxApiFile>> listFolder(String path) async {
     _ensureFolder(path);
-    if (_conflictPaths.contains(path) || (baseIsConflict && path == '/testbase')) {
-      throw SyncAdapterException(
-        'path/conflict/folder',
-        code: 'dropbox_409',
-      );
+    if (_conflictPaths.contains(path) ||
+        (baseIsConflict && path == '/testbase')) {
+      throw SyncAdapterException('path/conflict/folder', code: 'dropbox_409');
     }
     return _files.values
         .where((file) => file.path.startsWith(path))
@@ -296,10 +342,7 @@ class _ConflictingDropboxApiClient implements DropboxApiClient {
   }) async {
     _ensureFolder(path);
     if (_conflictPaths.contains(path)) {
-      throw SyncAdapterException(
-        'path/conflict/folder',
-        code: 'dropbox_409',
-      );
+      throw SyncAdapterException('path/conflict/folder', code: 'dropbox_409');
     }
     final name = path.split('/').last;
     final file = _FakeFile(

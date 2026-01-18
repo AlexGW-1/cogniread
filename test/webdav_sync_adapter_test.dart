@@ -6,22 +6,24 @@ import 'package:flutter_test/flutter_test.dart';
 class _FakeWebDavApiClient implements WebDavApiClient {
   _FakeWebDavApiClient({
     this.missingFolderCode = 'webdav_404',
+    this.legacyDeleteNotAllowed = false,
   });
 
   final Map<String, List<int>> _files = <String, List<int>>{};
   final Set<String> _folders = <String>{'/'};
   final String missingFolderCode;
+  final bool legacyDeleteNotAllowed;
 
   @override
   Future<void> delete(String path) async {
+    if (legacyDeleteNotAllowed && path.startsWith('/cogniread/')) {
+      throw SyncAdapterException('Not allowed', code: 'webdav_405');
+    }
     _files.remove(path);
   }
 
   @override
-  Future<List<int>?> download(
-    String path, {
-    bool allowNotFound = false,
-  }) async {
+  Future<List<int>?> download(String path, {bool allowNotFound = false}) async {
     final bytes = _files[path];
     if (bytes == null) {
       if (allowNotFound) {
@@ -80,8 +82,7 @@ class _FakeWebDavApiClient implements WebDavApiClient {
     final trimmed = path.endsWith('/') && path.length > 1
         ? path.substring(0, path.length - 1)
         : path;
-    final rooted =
-        trimmed.startsWith('/') ? trimmed : '/$trimmed';
+    final rooted = trimmed.startsWith('/') ? trimmed : '/$trimmed';
     return rooted.isEmpty ? '/' : rooted;
   }
 }
@@ -107,5 +108,39 @@ void main() {
     final files = await adapter.listFiles();
 
     expect(files, isEmpty);
+  });
+
+  test('WebDavSyncAdapter falls back to legacy basePath', () async {
+    final apiClient = _FakeWebDavApiClient();
+    // Pretend old builds used /cogniread/ while current uses /home/cogniread/.
+    await apiClient.upload(
+      path: '/cogniread/event_log.json',
+      bytes: <int>[9],
+      contentType: 'application/json',
+    );
+    final adapter = WebDavSyncAdapter(
+      apiClient: apiClient,
+      basePath: '/home/cogniread/',
+    );
+
+    final file = await adapter.getFile('event_log.json');
+
+    expect(file, isNotNull);
+    expect(file!.bytes, [9]);
+  });
+
+  test('WebDavSyncAdapter ignores legacy delete 405', () async {
+    final apiClient = _FakeWebDavApiClient(legacyDeleteNotAllowed: true);
+    await apiClient.upload(
+      path: '/home/cogniread/event_log.json',
+      bytes: <int>[1],
+      contentType: 'application/json',
+    );
+    final adapter = WebDavSyncAdapter(
+      apiClient: apiClient,
+      basePath: '/home/cogniread/',
+    );
+
+    await adapter.deleteFile('event_log.json');
   });
 }

@@ -1,20 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 
-import 'package:crypto/crypto.dart';
+import 'package:cogniread/src/features/sync/file_sync/oauth_pkce.dart';
 import 'package:cogniread/src/features/sync/file_sync/oauth.dart';
 import 'package:cogniread/src/features/sync/file_sync/sync_errors.dart';
-
-class OAuthPkcePair {
-  const OAuthPkcePair({
-    required this.verifier,
-    required this.challenge,
-  });
-
-  final String verifier;
-  final String challenge;
-}
 
 class YandexDiskOAuthConfig {
   const YandexDiskOAuthConfig({
@@ -36,15 +25,7 @@ class YandexDiskOAuthClient {
   final HttpClient _httpClient;
 
   static OAuthPkcePair createPkce() {
-    final random = Random.secure();
-    final bytes = List<int>.generate(32, (_) => random.nextInt(256));
-    final verifier = base64Url.encode(bytes).replaceAll('=', '');
-    final digest = sha256.convert(utf8.encode(verifier));
-    final challenge = base64Url.encode(digest.bytes).replaceAll('=', '');
-    return OAuthPkcePair(
-      verifier: verifier,
-      challenge: challenge,
-    );
+    return OAuthPkce.create();
   }
 
   Uri authorizationUrl({

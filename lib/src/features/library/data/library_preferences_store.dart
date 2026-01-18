@@ -9,6 +9,7 @@ class LibraryPreferencesStore {
   static const String _deviceIdKey = 'device_id';
   static const String _syncProviderKey = 'sync_provider';
   static const String _syncOAuthConfigKey = 'sync_oauth_config';
+  static const String _syncStatusKey = 'sync_status';
   Box<dynamic>? _box;
 
   Future<void> init() async {
@@ -39,12 +40,20 @@ class LibraryPreferencesStore {
     await _requireBox.put(_deviceIdKey, deviceId);
   }
 
+  Future<void> clearDeviceId() async {
+    await _requireBox.delete(_deviceIdKey);
+  }
+
   Future<String?> loadSyncProvider() async {
     return _requireBox.get(_syncProviderKey) as String?;
   }
 
   Future<void> saveSyncProvider(String provider) async {
     await _requireBox.put(_syncProviderKey, provider);
+  }
+
+  Future<void> clearSyncProvider() async {
+    await _requireBox.delete(_syncProviderKey);
   }
 
   Future<Map<String, Object?>?> loadSyncOAuthConfig() async {
@@ -66,5 +75,77 @@ class LibraryPreferencesStore {
       return;
     }
     await _requireBox.put(_syncOAuthConfigKey, jsonEncode(config));
+  }
+
+  Future<void> clearSyncOAuthConfig() async {
+    await _requireBox.delete(_syncOAuthConfigKey);
+  }
+
+  Future<SyncStatusSnapshot?> loadSyncStatus() async {
+    final raw = _requireBox.get(_syncStatusKey);
+    if (raw is! String || raw.trim().isEmpty) {
+      return null;
+    }
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        final map = decoded.map(
+          (key, value) => MapEntry(key.toString(), value),
+        );
+        return SyncStatusSnapshot.fromMap(map);
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<void> saveSyncStatus(SyncStatusSnapshot? snapshot) async {
+    if (snapshot == null) {
+      await _requireBox.delete(_syncStatusKey);
+      return;
+    }
+    await _requireBox.put(_syncStatusKey, jsonEncode(snapshot.toMap()));
+  }
+
+  Future<void> clearSyncStatus() async {
+    await _requireBox.delete(_syncStatusKey);
+  }
+}
+
+class SyncStatusSnapshot {
+  const SyncStatusSnapshot({
+    required this.at,
+    required this.ok,
+    required this.summary,
+  });
+
+  final DateTime at;
+  final bool ok;
+  final String summary;
+
+  Map<String, Object?> toMap() {
+    return <String, Object?>{
+      'at': at.toIso8601String(),
+      'ok': ok,
+      'summary': summary,
+    };
+  }
+
+  static SyncStatusSnapshot? fromMap(Map<String, Object?> map) {
+    final atRaw = map['at'];
+    final okRaw = map['ok'];
+    final summaryRaw = map['summary'];
+    if (atRaw is! String || summaryRaw is! String) {
+      return null;
+    }
+    final at = DateTime.tryParse(atRaw);
+    if (at == null) {
+      return null;
+    }
+    final ok = okRaw is bool ? okRaw : false;
+    return SyncStatusSnapshot(
+      at: at,
+      ok: ok,
+      summary: summaryRaw,
+    );
   }
 }

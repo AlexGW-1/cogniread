@@ -34,11 +34,39 @@ class Log {
       caseSensitive: false,
     ),
     RegExp(
+      r'authorization\s*[:=]\s*oauth\s+[^\s,;]+',
+      caseSensitive: false,
+    ),
+    RegExp(
       r'authorization\s*[:=]\s*basic\s+[a-z0-9+/=]+',
       caseSensitive: false,
     ),
     RegExp(
       r'(access_token|refresh_token)=[^&\s]+',
+      caseSensitive: false,
+    ),
+    RegExp(
+      r'"(access_token|refresh_token)"\s*:\s*"[^"]+"',
+      caseSensitive: false,
+    ),
+    RegExp(
+      r"'(access_token|refresh_token)'\s*:\s*'[^']+'",
+      caseSensitive: false,
+    ),
+    RegExp(
+      r'"client_secret"\s*:\s*"[^"]+"',
+      caseSensitive: false,
+    ),
+    RegExp(
+      r"'client_secret'\s*:\s*'[^']+'",
+      caseSensitive: false,
+    ),
+    RegExp(
+      r'"password"\s*:\s*"[^"]+"',
+      caseSensitive: false,
+    ),
+    RegExp(
+      r"'password'\s*:\s*'[^']+'",
       caseSensitive: false,
     ),
   ];

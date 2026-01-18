@@ -22,6 +22,7 @@ import 'package:cogniread/src/features/sync/file_sync/onedrive_api_client.dart';
 import 'package:cogniread/src/features/sync/file_sync/onedrive_oauth.dart';
 import 'package:cogniread/src/features/sync/file_sync/onedrive_sync_adapter.dart';
 import 'package:cogniread/src/features/sync/file_sync/fallback_sync_adapter.dart';
+import 'package:cogniread/src/features/sync/file_sync/resilient_sync_adapter.dart';
 import 'package:cogniread/src/features/sync/file_sync/smb_credentials.dart';
 import 'package:cogniread/src/features/sync/file_sync/smb_sync_adapter.dart';
 import 'package:cogniread/src/features/sync/file_sync/webdav_api_client.dart';
@@ -40,6 +41,7 @@ import 'package:cogniread/src/features/sync/file_sync/stored_oauth_token_provide
 import 'package:epubx/epubx.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:path/path.dart' as p;
 import 'package:app_links/app_links.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -182,6 +184,7 @@ class LibraryController extends ChangeNotifier {
   final Map<SyncProvider, bool> _providerConnected =
       <SyncProvider, bool>{};
   String? _yandexPkceVerifier;
+  String? _dropboxPkceVerifier;
   Timer? _autoSyncTimer;
   Timer? _scheduledSyncTimer;
   bool _pendingSync = false;
@@ -209,6 +212,7 @@ class LibraryController extends ChangeNotifier {
   static const Duration _autoSyncInterval = Duration(minutes: 15);
   static const Duration _syncDebounce = Duration(seconds: 5);
   DateTime? _lastSyncAt;
+  bool? _lastSyncOk;
   String? _lastSyncSummary;
 
   bool get loading => _loading;
@@ -235,7 +239,9 @@ class LibraryController extends ChangeNotifier {
   WebDavCredentials? get basicAuthCredentials =>
       isNasProvider ? _webDavCredentials : null;
   DateTime? get lastSyncAt => _lastSyncAt;
+  bool? get lastSyncOk => _lastSyncOk;
   String? get lastSyncSummary => _lastSyncSummary;
+  String? get logFilePath => Log.logFilePath;
   String get syncAdapterLabel =>
       _syncAdapter == null ? 'none' : _providerLabel(_syncProvider);
   bool get requiresManualOAuthCode {
@@ -341,6 +347,7 @@ class LibraryController extends ChangeNotifier {
       _pendingAuthProvider = null;
       _authState = null;
       _yandexPkceVerifier = null;
+      _dropboxPkceVerifier = null;
       notifyListeners();
     }
   }
@@ -350,6 +357,7 @@ class LibraryController extends ChangeNotifier {
     _pendingAuthProvider = null;
     _authState = null;
     _yandexPkceVerifier = null;
+    _dropboxPkceVerifier = null;
     if (message != null && message.trim().isNotEmpty) {
       _setAuthError(message.trim());
     }
@@ -373,6 +381,7 @@ class LibraryController extends ChangeNotifier {
       await _initAuthLinks();
       await _ensureDeviceId();
       await _loadViewMode();
+      await _loadSyncStatus();
       await _loadSyncProvider();
       await _loadProviderConnection(_syncProvider);
       await _refreshSyncAdapter();
@@ -396,6 +405,17 @@ class LibraryController extends ChangeNotifier {
     } else {
       _viewMode = LibraryViewMode.list;
     }
+    notifyListeners();
+  }
+
+  Future<void> _loadSyncStatus() async {
+    final snapshot = await _preferencesStore.loadSyncStatus();
+    if (snapshot == null) {
+      return;
+    }
+    _lastSyncAt = snapshot.at;
+    _lastSyncOk = snapshot.ok;
+    _lastSyncSummary = snapshot.summary;
     notifyListeners();
   }
 
@@ -576,6 +596,86 @@ class LibraryController extends ChangeNotifier {
     _errorMessage = null;
     _infoMessage = null;
     notifyListeners();
+  }
+
+  Future<void> resetSyncSettingsForTesting({
+    bool resetDeviceId = true,
+  }) async {
+    if (_syncInProgress || _authInProgress || _connectionInProgress) {
+      _setAuthError('Дождись окончания операции и повтори');
+      return;
+    }
+    _autoSyncDisabled = false;
+    _pendingSync = false;
+    _autoSyncTimer?.cancel();
+    _scheduledSyncTimer?.cancel();
+
+    await _syncAuthStore.clearAll();
+    await _preferencesStore.clearSyncProvider();
+    await _preferencesStore.clearSyncOAuthConfig();
+    await _preferencesStore.clearSyncStatus();
+    if (resetDeviceId) {
+      await _preferencesStore.clearDeviceId();
+    }
+
+    _oauthConfig = null;
+    _providerConnected.clear();
+    _webDavCredentials = null;
+    _smbCredentials = null;
+    _syncProvider = SyncProvider.webDav;
+    _lastSyncAt = null;
+    _lastSyncOk = null;
+    _lastSyncSummary = null;
+    _authError = null;
+
+    _syncAdapter = _fallbackSyncAdapter;
+    await _initSyncEngine();
+    _restartAutoSyncTimer();
+    notifyListeners();
+    _setInfo('Настройки синхронизации сброшены');
+  }
+
+  Future<void> copyLogPath() async {
+    final path = logFilePath;
+    if (path == null || path.trim().isEmpty) {
+      _setAuthError('Лог пока недоступен');
+      return;
+    }
+    await Clipboard.setData(ClipboardData(text: path));
+    _setInfo('Путь к логу скопирован');
+  }
+
+  Future<void> exportLog() async {
+    final srcPath = logFilePath;
+    if (srcPath == null || srcPath.trim().isEmpty) {
+      _setAuthError('Лог пока недоступен');
+      return;
+    }
+    final src = File(srcPath);
+    if (!await src.exists()) {
+      _setAuthError('Файл лога не найден');
+      return;
+    }
+    final timestamp = DateTime.now()
+        .toIso8601String()
+        .replaceAll(':', '-')
+        .replaceAll('.', '-');
+    final suggestedName = 'cogniread_$timestamp.log';
+    final destPath = await FilePicker.platform.saveFile(
+      dialogTitle: 'Экспорт лога',
+      fileName: suggestedName,
+      type: FileType.custom,
+      allowedExtensions: const <String>['log', 'txt'],
+    );
+    if (destPath == null || destPath.trim().isEmpty) {
+      return;
+    }
+    try {
+      await src.copy(destPath);
+      _setInfo('Лог сохранён: $destPath');
+    } catch (error) {
+      _setAuthError('Не удалось сохранить лог: $error');
+    }
   }
 
   Future<void> syncNow() async {
@@ -1054,10 +1154,15 @@ class LibraryController extends ChangeNotifier {
     final trimmedClientId = clientId.trim();
     final trimmedClientSecret = clientSecret.trim();
     final trimmedRedirect = redirectUri.trim();
+    final requiresSecret = provider != SyncProvider.dropbox;
     if (trimmedClientId.isEmpty ||
-        trimmedClientSecret.isEmpty ||
-        trimmedRedirect.isEmpty) {
-      _setAuthError('Заполни clientId, clientSecret и redirectUri');
+        trimmedRedirect.isEmpty ||
+        (requiresSecret && trimmedClientSecret.isEmpty)) {
+      _setAuthError(
+        requiresSecret
+            ? 'Заполни clientId, clientSecret и redirectUri'
+            : 'Заполни clientId и redirectUri (clientSecret опционален)',
+      );
       return;
     }
 
@@ -1228,7 +1333,9 @@ class LibraryController extends ChangeNotifier {
       return;
     }
     final adapter = await _buildAdapter(_syncProvider);
-    _syncAdapter = adapter ?? _fallbackSyncAdapter;
+    _syncAdapter = adapter == null
+        ? _fallbackSyncAdapter
+        : ResilientSyncAdapter(inner: adapter);
     await _initSyncEngine();
     _autoSyncDisabled = false;
     _restartAutoSyncTimer();
@@ -1413,7 +1520,7 @@ class LibraryController extends ChangeNotifier {
             'Нужен блок "googleDrive": { "clientId": "...", "clientSecret": "...", "redirectUri": "cogniread://oauth" }';
       case SyncProvider.dropbox:
         return '$base\n$configHint\n'
-            'Нужен блок "dropbox": { "clientId": "...", "clientSecret": "...", "redirectUri": "cogniread://oauth" }';
+            'Нужен блок "dropbox": { "clientId": "...", "redirectUri": "cogniread://oauth", "clientSecret": "..." } (clientSecret опционален при PKCE)';
       case SyncProvider.oneDrive:
         return '$base\n$configHint\n'
             'Нужен блок "oneDrive": { "clientId": "...", "clientSecret": "...", "redirectUri": "cogniread://oauth", "tenant": "common" }';
@@ -1770,6 +1877,22 @@ class LibraryController extends ChangeNotifier {
     }
     if (error.code == 'webdav_http') {
       return '$label: ошибка HTTP. Проверь URL и доступ к WebDAV.';
+    }
+    if (error.code == 'yandex_401' || error.code == 'yandex_403') {
+      return '$label: нет доступа. Переподключи аккаунт Yandex и попробуй ещё раз.';
+    }
+    if (error.code == 'yandex_timeout' ||
+        error.code == 'yandex_socket' ||
+        error.code == 'yandex_http') {
+      return '$label: ошибка сети. Проверь интернет и попробуй ещё раз.';
+    }
+    if (error.code == 'dropbox_401' || error.code == 'dropbox_403') {
+      return '$label: нет доступа. Переподключи Dropbox и попробуй ещё раз.';
+    }
+    if (error.code == 'dropbox_timeout' ||
+        error.code == 'dropbox_socket' ||
+        error.code == 'dropbox_http') {
+      return '$label: ошибка сети. Проверь интернет и попробуй ещё раз.';
     }
     return '$label ошибка: $error';
   }
@@ -2422,7 +2545,12 @@ class LibraryController extends ChangeNotifier {
         if (dropbox == null) {
           return null;
         }
-        url = DropboxOAuthClient(dropbox).authorizationUrl(state: state);
+        final pkce = DropboxOAuthClient.createPkce();
+        _dropboxPkceVerifier = pkce.verifier;
+        url = DropboxOAuthClient(dropbox).authorizationUrl(
+          state: state,
+          codeChallenge: pkce.challenge,
+        );
         break;
       case SyncProvider.oneDrive:
         final oneDrive = config.oneDrive;
@@ -2480,7 +2608,7 @@ class LibraryController extends ChangeNotifier {
   }
 
   Future<void> _handleAuthRedirectAsync(Uri uri) async {
-    Log.d('Handle auth redirect: $uri');
+    Log.d('Handle auth redirect: ${_safeAuthUriForLogs(uri)}');
     final provider = _pendingAuthProvider;
     final expectedState = _authState;
     if (provider == null || expectedState == null) {
@@ -2521,6 +2649,7 @@ class LibraryController extends ChangeNotifier {
       _pendingAuthProvider = null;
       _authState = null;
       _yandexPkceVerifier = null;
+      _dropboxPkceVerifier = null;
       notifyListeners();
     }
   }
@@ -2545,7 +2674,10 @@ class LibraryController extends ChangeNotifier {
         if (dropbox == null) {
           throw SyncAuthException('Dropbox OAuth not configured');
         }
-        return DropboxOAuthClient(dropbox).exchangeCode(code);
+        return DropboxOAuthClient(dropbox).exchangeCode(
+          code,
+          codeVerifier: _dropboxPkceVerifier,
+        );
       case SyncProvider.oneDrive:
         final oneDrive = config.oneDrive;
         if (oneDrive == null) {
@@ -2698,7 +2830,7 @@ class LibraryController extends ChangeNotifier {
     final completer = Completer<void>();
     StreamSubscription<HttpRequest>? subscription;
     subscription = server.listen((request) async {
-      Log.d('Loopback auth request: ${request.uri}');
+      Log.d('Loopback auth request: ${_safeAuthUriForLogs(request.uri)}');
       if (request.uri.path != redirectUri.path) {
         request.response.statusCode = HttpStatus.notFound;
         await request.response.close();
@@ -2740,6 +2872,21 @@ class LibraryController extends ChangeNotifier {
     });
 
     await completer.future;
+  }
+
+  static String _safeAuthUriForLogs(Uri uri) {
+    final base = '${uri.scheme}://${uri.authority}${uri.path}';
+    final hasQuery = uri.queryParameters.isNotEmpty;
+    final hasFragment = uri.fragment.isNotEmpty;
+    if (!hasQuery && !hasFragment) {
+      return base;
+    }
+    final params = uri.queryParameters.keys.toList()..sort();
+    final suffix = [
+      if (hasQuery) 'query=${params.join(',')}',
+      if (hasFragment) 'fragment=present',
+    ].join(' ');
+    return '$base ($suffix)';
   }
 
   String _providerLabel(SyncProvider provider) {
@@ -2791,21 +2938,53 @@ class LibraryController extends ChangeNotifier {
     notifyListeners();
     try {
       final result = await engine.sync();
+      _lastSyncAt = result.uploadedAt;
       final error = result.error;
       if (error != null) {
+        _lastSyncOk = false;
+        _lastSyncSummary = _formatSyncAdapterError(
+          _providerLabel(_syncProvider),
+          error,
+        );
+        await _preferencesStore.saveSyncStatus(
+          SyncStatusSnapshot(
+            at: _lastSyncAt!,
+            ok: false,
+            summary: _lastSyncSummary!,
+          ),
+        );
         _handleSyncError(error);
         Log.d('File sync failed: $error');
         return;
       }
-      _lastSyncAt = result.uploadedAt;
+      _lastSyncOk = true;
       _lastSyncSummary =
-          'Events: ${result.appliedEvents}, state: ${result.appliedState}';
+          'Успех: events=${result.appliedEvents}, state=${result.appliedState}, '
+          'books↑=${result.booksUploaded}, books↓=${result.booksDownloaded}';
+      await _preferencesStore.saveSyncStatus(
+        SyncStatusSnapshot(
+          at: _lastSyncAt!,
+          ok: true,
+          summary: _lastSyncSummary!,
+        ),
+      );
       if (result.appliedEvents > 0 || result.appliedState > 0) {
         await _loadLibrary();
       } else {
         notifyListeners();
       }
     } catch (e) {
+      final now = DateTime.now().toUtc();
+      _lastSyncAt = now;
+      _lastSyncOk = false;
+      _lastSyncSummary = 'Синхронизация не удалась: $e';
+      await _preferencesStore.saveSyncStatus(
+        SyncStatusSnapshot(
+          at: now,
+          ok: false,
+          summary: _lastSyncSummary!,
+        ),
+      );
       _handleSyncError(e);
       Log.d('File sync failed: $e');
     } finally {

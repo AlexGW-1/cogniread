@@ -282,7 +282,8 @@ class HttpWebDavApiClient implements WebDavApiClient {
   }) async {
     final effectiveTimeout = timeout ?? _requestTimeout;
     final stopwatch = Stopwatch()..start();
-    Log.d('WebDAV request: $method $uri');
+    final safeUri = _safeUriForLogs(uri);
+    Log.d('WebDAV request: $method $safeUri');
     try {
       final request =
           await _httpClient.openUrl(method, uri).timeout(effectiveTimeout);
@@ -302,7 +303,7 @@ class HttpWebDavApiClient implements WebDavApiClient {
           )
           .timeout(effectiveTimeout);
       Log.d(
-        'WebDAV response: $method $uri -> ${response.statusCode} '
+        'WebDAV response: $method $safeUri -> ${response.statusCode} '
         '(${bytes.length} bytes, ${stopwatch.elapsedMilliseconds} ms)',
       );
       return WebDavRawResponse(
@@ -311,7 +312,7 @@ class HttpWebDavApiClient implements WebDavApiClient {
       );
     } on TimeoutException {
       Log.d(
-        'WebDAV timeout: $method $uri after '
+        'WebDAV timeout: $method $safeUri after '
         '${effectiveTimeout.inSeconds}s',
       );
       throw SyncAdapterException(
@@ -319,19 +320,19 @@ class HttpWebDavApiClient implements WebDavApiClient {
         code: 'webdav_timeout',
       );
     } on HandshakeException catch (error) {
-      Log.d('WebDAV SSL error: $method $uri -> $error');
+      Log.d('WebDAV SSL error: $method $safeUri -> $error');
       throw SyncAdapterException(
         'WebDAV SSL error',
         code: 'webdav_ssl',
       );
     } on SocketException catch (error) {
-      Log.d('WebDAV network error: $method $uri -> $error');
+      Log.d('WebDAV network error: $method $safeUri -> $error');
       throw SyncAdapterException(
         'WebDAV network error: ${error.message}',
         code: 'webdav_socket',
       );
     } on HttpException catch (error) {
-      Log.d('WebDAV HTTP error: $method $uri -> $error');
+      Log.d('WebDAV HTTP error: $method $safeUri -> $error');
       throw SyncAdapterException(
         'WebDAV HTTP error: ${error.message}',
         code: 'webdav_http',
@@ -345,7 +346,8 @@ class HttpWebDavApiClient implements WebDavApiClient {
   }) async {
     final effectiveTimeout = timeout ?? _requestTimeout;
     final stopwatch = Stopwatch()..start();
-    Log.d('WebDAV request: OPTIONS $uri');
+    final safeUri = _safeUriForLogs(uri);
+    Log.d('WebDAV request: OPTIONS $safeUri');
     try {
       final request =
           await _httpClient.openUrl('OPTIONS', uri).timeout(effectiveTimeout);
@@ -359,7 +361,7 @@ class HttpWebDavApiClient implements WebDavApiClient {
           .timeout(effectiveTimeout);
       final ok = response.statusCode < 400;
       Log.d(
-        'WebDAV response: OPTIONS $uri -> ${response.statusCode} '
+        'WebDAV response: OPTIONS $safeUri -> ${response.statusCode} '
         '(${bytes.length} bytes, ${stopwatch.elapsedMilliseconds} ms)',
       );
       if (!ok) {
@@ -384,7 +386,7 @@ class HttpWebDavApiClient implements WebDavApiClient {
       );
     } on TimeoutException {
       Log.d(
-        'WebDAV timeout: OPTIONS $uri after '
+        'WebDAV timeout: OPTIONS $safeUri after '
         '${effectiveTimeout.inSeconds}s',
       );
       throw SyncAdapterException(
@@ -392,19 +394,19 @@ class HttpWebDavApiClient implements WebDavApiClient {
         code: 'webdav_timeout',
       );
     } on HandshakeException catch (error) {
-      Log.d('WebDAV SSL error: OPTIONS $uri -> $error');
+      Log.d('WebDAV SSL error: OPTIONS $safeUri -> $error');
       throw SyncAdapterException(
         'WebDAV SSL error',
         code: 'webdav_ssl',
       );
     } on SocketException catch (error) {
-      Log.d('WebDAV network error: OPTIONS $uri -> $error');
+      Log.d('WebDAV network error: OPTIONS $safeUri -> $error');
       throw SyncAdapterException(
         'WebDAV network error: ${error.message}',
         code: 'webdav_socket',
       );
     } on HttpException catch (error) {
-      Log.d('WebDAV HTTP error: OPTIONS $uri -> $error');
+      Log.d('WebDAV HTTP error: OPTIONS $safeUri -> $error');
       throw SyncAdapterException(
         'WebDAV HTTP error: ${error.message}',
         code: 'webdav_http',
@@ -419,7 +421,8 @@ class HttpWebDavApiClient implements WebDavApiClient {
   }) async {
     final effectiveTimeout = timeout ?? _requestTimeout;
     final stopwatch = Stopwatch()..start();
-    Log.d('WebDAV request: GET $uri');
+    final safeUri = _safeUriForLogs(uri);
+    Log.d('WebDAV request: GET $safeUri');
     try {
       final request =
           await _httpClient.openUrl('GET', uri).timeout(effectiveTimeout);
@@ -432,7 +435,7 @@ class HttpWebDavApiClient implements WebDavApiClient {
           )
           .timeout(effectiveTimeout);
       Log.d(
-        'WebDAV response: GET $uri -> ${response.statusCode} '
+        'WebDAV response: GET $safeUri -> ${response.statusCode} '
         '(${bytes.length} bytes, ${stopwatch.elapsedMilliseconds} ms)',
       );
       if (allowNotFound && response.statusCode == 404) {
@@ -448,26 +451,26 @@ class HttpWebDavApiClient implements WebDavApiClient {
       return bytes;
     } on TimeoutException {
       Log.d(
-        'WebDAV timeout: GET $uri after ${effectiveTimeout.inSeconds}s',
+        'WebDAV timeout: GET $safeUri after ${effectiveTimeout.inSeconds}s',
       );
       throw SyncAdapterException(
         'WebDAV timeout',
         code: 'webdav_timeout',
       );
     } on HandshakeException catch (error) {
-      Log.d('WebDAV SSL error: GET $uri -> $error');
+      Log.d('WebDAV SSL error: GET $safeUri -> $error');
       throw SyncAdapterException(
         'WebDAV SSL error',
         code: 'webdav_ssl',
       );
     } on SocketException catch (error) {
-      Log.d('WebDAV network error: GET $uri -> $error');
+      Log.d('WebDAV network error: GET $safeUri -> $error');
       throw SyncAdapterException(
         'WebDAV network error: ${error.message}',
         code: 'webdav_socket',
       );
     } on HttpException catch (error) {
-      Log.d('WebDAV HTTP error: GET $uri -> $error');
+      Log.d('WebDAV HTTP error: GET $safeUri -> $error');
       throw SyncAdapterException(
         'WebDAV HTTP error: ${error.message}',
         code: 'webdav_http',
@@ -511,6 +514,13 @@ class HttpWebDavApiClient implements WebDavApiClient {
       return uri;
     }
     return uri.replace(path: '$path/');
+  }
+
+  static String _safeUriForLogs(Uri uri) {
+    if (uri.userInfo.isEmpty) {
+      return uri.toString();
+    }
+    return uri.replace(userInfo: '').toString();
   }
 
   List<WebDavItem> _parsePropfind(List<int> bytes, Uri baseUri) {
