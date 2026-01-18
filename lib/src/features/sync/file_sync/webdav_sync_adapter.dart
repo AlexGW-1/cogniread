@@ -26,7 +26,14 @@ class WebDavSyncAdapter implements SyncAdapter {
     all.addAll(await _listFilesAtBase(_basePath, allowCreate: true));
     final legacy = _legacyBasePath;
     if (legacy != null && legacy.isNotEmpty && legacy != _basePath) {
-      all.addAll(await _listFilesAtBase(legacy, allowCreate: false));
+      try {
+        all.addAll(await _listFilesAtBase(legacy, allowCreate: false));
+      } on SyncAdapterException catch (error) {
+        // Legacy listing is best-effort: some servers return 405/401/etc for
+        // paths outside the DAV root. We should still sync using the primary
+        // base path.
+        Log.d('WebDAV legacy list skipped: $error');
+      }
     }
     final merged = <String, SyncFileRef>{};
     for (final ref in all) {

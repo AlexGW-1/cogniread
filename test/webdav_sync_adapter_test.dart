@@ -7,12 +7,14 @@ class _FakeWebDavApiClient implements WebDavApiClient {
   _FakeWebDavApiClient({
     this.missingFolderCode = 'webdav_404',
     this.legacyDeleteNotAllowed = false,
+    this.legacyPropfindNotAllowed = false,
   });
 
   final Map<String, List<int>> _files = <String, List<int>>{};
   final Set<String> _folders = <String>{'/'};
   final String missingFolderCode;
   final bool legacyDeleteNotAllowed;
+  final bool legacyPropfindNotAllowed;
 
   @override
   Future<void> delete(String path) async {
@@ -36,6 +38,9 @@ class _FakeWebDavApiClient implements WebDavApiClient {
 
   @override
   Future<List<WebDavItem>> listFolder(String path) async {
+    if (legacyPropfindNotAllowed && path.startsWith('/cogniread/')) {
+      throw SyncAdapterException('Not allowed', code: 'webdav_405');
+    }
     final folder = _normalizeFolderPath(path);
     if (!_folders.contains(folder)) {
       throw SyncAdapterException('Not found', code: missingFolderCode);
@@ -142,5 +147,22 @@ void main() {
     );
 
     await adapter.deleteFile('event_log.json');
+  });
+
+  test('WebDavSyncAdapter ignores legacy list 405', () async {
+    final apiClient = _FakeWebDavApiClient(legacyPropfindNotAllowed: true);
+    await apiClient.upload(
+      path: '/home/cogniread/event_log.json',
+      bytes: <int>[1],
+      contentType: 'application/json',
+    );
+    final adapter = WebDavSyncAdapter(
+      apiClient: apiClient,
+      basePath: '/home/cogniread/',
+    );
+
+    final files = await adapter.listFiles();
+
+    expect(files.map((ref) => ref.path), contains('event_log.json'));
   });
 }
