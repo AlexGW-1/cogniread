@@ -162,6 +162,7 @@ class HttpDropboxApiClient implements DropboxApiClient {
       uri,
       body: utf8.encode(body),
       contentType: 'application/json',
+      allowNotFound: true,
     );
   }
 
