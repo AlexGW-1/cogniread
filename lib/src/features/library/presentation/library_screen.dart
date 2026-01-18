@@ -929,19 +929,24 @@ class _SettingsPanel extends StatelessWidget {
                 style: Theme.of(context).textTheme.bodySmall,
               ),
               const SizedBox(height: 10),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  OutlinedButton.icon(
-                    onPressed: controller.copyLogPath,
-                    icon: const Icon(Icons.copy),
-                    label: const Text('Копировать путь'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: controller.exportLog,
-                    icon: const Icon(Icons.upload_file),
-                    label: const Text('Экспорт лога'),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: controller.copyLogPath,
+                        icon: const Icon(Icons.copy),
+                        label: const Text('Копировать путь'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: controller.openLogFolder,
+                        icon: const Icon(Icons.folder_open),
+                        label: const Text('Открыть папку'),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: controller.exportLog,
+                        icon: const Icon(Icons.upload_file),
+                        label: const Text('Экспорт лога'),
                   ),
                   if (kDebugMode)
                     OutlinedButton.icon(

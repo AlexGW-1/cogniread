@@ -647,6 +647,26 @@ class LibraryController extends ChangeNotifier {
     _setInfo('Путь к логу скопирован');
   }
 
+  Future<void> openLogFolder() async {
+    final srcPath = logFilePath;
+    if (srcPath == null || srcPath.trim().isEmpty) {
+      _setAuthError('Лог пока недоступен');
+      return;
+    }
+    final file = File(srcPath);
+    final exists = await file.exists();
+    final target = exists ? srcPath : p.dirname(srcPath);
+    final uri = Uri.file(target);
+    try {
+      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!ok) {
+        _setAuthError('Не удалось открыть папку с логом');
+      }
+    } catch (error) {
+      _setAuthError('Не удалось открыть папку с логом: $error');
+    }
+  }
+
   Future<void> exportLog() async {
     final srcPath = logFilePath;
     if (srcPath == null || srcPath.trim().isEmpty) {
@@ -1728,7 +1748,12 @@ class LibraryController extends ChangeNotifier {
       final files = await adapter.listFiles();
       _setInfo('Подключение успешно (файлов: ${files.length})');
     } catch (error) {
-      _setAuthError('Проверка не удалась: $error');
+      final label = _providerLabel(_syncProvider);
+      if (error is SyncAdapterException) {
+        _setAuthError(_formatSyncAdapterError(label, error));
+      } else {
+        _setAuthError('$label проверка не удалась: $error');
+      }
     } finally {
       _connectionInProgress = false;
       notifyListeners();
@@ -2503,7 +2528,14 @@ class LibraryController extends ChangeNotifier {
       }
       _setInfo('Файлы синка удалены в облаке');
     } catch (error) {
-      _setAuthError('Не удалось удалить файлы: $error');
+      final label = _providerLabel(_syncProvider);
+      if (error is SyncAdapterException) {
+        _setAuthError(
+          'Не удалось удалить файлы синка. ${_formatSyncAdapterError(label, error)}',
+        );
+      } else {
+        _setAuthError('Не удалось удалить файлы синка: $error');
+      }
     } finally {
       _deleteInProgress = false;
       notifyListeners();
