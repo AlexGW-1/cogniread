@@ -7,6 +7,7 @@ import 'package:cogniread/src/features/reader/presentation/reader_screen.dart';
 import 'package:cogniread/src/features/sync/file_sync/sync_adapter.dart';
 import 'package:cogniread/src/features/sync/file_sync/sync_provider.dart';
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class LibraryScreen extends StatefulWidget {
   const LibraryScreen({
@@ -671,6 +672,10 @@ class _SettingsPanel extends StatelessWidget {
         final authError = controller.authError;
         final basicCredentials = controller.basicAuthCredentials;
         final smbCredentials = controller.smbCredentials;
+        final providers = controller.availableSyncProviders;
+        final selectedProvider = providers.contains(controller.syncProvider)
+            ? controller.syncProvider
+            : providers.first;
         return Container(
           padding: const EdgeInsets.all(24),
           decoration: BoxDecoration(
@@ -696,19 +701,13 @@ class _SettingsPanel extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               DropdownButton<SyncProvider>(
-                value: controller.syncProvider,
+                value: selectedProvider,
                 onChanged: (value) {
                   if (value != null) {
                     controller.setSyncProvider(value);
                   }
                 },
-                items: const [
-                  SyncProvider.googleDrive,
-                  SyncProvider.dropbox,
-                  SyncProvider.oneDrive,
-                  SyncProvider.yandexDisk,
-                  SyncProvider.webDav,
-                ]
+                items: providers
                     .map(
                       (provider) => DropdownMenuItem(
                         value: provider,
@@ -848,6 +847,11 @@ class _SettingsPanel extends StatelessWidget {
                                 : () {
                                     if (isNas) {
                                       _showNasDialog(context, controller);
+                                    } else if (controller.requiresManualOAuthCode) {
+                                      _connectYandexWithManualCode(
+                                        context,
+                                        controller,
+                                      );
                                     } else {
                                       controller.connectSyncProvider();
                                     }
@@ -1154,6 +1158,72 @@ class _SettingsPanel extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Future<void> _connectYandexWithManualCode(
+    BuildContext context,
+    LibraryController controller,
+  ) async {
+    final authUrl = await controller.beginOAuthConnection();
+    if (authUrl == null) {
+      return;
+    }
+    final launched = await launchUrl(
+      authUrl,
+      mode: LaunchMode.externalApplication,
+    );
+    if (!launched) {
+      controller.cancelOAuthConnection('Не удалось открыть браузер');
+      return;
+    }
+
+    if (!context.mounted) {
+      return;
+    }
+
+    final codeController = TextEditingController();
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Yandex Disk'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'В браузере откроется страница Яндекса с кодом. '
+              'Скопируй код и вставь сюда:',
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: codeController,
+              decoration: const InputDecoration(
+                labelText: 'Код',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              controller.cancelOAuthConnection('Подключение отменено');
+              Navigator.of(context).pop();
+            },
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              final code = codeController.text;
+              await controller.submitOAuthCode(code);
+              if (context.mounted) {
+                Navigator.of(context).pop();
+              }
+            },
+            child: const Text('Подключить'),
+          ),
+        ],
       ),
     );
   }

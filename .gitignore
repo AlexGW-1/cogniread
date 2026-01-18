@@ -5,6 +5,7 @@
 *.swp
 .DS_Store
 sync_oauth.json
+!assets/sync_oauth.json
 .atom/
 .build/
 .buildlog/

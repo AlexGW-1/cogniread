@@ -27,6 +27,7 @@ import 'package:cogniread/src/features/sync/file_sync/smb_sync_adapter.dart';
 import 'package:cogniread/src/features/sync/file_sync/webdav_api_client.dart';
 import 'package:cogniread/src/features/sync/file_sync/webdav_credentials.dart';
 import 'package:cogniread/src/features/sync/file_sync/webdav_sync_adapter.dart';
+import 'package:cogniread/src/features/sync/file_sync/sync_oauth_config.dart';
 import 'package:cogniread/src/features/sync/file_sync/yandex_disk_api_client.dart';
 import 'package:cogniread/src/features/sync/file_sync/yandex_disk_oauth.dart';
 import 'package:cogniread/src/features/sync/file_sync/yandex_disk_sync_adapter.dart';
@@ -34,7 +35,6 @@ import 'package:cogniread/src/features/sync/file_sync/oauth.dart';
 import 'package:cogniread/src/features/sync/file_sync/sync_adapter.dart';
 import 'package:cogniread/src/features/sync/file_sync/sync_auth_store.dart';
 import 'package:cogniread/src/features/sync/file_sync/sync_errors.dart';
-import 'package:cogniread/src/features/sync/file_sync/sync_oauth_config.dart';
 import 'package:cogniread/src/features/sync/file_sync/sync_provider.dart';
 import 'package:cogniread/src/features/sync/file_sync/stored_oauth_token_provider.dart';
 import 'package:epubx/epubx.dart';
@@ -134,6 +134,12 @@ class LibrarySearchResult {
 }
 
 class LibraryController extends ChangeNotifier {
+  static const bool _showAllSyncProviders =
+      bool.fromEnvironment(
+        'COGNIREAD_SHOW_ALL_SYNC_PROVIDERS',
+        defaultValue: false,
+      );
+  static bool get _developerMode => _showAllSyncProviders;
   LibraryController({
     StorageService? storageService,
     LibraryStore? store,
@@ -175,6 +181,7 @@ class LibraryController extends ChangeNotifier {
   StreamSubscription<Uri?>? _authLinkSub;
   final Map<SyncProvider, bool> _providerConnected =
       <SyncProvider, bool>{};
+  String? _yandexPkceVerifier;
   Timer? _autoSyncTimer;
   Timer? _scheduledSyncTimer;
   bool _pendingSync = false;
@@ -230,7 +237,36 @@ class LibraryController extends ChangeNotifier {
   DateTime? get lastSyncAt => _lastSyncAt;
   String? get lastSyncSummary => _lastSyncSummary;
   String get syncAdapterLabel =>
-      _syncAdapter == null ? 'none' : _syncAdapter.runtimeType.toString();
+      _syncAdapter == null ? 'none' : _providerLabel(_syncProvider);
+  bool get requiresManualOAuthCode {
+    if (_syncProvider != SyncProvider.yandexDisk) {
+      return false;
+    }
+    final redirectUri = _oauthConfig?.yandexDisk?.redirectUri ?? '';
+    return redirectUri.contains('oauth.yandex.ru/verification_code');
+  }
+  List<SyncProvider> get availableSyncProviders {
+    final config = _oauthConfig;
+    final candidates = <SyncProvider>[
+      SyncProvider.googleDrive,
+      SyncProvider.dropbox,
+      SyncProvider.oneDrive,
+      SyncProvider.yandexDisk,
+      SyncProvider.webDav,
+    ];
+    if (_developerMode) {
+      return candidates;
+    }
+    if (config == null) {
+      return <SyncProvider>[SyncProvider.webDav];
+    }
+    return candidates
+        .where(
+          (provider) =>
+              provider == SyncProvider.webDav || config.isConfigured(provider),
+        )
+        .toList();
+  }
   String get globalSearchQuery => _globalSearchQuery;
   bool get globalSearching => _globalSearching;
   List<LibrarySearchResult> get globalSearchResults =>
@@ -248,6 +284,76 @@ class LibraryController extends ChangeNotifier {
               (book.author?.toLowerCase().contains(needle) ?? false),
         )
         .toList();
+  }
+
+  Future<Uri?> beginOAuthConnection() async {
+    if (_authInProgress) {
+      return null;
+    }
+    await _loadOAuthConfig();
+    if (!isSyncProviderConfigured) {
+      Log.d('Sync provider not configured: $_syncProvider');
+      _setAuthError(_oauthNotConfiguredMessage(_syncProvider));
+      return null;
+    }
+    if (isNasProvider) {
+      _setAuthError('Провайдер подключается через ручные настройки');
+      return null;
+    }
+    final authUrl = _buildAuthorizationUrl(_syncProvider);
+    if (authUrl == null) {
+      Log.d('Auth URL not built for provider: $_syncProvider');
+      _setAuthError('Подключение недоступно. Проверь настройки подключения.');
+      return null;
+    }
+    _authInProgress = true;
+    _authError = null;
+    notifyListeners();
+    return authUrl;
+  }
+
+  Future<void> submitOAuthCode(String code) async {
+    final provider = _pendingAuthProvider;
+    if (provider == null) {
+      _setAuthError('Подключение не активно');
+      return;
+    }
+    final trimmed = code.trim();
+    if (trimmed.isEmpty) {
+      _setAuthError('Введи код');
+      return;
+    }
+    try {
+      final token = await _exchangeAuthCode(provider, trimmed);
+      await _syncAuthStore.saveToken(provider, token);
+      await _loadProviderConnection(provider);
+      await _refreshSyncAdapter();
+      _setInfo('${_providerLabel(provider)} подключен');
+      _authError = null;
+    } catch (error) {
+      if (_showAllSyncProviders) {
+        _setAuthError('Подключение не удалось: $error');
+      } else {
+        _setAuthError('Подключение не удалось. Проверь код и попробуй ещё раз.');
+      }
+    } finally {
+      _authInProgress = false;
+      _pendingAuthProvider = null;
+      _authState = null;
+      _yandexPkceVerifier = null;
+      notifyListeners();
+    }
+  }
+
+  void cancelOAuthConnection([String? message]) {
+    _authInProgress = false;
+    _pendingAuthProvider = null;
+    _authState = null;
+    _yandexPkceVerifier = null;
+    if (message != null && message.trim().isNotEmpty) {
+      _setAuthError(message.trim());
+    }
+    notifyListeners();
   }
 
   Future<void> init() async {
@@ -309,6 +415,15 @@ class LibraryController extends ChangeNotifier {
             provider == SyncProvider.smb
         ? SyncProvider.webDav
         : provider;
+    if (!_developerMode && !_isProviderUsable(normalized)) {
+      _syncProvider = SyncProvider.webDav;
+      notifyListeners();
+      await _preferencesStore.saveSyncProvider(_syncProvider.name);
+      await _loadProviderConnection(_syncProvider);
+      await _refreshSyncAdapter();
+      _setAuthError('Этот провайдер синхронизации пока недоступен.');
+      return;
+    }
     if (_syncProvider == normalized) {
       return;
     }
@@ -1253,26 +1368,15 @@ class LibraryController extends ChangeNotifier {
     if (_authInProgress) {
       return;
     }
-    await _loadOAuthConfig();
-    if (!isSyncProviderConfigured) {
-      Log.d('Sync provider not configured: $_syncProvider');
-      _setAuthError('Подключение недоступно. Проверь настройки подключения.');
+    if (requiresManualOAuthCode) {
+      _setAuthError('Открой подключение и введи код со страницы Яндекса.');
       return;
     }
-    if (isNasProvider) {
-      _setAuthError('Провайдер подключается через ручные настройки');
-      return;
-    }
-    final authUrl = _buildAuthorizationUrl(_syncProvider);
+    final authUrl = await beginOAuthConnection();
     if (authUrl == null) {
-      Log.d('Auth URL not built for provider: $_syncProvider');
-      _setAuthError('Подключение недоступно. Проверь настройки подключения.');
       return;
     }
     final loopback = _loopbackRedirect(_syncProvider);
-    _authInProgress = true;
-    _authError = null;
-    notifyListeners();
     if (loopback != null) {
       await _connectWithLoopback(authUrl, loopback);
       return;
@@ -1287,6 +1391,36 @@ class LibraryController extends ChangeNotifier {
       _pendingAuthProvider = null;
       _setAuthError('Не удалось открыть браузер');
       notifyListeners();
+    }
+  }
+
+  String _oauthNotConfiguredMessage(SyncProvider provider) {
+    if (!_developerMode) {
+      return 'Этот способ синхронизации недоступен в этой версии приложения.\n'
+          'Выбери NAS (WebDAV/SMB) или установи обновление приложения.';
+    }
+    final loadedPath = SyncOAuthConfig.lastLoadedPath;
+    final base = 'Этот провайдер синхронизации в этой сборке не настроен.';
+    final configHint = loadedPath == null
+        ? 'Файл sync_oauth.json не найден.'
+        : 'Файл: $loadedPath';
+    switch (provider) {
+      case SyncProvider.yandexDisk:
+        return '$base\n$configHint\n'
+            'Нужен блок "yandexDisk": { "clientId": "...", "clientSecret": "...", "redirectUri": "cogniread://oauth" }';
+      case SyncProvider.googleDrive:
+        return '$base\n$configHint\n'
+            'Нужен блок "googleDrive": { "clientId": "...", "clientSecret": "...", "redirectUri": "cogniread://oauth" }';
+      case SyncProvider.dropbox:
+        return '$base\n$configHint\n'
+            'Нужен блок "dropbox": { "clientId": "...", "clientSecret": "...", "redirectUri": "cogniread://oauth" }';
+      case SyncProvider.oneDrive:
+        return '$base\n$configHint\n'
+            'Нужен блок "oneDrive": { "clientId": "...", "clientSecret": "...", "redirectUri": "cogniread://oauth", "tenant": "common" }';
+      case SyncProvider.webDav:
+      case SyncProvider.synologyDrive:
+      case SyncProvider.smb:
+        return 'Этот провайдер не использует OAuth. Заполни настройки подключения.';
     }
   }
 
@@ -2302,7 +2436,31 @@ class LibraryController extends ChangeNotifier {
         if (yandex == null) {
           return null;
         }
-        url = YandexDiskOAuthClient(yandex).authorizationUrl(state: state);
+        final redirect = yandex.redirectUri.trim();
+        final usesVerificationCode =
+            redirect.contains('oauth.yandex.ru/verification_code');
+        Log.d(
+          'Yandex OAuth: redirect=$redirect, verification_code=$usesVerificationCode',
+        );
+        final responseType = usesVerificationCode
+            ? 'code'
+            : ((yandex.clientSecret == null ||
+                    yandex.clientSecret!.trim().isEmpty)
+                ? 'token'
+                : 'code');
+        String? codeChallenge;
+        if (responseType == 'code') {
+          final pkce = YandexDiskOAuthClient.createPkce();
+          _yandexPkceVerifier = pkce.verifier;
+          codeChallenge = pkce.challenge;
+        } else {
+          _yandexPkceVerifier = null;
+        }
+        url = YandexDiskOAuthClient(yandex).authorizationUrl(
+          state: state,
+          responseType: responseType,
+          codeChallenge: codeChallenge,
+        );
         break;
       case SyncProvider.webDav:
       case SyncProvider.synologyDrive:
@@ -2329,36 +2487,40 @@ class LibraryController extends ChangeNotifier {
       return;
     }
     final query = uri.queryParameters;
-    if (query.isEmpty) {
+    final fragment = _parseFragment(uri.fragment);
+    final state = (query['state']?.isNotEmpty ?? false)
+        ? query['state']!
+        : fragment['state'];
+    if (state != expectedState) {
       return;
     }
-    if (query['state'] != expectedState) {
-      return;
-    }
-    final error = query['error'];
+    final error = (query['error']?.isNotEmpty ?? false)
+        ? query['error']
+        : fragment['error'];
     if (error != null && error.isNotEmpty) {
-      _finishAuthWithError('OAuth error: $error');
+      _finishAuthWithError('Подключение не удалось');
       return;
     }
     final code = query['code'];
-    if (code == null || code.isEmpty) {
-      _finishAuthWithError('OAuth code отсутствует');
-      return;
-    }
     try {
-      final token = await _exchangeAuthCode(provider, code);
+      final token = await _exchangeAuth(provider, code, fragment);
       await _syncAuthStore.saveToken(provider, token);
       await _loadProviderConnection(provider);
       await _refreshSyncAdapter();
       _setInfo('${_providerLabel(provider)} подключен');
       _authError = null;
     } catch (error) {
-      _finishAuthWithError('OAuth ошибка: $error');
+      if (_developerMode) {
+        _finishAuthWithError('OAuth ошибка: $error');
+      } else {
+        _finishAuthWithError('Подключение не удалось. Попробуй ещё раз.');
+      }
       return;
     } finally {
       _authInProgress = false;
       _pendingAuthProvider = null;
       _authState = null;
+      _yandexPkceVerifier = null;
       notifyListeners();
     }
   }
@@ -2395,12 +2557,72 @@ class LibraryController extends ChangeNotifier {
         if (yandex == null) {
           throw SyncAuthException('Yandex OAuth not configured');
         }
-        return YandexDiskOAuthClient(yandex).exchangeCode(code);
+        return YandexDiskOAuthClient(yandex).exchangeCode(
+          code,
+          codeVerifier: _yandexPkceVerifier,
+        );
       case SyncProvider.webDav:
       case SyncProvider.synologyDrive:
       case SyncProvider.smb:
         throw SyncAuthException('OAuth provider not supported');
     }
+  }
+
+  Future<OAuthToken> _exchangeAuth(
+    SyncProvider provider,
+    String? code,
+    Map<String, String> fragment,
+  ) async {
+    if (provider != SyncProvider.yandexDisk) {
+      if (code == null || code.isEmpty) {
+        throw SyncAuthException('OAuth code отсутствует');
+      }
+      return _exchangeAuthCode(provider, code);
+    }
+
+    if (code != null && code.isNotEmpty) {
+      return _exchangeAuthCode(provider, code);
+    }
+
+    final accessToken = fragment['access_token'];
+    if (accessToken == null || accessToken.isEmpty) {
+      throw SyncAuthException('OAuth token отсутствует');
+    }
+    final expiresInRaw = fragment['expires_in'];
+    final expiresIn = expiresInRaw == null ? null : int.tryParse(expiresInRaw);
+    final expiresAt = expiresIn == null
+        ? null
+        : DateTime.now().toUtc().add(Duration(seconds: expiresIn));
+    final tokenTypeRaw = fragment['token_type'] ?? 'OAuth';
+    final tokenType =
+        tokenTypeRaw.trim().toUpperCase() == 'BEARER' ? 'OAuth' : tokenTypeRaw;
+    return OAuthToken(
+      accessToken: accessToken,
+      refreshToken: null,
+      expiresAt: expiresAt,
+      tokenType: tokenType,
+    );
+  }
+
+  Map<String, String> _parseFragment(String fragment) {
+    if (fragment.isEmpty) {
+      return const <String, String>{};
+    }
+    final map = <String, String>{};
+    for (final part in fragment.split('&')) {
+      if (part.isEmpty) {
+        continue;
+      }
+      final index = part.indexOf('=');
+      if (index == -1) {
+        map[Uri.decodeComponent(part)] = '';
+        continue;
+      }
+      final key = Uri.decodeComponent(part.substring(0, index));
+      final value = Uri.decodeComponent(part.substring(index + 1));
+      map[key] = value;
+    }
+    return map;
   }
 
   void _finishAuthWithError(String message) {
@@ -2420,10 +2642,12 @@ class LibraryController extends ChangeNotifier {
     if (!(Platform.isMacOS || Platform.isWindows || Platform.isLinux)) {
       return null;
     }
-    if (provider != SyncProvider.dropbox) {
+    if (provider != SyncProvider.dropbox && provider != SyncProvider.yandexDisk) {
       return null;
     }
-    final raw = _oauthConfig?.dropbox?.redirectUri;
+    final raw = provider == SyncProvider.dropbox
+        ? _oauthConfig?.dropbox?.redirectUri
+        : _oauthConfig?.yandexDisk?.redirectUri;
     if (raw == null || raw.trim().isEmpty) {
       return null;
     }
@@ -2646,12 +2870,49 @@ class LibraryController extends ChangeNotifier {
         : stored;
     _syncProvider = SyncProvider.values.firstWhere(
       (value) => value.name == normalized,
-      orElse: () => SyncProvider.googleDrive,
+      orElse: _defaultSyncProvider,
     );
     if (normalized != stored) {
       await _preferencesStore.saveSyncProvider(_syncProvider.name);
     }
+    if (!_developerMode && !_isProviderUsable(_syncProvider)) {
+      _syncProvider = SyncProvider.webDav;
+      await _preferencesStore.saveSyncProvider(_syncProvider.name);
+    }
     notifyListeners();
+  }
+
+  SyncProvider _defaultSyncProvider() {
+    if (_developerMode) {
+      return SyncProvider.googleDrive;
+    }
+    final config = _oauthConfig;
+    if (config == null) {
+      return SyncProvider.webDav;
+    }
+    if (config.googleDrive != null) {
+      return SyncProvider.googleDrive;
+    }
+    if (config.dropbox != null) {
+      return SyncProvider.dropbox;
+    }
+    if (config.oneDrive != null) {
+      return SyncProvider.oneDrive;
+    }
+    if (config.yandexDisk != null) {
+      return SyncProvider.yandexDisk;
+    }
+    return SyncProvider.webDav;
+  }
+
+  bool _isProviderUsable(SyncProvider provider) {
+    if (provider == SyncProvider.webDav ||
+        provider == SyncProvider.synologyDrive ||
+        provider == SyncProvider.smb) {
+      return true;
+    }
+    final config = _oauthConfig;
+    return config?.isConfigured(provider) ?? false;
   }
 
   void _addStubBook() {

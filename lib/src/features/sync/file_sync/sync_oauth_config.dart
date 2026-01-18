@@ -7,6 +7,7 @@ import 'package:cogniread/src/features/sync/file_sync/onedrive_oauth.dart';
 import 'package:cogniread/src/features/sync/file_sync/sync_provider.dart';
 import 'package:cogniread/src/features/sync/file_sync/yandex_disk_oauth.dart';
 import 'package:cogniread/src/core/utils/logger.dart';
+import 'package:flutter/services.dart' show AssetManifest, rootBundle;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -18,6 +19,10 @@ class SyncOAuthConfig {
     this.yandexDisk,
   });
 
+  static String? lastLoadedPath;
+  static List<String> lastLoadCandidates = const <String>[];
+  static String lastLoadSource = 'none'; // none|built-in|environment|assets|file
+
   final GoogleDriveOAuthConfig? googleDrive;
   final DropboxOAuthConfig? dropbox;
   final OneDriveOAuthConfig? oneDrive;
@@ -28,7 +33,9 @@ class SyncOAuthConfig {
       googleDrive: _parseGoogle(raw['googleDrive']),
       dropbox: _parseDropbox(raw['dropbox']),
       oneDrive: _parseOneDrive(raw['oneDrive']),
-      yandexDisk: _parseYandex(raw['yandexDisk']),
+      yandexDisk: _parseYandex(
+        raw['yandexDisk'] ?? raw['yandex_disk'] ?? raw['yandex'],
+      ),
     );
   }
 
@@ -50,15 +57,91 @@ class SyncOAuthConfig {
   }
 
   static Future<SyncOAuthConfig?> load() async {
+    final sources = <String>[];
+    SyncOAuthConfig config = const SyncOAuthConfig();
+
     final builtinConfig = _loadFromBuiltIn();
     if (builtinConfig != null) {
-      return builtinConfig;
+      sources.add('built-in');
+      config = config.merge(builtinConfig);
     }
+
     final envConfig = _loadFromEnvironment();
     if (envConfig != null) {
-      return envConfig;
+      sources.add('environment');
+      config = config.merge(envConfig);
     }
-    return loadFromFile();
+
+    final assetConfig = await _loadFromAssets();
+    if (assetConfig != null) {
+      sources.add('assets');
+      config = config.merge(assetConfig);
+    }
+
+    final fileConfig = await loadFromFile();
+    if (fileConfig != null) {
+      sources.add('file');
+      config = config.merge(fileConfig);
+    }
+
+    if (!config.hasAnyProvider) {
+      lastLoadSource = 'none';
+      lastLoadedPath = null;
+      lastLoadCandidates = const <String>[];
+      return null;
+    }
+
+    lastLoadSource = sources.isEmpty ? 'none' : sources.join('+');
+    Log.d('Sync OAuth loaded: source=$lastLoadSource, providers=${config.providersSummary()}');
+    return config;
+  }
+
+  SyncOAuthConfig merge(SyncOAuthConfig other) {
+    return SyncOAuthConfig(
+      googleDrive: other.googleDrive ?? googleDrive,
+      dropbox: other.dropbox ?? dropbox,
+      oneDrive: other.oneDrive ?? oneDrive,
+      yandexDisk: other.yandexDisk ?? yandexDisk,
+    );
+  }
+
+  bool get hasAnyProvider =>
+      googleDrive != null ||
+      dropbox != null ||
+      oneDrive != null ||
+      yandexDisk != null;
+
+  String providersSummary() {
+    final enabled = <String>[
+      if (googleDrive != null) 'googleDrive',
+      if (dropbox != null) 'dropbox',
+      if (oneDrive != null) 'oneDrive',
+      if (yandexDisk != null) 'yandexDisk',
+    ];
+    return enabled.isEmpty ? 'none' : enabled.join(', ');
+  }
+
+  static Future<SyncOAuthConfig?> _loadFromAssets() async {
+    const path = 'assets/sync_oauth.json';
+    try {
+      final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
+      if (!manifest.listAssets().contains(path)) {
+        return null;
+      }
+      final raw = await rootBundle.loadString(path);
+      if (raw.trim().isEmpty) {
+        return null;
+      }
+      final decoded = _decodeConfig(raw);
+      if (decoded == null || !decoded.hasAnyProvider) {
+        return null;
+      }
+      Log.d('Sync OAuth providers (assets): ${decoded.providersSummary()}');
+      return decoded;
+    } catch (error) {
+      Log.d('Sync OAuth assets load skipped: $error');
+      return null;
+    }
   }
 
   static SyncOAuthConfig? _loadFromBuiltIn() {
@@ -143,25 +226,25 @@ class SyncOAuthConfig {
             redirectUri: oneDriveRedirectUri,
             tenant: oneDriveTenant.isEmpty ? 'common' : oneDriveTenant,
           );
-    final yandex = (yandexClientId.isEmpty ||
-            yandexClientSecret.isEmpty ||
-            yandexRedirectUri.isEmpty)
+    final yandex = (yandexClientId.isEmpty || yandexRedirectUri.isEmpty)
         ? null
         : YandexDiskOAuthConfig(
             clientId: yandexClientId,
-            clientSecret: yandexClientSecret,
+            clientSecret: yandexClientSecret.isEmpty ? null : yandexClientSecret,
             redirectUri: yandexRedirectUri,
           );
 
     if (google == null && dropbox == null && oneDrive == null && yandex == null) {
       return null;
     }
-    return SyncOAuthConfig(
+    final config = SyncOAuthConfig(
       googleDrive: google,
       dropbox: dropbox,
       oneDrive: oneDrive,
       yandexDisk: yandex,
     );
+    Log.d('Sync OAuth providers (built-in): ${config.providersSummary()}');
+    return config;
   }
 
   static Future<SyncOAuthConfig?> loadFromFile({
@@ -183,6 +266,7 @@ class SyncOAuthConfig {
       final appDir = await getApplicationDocumentsDirectory();
       candidates.add(File(p.join(appDir.path, fileName)));
     } catch (_) {}
+    lastLoadCandidates = candidates.map((file) => file.path).toList();
     File? resolved;
     for (final file in candidates) {
       final exists = await file.exists();
@@ -194,8 +278,12 @@ class SyncOAuthConfig {
     }
     if (resolved == null) {
       Log.d('Sync OAuth config not found');
+      lastLoadSource = 'none';
+      lastLoadedPath = null;
       return null;
     }
+    lastLoadSource = 'file';
+    lastLoadedPath = resolved.path;
     final raw = await resolved.readAsString();
     final decoded = jsonDecode(raw);
     if (decoded is! Map) {
@@ -204,12 +292,14 @@ class SyncOAuthConfig {
     }
     final map = _coerceMap(decoded);
     final config = SyncOAuthConfig(
-      googleDrive: _parseGoogle(map['googleDrive']),
+      googleDrive: _parseGoogle(map['googleDrive'] ?? map['google_drive']),
       dropbox: _parseDropbox(map['dropbox']),
-      oneDrive: _parseOneDrive(map['oneDrive']),
-      yandexDisk: _parseYandex(map['yandexDisk']),
+      oneDrive: _parseOneDrive(map['oneDrive'] ?? map['one_drive']),
+      yandexDisk:
+          _parseYandex(map['yandexDisk'] ?? map['yandex_disk'] ?? map['yandex']),
     );
     Log.d('Sync OAuth config loaded from ${resolved.path}');
+    Log.d('Sync OAuth providers (file): ${config.providersSummary()}');
     return config;
   }
 
@@ -241,10 +331,12 @@ class SyncOAuthConfig {
     }
     final map = _coerceMap(decoded);
     return SyncOAuthConfig(
-      googleDrive: _parseGoogle(map['googleDrive']),
+      googleDrive: _parseGoogle(map['googleDrive'] ?? map['google_drive']),
       dropbox: _parseDropbox(map['dropbox']),
-      oneDrive: _parseOneDrive(map['oneDrive']),
-      yandexDisk: _parseYandex(map['yandexDisk']),
+      oneDrive: _parseOneDrive(map['oneDrive'] ?? map['one_drive']),
+      yandexDisk: _parseYandex(
+        map['yandexDisk'] ?? map['yandex_disk'] ?? map['yandex'],
+      ),
     );
   }
 
@@ -270,9 +362,11 @@ class SyncOAuthConfig {
     if (map == null) {
       return null;
     }
-    final clientId = _string(map, 'clientId');
-    final clientSecret = _string(map, 'clientSecret');
-    final redirectUri = _string(map, 'redirectUri');
+    final clientId = _string(map, 'clientId') ?? _string(map, 'client_id');
+    final clientSecret =
+        _string(map, 'clientSecret') ?? _string(map, 'client_secret');
+    final redirectUri =
+        _string(map, 'redirectUri') ?? _string(map, 'redirect_uri');
     if (clientId == null || clientSecret == null || redirectUri == null) {
       return null;
     }
@@ -288,9 +382,11 @@ class SyncOAuthConfig {
     if (map == null) {
       return null;
     }
-    final clientId = _string(map, 'clientId');
-    final clientSecret = _string(map, 'clientSecret');
-    final redirectUri = _string(map, 'redirectUri');
+    final clientId = _string(map, 'clientId') ?? _string(map, 'client_id');
+    final clientSecret =
+        _string(map, 'clientSecret') ?? _string(map, 'client_secret');
+    final redirectUri =
+        _string(map, 'redirectUri') ?? _string(map, 'redirect_uri');
     if (clientId == null || clientSecret == null || redirectUri == null) {
       return null;
     }
@@ -306,13 +402,15 @@ class SyncOAuthConfig {
     if (map == null) {
       return null;
     }
-    final clientId = _string(map, 'clientId');
-    final clientSecret = _string(map, 'clientSecret');
-    final redirectUri = _string(map, 'redirectUri');
+    final clientId = _string(map, 'clientId') ?? _string(map, 'client_id');
+    final clientSecret =
+        _string(map, 'clientSecret') ?? _string(map, 'client_secret');
+    final redirectUri =
+        _string(map, 'redirectUri') ?? _string(map, 'redirect_uri');
     if (clientId == null || clientSecret == null || redirectUri == null) {
       return null;
     }
-    final tenant = _string(map, 'tenant') ?? 'common';
+    final tenant = _string(map, 'tenant') ?? _string(map, 'TENANT') ?? 'common';
     return OneDriveOAuthConfig(
       clientId: clientId,
       clientSecret: clientSecret,
@@ -326,10 +424,12 @@ class SyncOAuthConfig {
     if (map == null) {
       return null;
     }
-    final clientId = _string(map, 'clientId');
-    final clientSecret = _string(map, 'clientSecret');
-    final redirectUri = _string(map, 'redirectUri');
-    if (clientId == null || clientSecret == null || redirectUri == null) {
+    final clientId = _string(map, 'clientId') ?? _string(map, 'client_id');
+    final clientSecret =
+        _string(map, 'clientSecret') ?? _string(map, 'client_secret');
+    final redirectUri =
+        _string(map, 'redirectUri') ?? _string(map, 'redirect_uri');
+    if (clientId == null || redirectUri == null) {
       return null;
     }
     return YandexDiskOAuthConfig(
@@ -378,11 +478,15 @@ class SyncOAuthConfig {
   }
 
   static Map<String, Object?> _encodeYandex(YandexDiskOAuthConfig config) {
-    return <String, Object?>{
+    final map = <String, Object?>{
       'clientId': config.clientId,
-      'clientSecret': config.clientSecret,
       'redirectUri': config.redirectUri,
     };
+    final secret = config.clientSecret;
+    if (secret != null && secret.trim().isNotEmpty) {
+      map['clientSecret'] = secret;
+    }
+    return map;
   }
 
   static String? _string(Map<String, Object?> map, String key) {
