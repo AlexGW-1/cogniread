@@ -12,7 +12,7 @@ Solution Architecture
 ## Current (MVP0–MVP3)
 - Flutter‑клиент с нативным рендером текста и локальным хранилищем (Hive + app‑managed storage).
 - Локальные сущности: библиотека, заметки, выделения, закладки, позиция чтения.
-- Event log хранится локально, без синхронизации.
+- Server-less синхронизация реализована через облачные диски/NAS (file-based sync: `event_log.json`, `state.json`, `meta.json`, `books_index.json`).
 - Backend/AI/Graph отсутствуют в кодовой базе.
 
 ## Target (Solution Architecture)
@@ -20,8 +20,9 @@ Solution Architecture
 
 # 2.1 Next stage plan (Current → Target)
 
-- Этап 1 (server‑less sync): синхронизация через облачные диски/NAS с единым клиентским адаптером.  
-  Документ: `docs/sync_file_based.md` (draft v0.1)
+- Этап 1 (server‑less sync): синхронизация через облачные диски/NAS с единым клиентским адаптером (реализовано).  
+  Документ: `docs/sync_file_based.md`
+- Этап 1.5 (productization): UX статуса синка, ретраи/таймауты/лимиты, диагностика и экспорт логов, (опционально) шифрование контента.
 - Этап 2 (future): собственный sync‑gateway (API + storage + LWW).  
   Документы: `docs/sync_gateway_api.md`, `docs/sync_gateway_storage.md`, `docs/sync_policy.md`, `docs/sync_observability.md`
 

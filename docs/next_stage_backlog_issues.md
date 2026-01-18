@@ -19,7 +19,39 @@
 
 ---
 
-## Active backlog (empty)
+## Active backlog (Stage 1.5 — Sync productization)
+
+## Issue — Sync UX: статус, ошибки, переподключение
+**Labels:** `epic:sync-ready` `type:feature` `prio:P0` `size:S`  
+**Suggested branch:** `feature/sync-status-ux`
+
+### Context
+File-based sync работает, но нужен “пользовательский” UX: понятные статусы, понятные ошибки, кнопки retry/reconnect.
+
+### Checklist
+- [ ] Показ статуса: “последний успех/последняя ошибка”, “в процессе”.
+- [ ] Ошибки провайдеров → дружелюбные сообщения + действия (retry / переподключить).
+- [ ] Экспорт логов/путь к логам в Diagnostics.
+
+### Acceptance Criteria
+- Пользователь без знаний OAuth понимает, что делать при ошибке.
+
+---
+
+## Issue — Sync reliability: лимиты/ретраи/таймауты
+**Labels:** `epic:sync-ready` `type:refactor` `prio:P0` `size:S`  
+**Suggested branch:** `refactor/sync-reliability`
+
+### Context
+Нужно убрать “хрупкость” синка: ограничить параллелизм, добавить backoff и правильные таймауты на аплоады.
+
+### Checklist
+- [ ] Лимит параллельных upload/download.
+- [ ] Retry/backoff на сетевые ошибки и 5xx.
+- [ ] Единая политика таймаутов (request vs transfer).
+
+### Acceptance Criteria
+- Синхронизация нескольких книг проходит без таймаутов на типичных сетях.
 
 Все задачи EPIC 1 завершены и отмечены ниже.
 

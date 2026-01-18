@@ -2,6 +2,10 @@
 
 Источники: docs/final_tech_stack.docx, docs/solution_architecture_doc.docx, docs/architecture_diagrams.docx.
 
+> Примечание (2026‑01‑18): фактическая реализация уже вышла за рамки MVP2
+> (добавлена server-less file-based синхронизация через облака/NAS). Этот
+> документ оставлен как исторический scope + ориентир по фазам.
+
 ## MVP0 (локальный клиент)
 
 ### Функциональные возможности
@@ -48,6 +52,11 @@
 - Заметки/аннотации.
 - Поиск по библиотеке.
 - Улучшения UX чтения (прогресс, оглавление).
+
+## Этап 1 (server-less sync через облака/NAS) — текущий этап
+- Единый file-based протокол: `event_log.json`, `state.json`, `meta.json`, `books_index.json`.
+- Провайдеры: Dropbox, Yandex Disk, WebDAV/SMB (NAS).
+- LWW merge по `updatedAt` для синкающихся сущностей.
 
 ## После MVP2 (следующие фазы)
 - AI-summary и аналитика чтения.

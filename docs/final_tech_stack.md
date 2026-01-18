@@ -10,7 +10,7 @@
 | Локальная БД | Hive |
 | Локальное хранилище файлов | app‑managed storage (path_provider) |
 | Рендер книги | нативный Flutter (ScrollablePositionedList + SelectableRegion) |
-| Синхронизация | отсутствует (только локальный event log) |
+| Синхронизация | server-less file-based sync через Dropbox/Yandex Disk/WebDAV/SMB |
 | Backend API | отсутствует |
 | AI‑сервисы | отсутствуют |
 

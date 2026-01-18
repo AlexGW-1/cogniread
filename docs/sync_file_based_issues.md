@@ -2,6 +2,10 @@
 
 Формат: 1 issue ≈ 1 PR ≈ 1 день.
 
+Статус на 2026‑01‑18:
+- ✅ Dropbox / Yandex Disk / WebDAV (NAS) — реализованы и протестированы.
+- ⏸ Google Drive / OneDrive — отложены.
+
 ---
 ## 1) Sync adapter interface (client)
 **Цель:** единый интерфейс для провайдеров (Drive/Dropbox/OneDrive/Yandex/NAS).
@@ -34,9 +38,9 @@
 **Цель:** первый рабочий провайдер.
 
 **Checklist**
-- [x] OAuth flow.
-- [x] CRUD файлов синка.
-- [x] Тест на upload/download.
+- [ ] OAuth flow.
+- [ ] CRUD файлов синка.
+- [ ] Тест на upload/download.
 
 ---
 ## 5) Provider: Dropbox
@@ -52,9 +56,9 @@
 **Цель:** третий провайдер.
 
 **Checklist**
-- [x] OAuth flow.
-- [x] CRUD файлов синка.
-- [x] Тест на upload/download.
+- [ ] OAuth flow.
+- [ ] CRUD файлов синка.
+- [ ] Тест на upload/download.
 
 ---
 ## 7) Provider: Yandex Disk
