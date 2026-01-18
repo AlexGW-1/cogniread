@@ -618,7 +618,9 @@ class LibraryController extends ChangeNotifier {
       await _preferencesStore.clearDeviceId();
     }
 
-    _oauthConfig = null;
+    // After clearing stored overrides, reload config from assets/files so the
+    // provider dropdown doesn't collapse to WebDAV-only.
+    await _loadOAuthConfig();
     _providerConnected.clear();
     _webDavCredentials = null;
     _smbCredentials = null;
