@@ -1,6 +1,6 @@
+import 'dart:convert';
 import 'dart:async';
 import 'dart:io';
-import 'dart:convert';
 import 'dart:math';
 
 import 'package:archive/archive.dart';
@@ -21,6 +21,9 @@ import 'package:cogniread/src/features/sync/file_sync/google_drive_sync_adapter.
 import 'package:cogniread/src/features/sync/file_sync/onedrive_api_client.dart';
 import 'package:cogniread/src/features/sync/file_sync/onedrive_oauth.dart';
 import 'package:cogniread/src/features/sync/file_sync/onedrive_sync_adapter.dart';
+import 'package:cogniread/src/features/sync/file_sync/fallback_sync_adapter.dart';
+import 'package:cogniread/src/features/sync/file_sync/smb_credentials.dart';
+import 'package:cogniread/src/features/sync/file_sync/smb_sync_adapter.dart';
 import 'package:cogniread/src/features/sync/file_sync/webdav_api_client.dart';
 import 'package:cogniread/src/features/sync/file_sync/webdav_credentials.dart';
 import 'package:cogniread/src/features/sync/file_sync/webdav_sync_adapter.dart';
@@ -41,6 +44,13 @@ import 'package:path/path.dart' as p;
 import 'package:app_links/app_links.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:xml/xml.dart';
+
+class _WebDavPortCandidate {
+  const _WebDavPortCandidate(this.scheme, this.port);
+
+  final String scheme;
+  final int port;
+}
 
 class LibraryBookItem {
   const LibraryBookItem({
@@ -160,10 +170,15 @@ class LibraryController extends ChangeNotifier {
   String? _authState;
   SyncProvider? _pendingAuthProvider;
   WebDavCredentials? _webDavCredentials;
+  SmbCredentials? _smbCredentials;
   final AppLinks _appLinks = AppLinks();
   StreamSubscription<Uri?>? _authLinkSub;
   final Map<SyncProvider, bool> _providerConnected =
       <SyncProvider, bool>{};
+  Timer? _autoSyncTimer;
+  Timer? _scheduledSyncTimer;
+  bool _pendingSync = false;
+  bool _autoSyncDisabled = false;
 
   bool _loading = true;
   String? _errorMessage;
@@ -184,6 +199,8 @@ class LibraryController extends ChangeNotifier {
       const <LibrarySearchResult>[];
   Timer? _globalSearchDebounce;
   int _globalSearchNonce = 0;
+  static const Duration _autoSyncInterval = Duration(minutes: 15);
+  static const Duration _syncDebounce = Duration(seconds: 5);
   DateTime? _lastSyncAt;
   String? _lastSyncSummary;
 
@@ -202,10 +219,14 @@ class LibraryController extends ChangeNotifier {
   SyncOAuthConfig? get oauthConfig => _oauthConfig;
   bool get isSyncProviderConnected =>
       _providerConnected[_syncProvider] ?? false;
-  bool get isWebDavProvider => _syncProvider == SyncProvider.webDav;
+  bool get isNasProvider => _syncProvider == SyncProvider.webDav;
+  bool get isBasicAuthProvider => isNasProvider;
   bool get isSyncProviderConfigured =>
       _oauthConfig?.isConfigured(_syncProvider) ?? false;
   WebDavCredentials? get webDavCredentials => _webDavCredentials;
+  SmbCredentials? get smbCredentials => _smbCredentials;
+  WebDavCredentials? get basicAuthCredentials =>
+      isNasProvider ? _webDavCredentials : null;
   DateTime? get lastSyncAt => _lastSyncAt;
   String? get lastSyncSummary => _lastSyncSummary;
   String get syncAdapterLabel =>
@@ -230,30 +251,35 @@ class LibraryController extends ChangeNotifier {
   }
 
   Future<void> init() async {
-    if (_stubImport) {
-      _storeReady = Future<void>.value();
-      _addStubBook();
-      _setInfo('Книга добавлена');
-      _loading = false;
-      notifyListeners();
-      return;
-    }
-    _storeReady = _store.init();
-    await _preferencesStore.init();
-    await _syncAuthStore.init();
-    await _loadOAuthConfig();
-    await _initAuthLinks();
-    await _ensureDeviceId();
-    await _loadViewMode();
-    await _loadSyncProvider();
-    await _loadProviderConnection(_syncProvider);
-    await _refreshSyncAdapter();
-    await _loadLibrary();
     try {
-      await _runFileSync();
+      if (_stubImport) {
+        _storeReady = Future<void>.value();
+        _addStubBook();
+        _setInfo('Книга добавлена');
+        _loading = false;
+        notifyListeners();
+        return;
+      }
+      _storeReady = _store.init();
+      await _preferencesStore.init();
+      await _syncAuthStore.init();
+      await _loadOAuthConfig();
+      await _initAuthLinks();
+      await _ensureDeviceId();
+      await _loadViewMode();
+      await _loadSyncProvider();
+      await _loadProviderConnection(_syncProvider);
+      await _refreshSyncAdapter();
+      await _loadLibrary();
+      try {
+        await _runFileSync();
+      } catch (error) {
+        _setAuthError('Автосинхронизация отключена. Проверь подключение.');
+        Log.d('Auto sync failed: $error');
+      }
     } catch (error) {
-      _setAuthError('Автосинхронизация отключена. Проверь подключение.');
-      Log.d('Auto sync failed: $error');
+      Log.d('LibraryController init failed: $error');
+      _handleSyncError(error);
     }
   }
 
@@ -279,13 +305,17 @@ class LibraryController extends ChangeNotifier {
   }
 
   Future<void> setSyncProvider(SyncProvider provider) async {
-    if (_syncProvider == provider) {
+    final normalized = provider == SyncProvider.synologyDrive ||
+            provider == SyncProvider.smb
+        ? SyncProvider.webDav
+        : provider;
+    if (_syncProvider == normalized) {
       return;
     }
-    _syncProvider = provider;
+    _syncProvider = normalized;
     notifyListeners();
-    await _preferencesStore.saveSyncProvider(provider.name);
-    await _loadProviderConnection(provider);
+    await _preferencesStore.saveSyncProvider(_syncProvider.name);
+    await _loadProviderConnection(_syncProvider);
     await _refreshSyncAdapter();
   }
 
@@ -434,7 +464,9 @@ class LibraryController extends ChangeNotifier {
   }
 
   Future<void> syncNow() async {
-    await _runFileSync();
+    _autoSyncDisabled = false;
+    _restartAutoSyncTimer();
+    await _runFileSync(force: true);
   }
 
   Future<void> importEpub() async {
@@ -555,6 +587,7 @@ class LibraryController extends ChangeNotifier {
       notifyListeners();
       Log.d('Book copied to: ${stored.path}');
       _setInfo('Книга добавлена');
+      _scheduleSync();
       return;
     } catch (e) {
       Log.d('Book import failed: $e');
@@ -586,6 +619,7 @@ class LibraryController extends ChangeNotifier {
       _books.removeAt(index);
       notifyListeners();
       _setInfo('Книга удалена');
+      _scheduleSync();
       return;
     } catch (e) {
       Log.d('Failed to delete book: $e');
@@ -614,6 +648,7 @@ class LibraryController extends ChangeNotifier {
       }
       await _loadLibrary();
       _setInfo('Библиотека очищена');
+      _scheduleSync();
       return;
     } catch (e) {
       Log.d('Failed to clear library: $e');
@@ -895,8 +930,10 @@ class LibraryController extends ChangeNotifier {
     required String redirectUri,
     String? tenant,
   }) async {
-    if (provider == SyncProvider.webDav) {
-      _setAuthError('WebDAV не требует OAuth ключей');
+    if (provider == SyncProvider.webDav ||
+        provider == SyncProvider.synologyDrive ||
+        provider == SyncProvider.smb) {
+      _setAuthError('Провайдер не требует OAuth ключей');
       return;
     }
     final trimmedClientId = clientId.trim();
@@ -964,6 +1001,8 @@ class LibraryController extends ChangeNotifier {
         );
         break;
       case SyncProvider.webDav:
+      case SyncProvider.synologyDrive:
+      case SyncProvider.smb:
         return;
     }
 
@@ -1010,6 +1049,8 @@ class LibraryController extends ChangeNotifier {
         );
         break;
       case SyncProvider.webDav:
+      case SyncProvider.synologyDrive:
+      case SyncProvider.smb:
         return;
     }
     _oauthConfig = updated;
@@ -1034,9 +1075,20 @@ class LibraryController extends ChangeNotifier {
   }
 
   Future<void> _loadProviderConnection(SyncProvider provider) async {
-    if (provider == SyncProvider.webDav) {
+    if (provider == SyncProvider.webDav ||
+        provider == SyncProvider.synologyDrive ||
+        provider == SyncProvider.smb) {
       _webDavCredentials = await _syncAuthStore.loadWebDavCredentials();
-      _providerConnected[provider] = _webDavCredentials != null;
+      if (_webDavCredentials == null) {
+        final legacy = await _syncAuthStore.loadSynologyCredentials();
+        if (legacy != null) {
+          _webDavCredentials = legacy;
+          await _syncAuthStore.saveWebDavCredentials(legacy);
+          await _syncAuthStore.clearSynologyCredentials();
+        }
+      }
+      _smbCredentials = await _syncAuthStore.loadSmbCredentials();
+      _updateNasConnection();
       notifyListeners();
       return;
     }
@@ -1045,16 +1097,26 @@ class LibraryController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _updateNasConnection() {
+    final connected = _webDavCredentials != null || _smbCredentials != null;
+    _providerConnected[SyncProvider.webDav] = connected;
+    _providerConnected[SyncProvider.smb] = _smbCredentials != null;
+  }
+
   Future<void> _refreshSyncAdapter() async {
     if (_providerConnected[_syncProvider] != true) {
       _syncAdapter = _fallbackSyncAdapter;
       await _initSyncEngine();
+      _autoSyncDisabled = false;
+      _restartAutoSyncTimer();
       notifyListeners();
       return;
     }
     final adapter = await _buildAdapter(_syncProvider);
     _syncAdapter = adapter ?? _fallbackSyncAdapter;
     await _initSyncEngine();
+    _autoSyncDisabled = false;
+    _restartAutoSyncTimer();
     notifyListeners();
   }
 
@@ -1125,23 +1187,66 @@ class LibraryController extends ChangeNotifier {
         final apiClient = HttpYandexDiskApiClient(tokenProvider: tokenProvider);
         return YandexDiskSyncAdapter(apiClient: apiClient);
       case SyncProvider.webDav:
-        final credentials = _webDavCredentials;
-        if (credentials == null) {
-          return null;
-        }
-        final baseUri = Uri.tryParse(credentials.baseUrl);
-        if (baseUri == null) {
-          return null;
-        }
-        final apiClient = HttpWebDavApiClient(
-          baseUri: baseUri,
-          auth: WebDavAuth.basic(
-            credentials.username,
-            credentials.password,
-          ),
-        );
-        return WebDavSyncAdapter(apiClient: apiClient);
+      case SyncProvider.synologyDrive:
+      case SyncProvider.smb:
+        return _buildNasAdapter();
     }
+  }
+
+  Future<SyncAdapter?> _buildNasAdapter() async {
+    final webDav = await _buildWebDavAdapter();
+    final smb = _buildSmbAdapter();
+    if (webDav == null && smb == null) {
+      return null;
+    }
+    if (webDav != null && smb != null) {
+      return FallbackSyncAdapter(
+        primary: webDav,
+        secondary: smb,
+        label: 'NAS',
+      );
+    }
+    return webDav ?? smb;
+  }
+
+  Future<SyncAdapter?> _buildWebDavAdapter() async {
+    final credentials = _webDavCredentials;
+    if (credentials == null) {
+      return null;
+    }
+    final resolved = await _resolveWebDavCredentials(
+      credentials: credentials,
+    );
+    final baseUri = Uri.tryParse(resolved.baseUrl);
+    if (baseUri == null) {
+      return null;
+    }
+    final apiClient = HttpWebDavApiClient(
+      baseUri: baseUri,
+      auth: WebDavAuth.basic(
+        resolved.username,
+        resolved.password,
+      ),
+      allowInsecure: resolved.allowInsecure,
+    );
+    return WebDavSyncAdapter(
+      apiClient: apiClient,
+      basePath: _webDavBasePath(resolved.syncPath),
+    );
+  }
+
+  SyncAdapter? _buildSmbAdapter() {
+    final credentials = _smbCredentials;
+    if (credentials == null) {
+      return null;
+    }
+    final syncPath = _webDavCredentials?.syncPath ?? 'cogniread';
+    final normalized = _normalizeWebDavSyncPath(syncPath);
+    final basePath = normalized.isEmpty ? '' : normalized;
+    return SmbSyncAdapter(
+      mountPath: credentials.mountPath,
+      basePath: basePath,
+    );
   }
 
   Future<void> connectSyncProvider() async {
@@ -1154,8 +1259,8 @@ class LibraryController extends ChangeNotifier {
       _setAuthError('Подключение недоступно. Проверь настройки подключения.');
       return;
     }
-    if (_syncProvider == SyncProvider.webDav) {
-      _setAuthError('WebDAV подключается через логин/пароль');
+    if (isNasProvider) {
+      _setAuthError('Провайдер подключается через ручные настройки');
       return;
     }
     final authUrl = _buildAuthorizationUrl(_syncProvider);
@@ -1187,10 +1292,10 @@ class LibraryController extends ChangeNotifier {
 
   Future<void> disconnectSyncProvider() async {
     if (_syncProvider == SyncProvider.webDav) {
-      await _syncAuthStore.clearWebDavCredentials();
-      _webDavCredentials = null;
-      await _loadProviderConnection(_syncProvider);
+      await _clearWebDavCredentials(refresh: false, clearAuthError: false);
+      await _clearSmbCredentials(refresh: false, clearAuthError: false);
       await _refreshSyncAdapter();
+      notifyListeners();
       return;
     }
     await _syncAuthStore.clearToken(_syncProvider);
@@ -1198,16 +1303,72 @@ class LibraryController extends ChangeNotifier {
     await _refreshSyncAdapter();
   }
 
-  Future<void> saveWebDavCredentials({
+  Future<bool> saveNasCredentials({
     required String baseUrl,
     required String username,
     required String password,
+    required bool allowInsecure,
+    required String syncPath,
+    required String smbMountPath,
+  }) async {
+    final trimmedBase = baseUrl.trim();
+    final trimmedUser = username.trim();
+    final trimmedSmb = smbMountPath.trim();
+    final hasWebDav = trimmedBase.isNotEmpty || trimmedUser.isNotEmpty;
+    final hasSmb = trimmedSmb.isNotEmpty;
+    if (!hasWebDav && !hasSmb) {
+      _setAuthError('Укажи WebDAV или SMB путь');
+      return false;
+    }
+    var webDavSaved = true;
+    if (hasWebDav) {
+      if (trimmedBase.isEmpty || trimmedUser.isEmpty) {
+        _setAuthError('Заполни URL и логин');
+        return false;
+      }
+      webDavSaved = await saveWebDavCredentials(
+        baseUrl: baseUrl,
+        username: username,
+        password: password,
+        allowInsecure: allowInsecure,
+        syncPath: syncPath,
+      );
+    } else {
+      await _clearWebDavCredentials(refresh: false, clearAuthError: false);
+    }
+    if (hasSmb) {
+      await saveSmbCredentials(
+        mountPath: smbMountPath,
+        clearAuthError: webDavSaved,
+        refresh: false,
+      );
+    } else {
+      await _clearSmbCredentials(
+        refresh: false,
+        clearAuthError: webDavSaved,
+      );
+    }
+    _updateNasConnection();
+    await _refreshSyncAdapter();
+    notifyListeners();
+    if (!webDavSaved && hasWebDav) {
+      return false;
+    }
+    return true;
+  }
+
+  Future<bool> saveWebDavCredentials({
+    required String baseUrl,
+    required String username,
+    required String password,
+    required bool allowInsecure,
+    required String syncPath,
   }) async {
     final trimmedBase = baseUrl.trim();
     final trimmedUser = username.trim();
     if (trimmedBase.isEmpty || trimmedUser.isEmpty) {
       _setAuthError('Заполни URL и логин');
-      return;
+      return false;
     }
     final parsed = Uri.tryParse(trimmedBase);
     final scheme = parsed?.scheme.toLowerCase();
@@ -1215,21 +1376,97 @@ class LibraryController extends ChangeNotifier {
         parsed.host.isEmpty ||
         (scheme != 'http' && scheme != 'https')) {
       _setAuthError('URL должен начинаться с http:// или https://');
+      return false;
+    }
+    try {
+      final normalizedInput = _normalizeWebDavBaseUri(parsed);
+      final endpoint = await _discoverWebDavEndpoint(
+        label: 'WebDAV',
+        baseUri: parsed,
+        username: trimmedUser,
+        password: password,
+        allowInsecure: allowInsecure,
+        syncPath: syncPath,
+      );
+      final normalizedEndpoint = _normalizeWebDavBaseUri(endpoint);
+      final normalizedSyncPath = _normalizeWebDavSyncPath(syncPath);
+      final creds = WebDavCredentials(
+        baseUrl: normalizedEndpoint.toString(),
+        username: trimmedUser,
+        password: password,
+        allowInsecure: allowInsecure,
+        syncPath: normalizedSyncPath,
+      );
+      await _syncAuthStore.saveWebDavCredentials(creds);
+      _webDavCredentials = creds;
+      _updateNasConnection();
+      _authError = null;
+      await _refreshSyncAdapter();
+      notifyListeners();
+      if (normalizedInput.toString() != normalizedEndpoint.toString()) {
+        _setInfo('WebDAV endpoint найден: $normalizedEndpoint');
+      }
+      return true;
+    } catch (error) {
+      _setAuthError(_formatBasicAuthError('WebDAV', error));
+      return false;
+    }
+  }
+
+  Future<void> saveSmbCredentials({
+    required String mountPath,
+    bool clearAuthError = true,
+    bool refresh = true,
+  }) async {
+    final trimmedPath = mountPath.trim();
+    if (trimmedPath.isEmpty) {
+      _setAuthError('Укажи путь к шару');
       return;
     }
-    final normalizedBase =
-        trimmedBase.endsWith('/') ? trimmedBase : '$trimmedBase/';
-    final creds = WebDavCredentials(
-      baseUrl: normalizedBase,
-      username: trimmedUser,
-      password: password,
-    );
-    await _syncAuthStore.saveWebDavCredentials(creds);
-    _webDavCredentials = creds;
-    _providerConnected[SyncProvider.webDav] = true;
-    _authError = null;
-    await _refreshSyncAdapter();
-    notifyListeners();
+    final normalizedPath = p.normalize(trimmedPath);
+    final creds = SmbCredentials(mountPath: normalizedPath);
+    await _syncAuthStore.saveSmbCredentials(creds);
+    _smbCredentials = creds;
+    _updateNasConnection();
+    if (clearAuthError) {
+      _authError = null;
+    }
+    if (refresh) {
+      await _refreshSyncAdapter();
+      notifyListeners();
+    }
+  }
+
+  Future<void> _clearWebDavCredentials({
+    bool refresh = true,
+    bool clearAuthError = true,
+  }) async {
+    await _syncAuthStore.clearWebDavCredentials();
+    _webDavCredentials = null;
+    if (clearAuthError) {
+      _authError = null;
+    }
+    _updateNasConnection();
+    if (refresh) {
+      await _refreshSyncAdapter();
+      notifyListeners();
+    }
+  }
+
+  Future<void> _clearSmbCredentials({
+    bool refresh = true,
+    bool clearAuthError = true,
+  }) async {
+    await _syncAuthStore.clearSmbCredentials();
+    _smbCredentials = null;
+    if (clearAuthError) {
+      _authError = null;
+    }
+    _updateNasConnection();
+    if (refresh) {
+      await _refreshSyncAdapter();
+      notifyListeners();
+    }
   }
 
   Future<void> testSyncConnection() async {
@@ -1259,6 +1496,60 @@ class LibraryController extends ChangeNotifier {
     required String baseUrl,
     required String username,
     required String password,
+    required bool allowInsecure,
+    required String syncPath,
+  }) async {
+    await _testBasicAuthCredentials(
+      label: 'WebDAV',
+      baseUrl: baseUrl,
+      username: username,
+      password: password,
+      allowInsecure: allowInsecure,
+      syncPath: syncPath,
+    );
+  }
+
+  Future<void> testSmbCredentials({required String mountPath}) async {
+    if (_connectionInProgress) {
+      return;
+    }
+    final trimmedPath = mountPath.trim();
+    if (trimmedPath.isEmpty) {
+      _setAuthError('Укажи путь к шару');
+      return;
+    }
+    _connectionInProgress = true;
+    _authError = null;
+    notifyListeners();
+    try {
+      final dir = Directory(p.normalize(trimmedPath));
+      if (!await dir.exists()) {
+        _setAuthError('Путь не найден');
+        return;
+      }
+      var count = 0;
+      await for (final _ in dir.list(followLinks: false)) {
+        count += 1;
+        if (count >= 50) {
+          break;
+        }
+      }
+      _setInfo('SMB путь доступен (файлов: $count)');
+    } catch (error) {
+      _setAuthError('SMB проверка не удалась: $error');
+    } finally {
+      _connectionInProgress = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _testBasicAuthCredentials({
+    required String label,
+    required String baseUrl,
+    required String username,
+    required String password,
+    required bool allowInsecure,
+    required String syncPath,
   }) async {
     if (_connectionInProgress) {
       return;
@@ -1281,18 +1572,658 @@ class LibraryController extends ChangeNotifier {
     _authError = null;
     notifyListeners();
     try {
-      final apiClient = HttpWebDavApiClient(
+      final endpoint = await _discoverWebDavEndpoint(
+        label: label,
         baseUri: parsed,
-        auth: WebDavAuth.basic(trimmedUser, password),
+        username: trimmedUser,
+        password: password,
+        allowInsecure: allowInsecure,
+        requestTimeout: const Duration(seconds: 5),
+        syncPath: syncPath,
       );
-      await apiClient.listFolder('/');
-      _setInfo('WebDAV подключение успешно');
+      final normalizedInput = _normalizeWebDavBaseUri(parsed);
+      final normalizedEndpoint = _normalizeWebDavBaseUri(endpoint);
+      if (normalizedInput.toString() != normalizedEndpoint.toString()) {
+        _setInfo('$label endpoint найден: $normalizedEndpoint');
+      } else {
+        _setInfo('$label подключение успешно');
+      }
     } catch (error) {
-      _setAuthError('WebDAV проверка не удалась: $error');
+      _setAuthError(_formatBasicAuthError(label, error));
     } finally {
       _connectionInProgress = false;
       notifyListeners();
     }
+  }
+
+  String _formatBasicAuthError(String label, Object error) {
+    if (error is SyncAdapterException) {
+      return _formatSyncAdapterError(label, error);
+    }
+    return '$label проверка не удалась: $error';
+  }
+
+  String _formatSyncAdapterError(
+    String label,
+    SyncAdapterException error,
+  ) {
+    if (error.code == 'webdav_401' || error.code == 'webdav_403') {
+      return '$label: неверный логин/пароль или нет доступа.';
+    }
+    if (error.code == 'webdav_405') {
+      return '$label: метод WebDAV недоступен. Проверь, что WebDAV включён и корректны порт/путь (часто /webdav/ или /dav/, иногда порты 5005/5006).';
+    }
+    if (error.code == 'webdav_404') {
+      return '$label: путь не найден. Проверь URL (часто /webdav/ или /dav/).';
+    }
+    if (error.code == 'smb_not_found') {
+      return '$label: SMB путь не найден. Смонтируй сетевую папку и укажи корректный путь.';
+    }
+    if (error.code == 'webdav_endpoint_not_found') {
+      return '$label: не удалось определить WebDAV URL автоматически. Укажи точный URL или выбери папку.';
+    }
+    if (error.code == 'webdav_invalid_xml') {
+      return '$label: получен HTML вместо WebDAV. Проверь URL и права.';
+    }
+    if (error.code == 'webdav_timeout') {
+      return '$label: таймаут соединения. Проверь доступность сервера.';
+    }
+    if (error.code == 'webdav_ssl') {
+      return '$label: SSL ошибка. Проверь сертификат или включи "Принимать все сертификаты".';
+    }
+    if (error.code == 'webdav_socket') {
+      return '$label: нет доступа к серверу. Проверь адрес, порт и сеть.';
+    }
+    if (error.code == 'webdav_http') {
+      return '$label: ошибка HTTP. Проверь URL и доступ к WebDAV.';
+    }
+    return '$label ошибка: $error';
+  }
+
+  Uri _normalizeWebDavBaseUri(Uri uri) {
+    if (uri.path.isEmpty || uri.path.endsWith('/')) {
+      return uri;
+    }
+    return uri.replace(path: '${uri.path}/');
+  }
+
+  String _normalizeWebDavSyncPath(String path) {
+    final trimmed = path.trim();
+    if (trimmed.isEmpty || trimmed == '/') {
+      return '';
+    }
+    var normalized = trimmed;
+    if (normalized.startsWith('/')) {
+      normalized = normalized.substring(1);
+    }
+    if (normalized.endsWith('/')) {
+      normalized = normalized.substring(0, normalized.length - 1);
+    }
+    return normalized;
+  }
+
+  String _webDavBasePath(String syncPath) {
+    if (syncPath.isEmpty) {
+      return '';
+    }
+    final normalized = syncPath.startsWith('/') ? syncPath : '/$syncPath';
+    return normalized.endsWith('/') ? normalized : '$normalized/';
+  }
+
+  List<Uri> _buildWebDavCandidateUris(Uri baseUri, String username) {
+    final normalizedBase = _normalizeWebDavBaseUri(baseUri);
+    final root = normalizedBase.replace(path: '/');
+    final encodedUser = Uri.encodeComponent(username);
+    final candidatePaths = <String>[
+      'webdav/',
+      'dav/',
+      'remote.php/webdav/',
+      'remote.php/dav/files/$encodedUser/',
+      'dav/files/$encodedUser/',
+      'webdav/$encodedUser/',
+      '/',
+    ];
+    final candidates = <Uri>[];
+    final seen = <String>{};
+    void add(Uri uri) {
+      final key = uri.toString();
+      if (seen.add(key)) {
+        candidates.add(uri);
+      }
+    }
+
+    if (normalizedBase.path.isNotEmpty && normalizedBase.path != '/') {
+      add(normalizedBase);
+    }
+    for (final path in candidatePaths) {
+      final normalizedPath = path.startsWith('/') ? path : '/$path';
+      final withSlash =
+          normalizedPath.endsWith('/') ? normalizedPath : '$normalizedPath/';
+      add(root.replace(path: withSlash));
+    }
+    if (normalizedBase.path.isEmpty || normalizedBase.path == '/') {
+      add(normalizedBase);
+    }
+    return candidates;
+  }
+
+  List<Uri> _fallbackWebDavBaseUris(Uri baseUri) {
+    final normalizedBase = _normalizeWebDavBaseUri(baseUri);
+    if (normalizedBase.host.isEmpty) {
+      return const <Uri>[];
+    }
+    final candidates = <Uri>[];
+    final seen = <String>{normalizedBase.toString()};
+    final isHttps = normalizedBase.scheme.toLowerCase() == 'https';
+    final ports = isHttps
+        ? <_WebDavPortCandidate>[
+            const _WebDavPortCandidate('https', 443),
+            const _WebDavPortCandidate('https', 5006),
+            const _WebDavPortCandidate('https', 8443),
+            const _WebDavPortCandidate('http', 80),
+            const _WebDavPortCandidate('http', 5005),
+            const _WebDavPortCandidate('http', 8080),
+          ]
+        : <_WebDavPortCandidate>[
+            const _WebDavPortCandidate('http', 80),
+            const _WebDavPortCandidate('http', 5005),
+            const _WebDavPortCandidate('http', 8080),
+            const _WebDavPortCandidate('https', 443),
+            const _WebDavPortCandidate('https', 5006),
+            const _WebDavPortCandidate('https', 8443),
+          ];
+    for (final candidate in ports) {
+      final next = normalizedBase.replace(
+        scheme: candidate.scheme,
+        port: candidate.port,
+      );
+      final key = next.toString();
+      if (seen.add(key)) {
+        candidates.add(next);
+      }
+    }
+    return candidates;
+  }
+
+  Future<Uri> _discoverWebDavEndpoint({
+    required String label,
+    required Uri baseUri,
+    required String username,
+    required String password,
+    required bool allowInsecure,
+    Duration requestTimeout = const Duration(seconds: 5),
+    String syncPath = '',
+  }) async {
+    var sawTimeout = false;
+    var sawInvalidXml = false;
+    final normalizedSyncPath = _normalizeWebDavSyncPath(syncPath);
+    final baseUris = <Uri>[
+      baseUri,
+      ..._fallbackWebDavBaseUris(baseUri),
+    ];
+    for (var i = 0; i < baseUris.length; i += 1) {
+      final base = baseUris[i];
+      final timeout =
+          i == 0 ? requestTimeout : const Duration(seconds: 3);
+      for (final candidate in _buildWebDavCandidateUris(base, username)) {
+        Log.d('$label discover: trying $candidate');
+        final apiClient = HttpWebDavApiClient(
+          baseUri: candidate,
+          auth: WebDavAuth.basic(username, password),
+          allowInsecure: allowInsecure,
+          requestTimeout: timeout,
+        );
+        if (normalizedSyncPath.isNotEmpty) {
+          final ok = await _probeWebDavPath(
+            apiClient,
+            '/$normalizedSyncPath/',
+            label,
+            candidate,
+            allowNotFound: true,
+            onTimeout: () => sawTimeout = true,
+            onInvalidXml: () => sawInvalidXml = true,
+          );
+          if (ok) {
+            Log.d('$label discover: endpoint найден $candidate');
+            return candidate;
+          }
+        }
+        final ok = await _probeWebDavPath(
+          apiClient,
+          '/',
+          label,
+          candidate,
+          allowNotFound: false,
+          onTimeout: () => sawTimeout = true,
+          onInvalidXml: () => sawInvalidXml = true,
+        );
+        if (ok) {
+          Log.d('$label discover: endpoint найден $candidate');
+          return candidate;
+        }
+      }
+    }
+    if (sawTimeout) {
+      throw SyncAdapterException(
+        'WebDAV timeout',
+        code: 'webdav_timeout',
+      );
+    }
+    if (sawInvalidXml) {
+      throw SyncAdapterException(
+        '$label response is HTML. Check base URL and credentials.',
+        code: 'webdav_invalid_xml',
+      );
+    }
+    throw SyncAdapterException(
+      '$label endpoint not found',
+      code: 'webdav_endpoint_not_found',
+    );
+  }
+
+  Future<List<String>> listWebDavFolders({
+    required String label,
+    required String baseUrl,
+    required String username,
+    required String password,
+    required bool allowInsecure,
+  }) async {
+    final trimmedBase = baseUrl.trim();
+    final trimmedUser = username.trim();
+    if (trimmedBase.isEmpty || trimmedUser.isEmpty) {
+      _setAuthError('Заполни URL и логин');
+      return const <String>[];
+    }
+    final parsed = Uri.tryParse(trimmedBase);
+    final scheme = parsed?.scheme.toLowerCase();
+    if (parsed == null ||
+        parsed.host.isEmpty ||
+        (scheme != 'http' && scheme != 'https')) {
+      _setAuthError('URL должен начинаться с http:// или https://');
+      return const <String>[];
+    }
+    try {
+      final endpoint = await _discoverWebDavEndpoint(
+        label: label,
+        baseUri: parsed,
+        username: trimmedUser,
+        password: password,
+        allowInsecure: allowInsecure,
+        requestTimeout: const Duration(seconds: 5),
+      );
+      final apiClient = HttpWebDavApiClient(
+        baseUri: endpoint,
+        auth: WebDavAuth.basic(trimmedUser, password),
+        allowInsecure: allowInsecure,
+      );
+      final entries = await apiClient.listFolder('/');
+      final folders = entries
+          .where((item) => item.isDirectory)
+          .map((item) => item.name)
+          .where((name) => name.isNotEmpty && name != '.' && name != '..')
+          .toList()
+        ..sort();
+      if (folders.isEmpty) {
+        _setInfo('$label: папки не найдены');
+      }
+      return folders;
+    } catch (error) {
+      _setAuthError(_formatBasicAuthError(label, error));
+      return const <String>[];
+    }
+  }
+
+  Future<bool> _probeWebDavPath(
+    HttpWebDavApiClient apiClient,
+    String path,
+    String label,
+    Uri candidate, {
+    required bool allowNotFound,
+    required void Function() onTimeout,
+    required void Function() onInvalidXml,
+  }) async {
+    final folderPath = path == '/'
+        ? '/'
+        : (path.endsWith('/') ? path.substring(0, path.length - 1) : path);
+    try {
+      final response = await apiClient.propfindRaw(path);
+      final statusCode = response.statusCode;
+      if (statusCode == 401 || statusCode == 403) {
+        throw SyncAdapterException(
+          'WebDAV error $statusCode',
+          code: 'webdav_$statusCode',
+        );
+      }
+      final ok = statusCode == 207 || statusCode == 200;
+      if (ok) {
+        if (_looksLikeHtmlResponse(response.bytes)) {
+          onInvalidXml();
+          return false;
+        }
+        return true;
+      }
+      if (allowNotFound &&
+          folderPath != '/' &&
+          (statusCode == 404 || statusCode == 405)) {
+        try {
+          Log.d('$label discover: attempting MKCOL for $folderPath on $candidate');
+          final mkcol = await apiClient.mkcolRaw(folderPath);
+          final mkcolOk = mkcol.statusCode < 400;
+          Log.d(
+            '$label discover: MKCOL ${mkcol.statusCode} for $candidate ($folderPath)',
+          );
+          if (mkcolOk) {
+            Log.d('$label discover: MKCOL OK for $candidate ($folderPath)');
+          }
+          final next = await apiClient.propfindRaw(path);
+          final nextOk = next.statusCode == 207 || next.statusCode == 200;
+          if (nextOk && !_looksLikeHtmlResponse(next.bytes)) {
+            Log.d('$label discover: created $folderPath on $candidate');
+            return true;
+          }
+        } catch (_) {}
+        if (statusCode == 404) {
+          final optionsOk =
+              await _probeWebDavOptions(apiClient, path, label, candidate);
+          if (optionsOk) {
+            Log.d('$label discover: OPTIONS OK for $candidate');
+            return true;
+          }
+        }
+      }
+      if (statusCode == 405) {
+        Log.d('$label discover: PROPFIND not allowed for $candidate ($path)');
+        return false;
+      }
+      if (statusCode == 404 || statusCode >= 400) {
+        Log.d('$label discover: skip $candidate (webdav_$statusCode)');
+        return false;
+      }
+      return false;
+    } on SyncAdapterException catch (error) {
+      if (error.code == 'webdav_401' || error.code == 'webdav_403') {
+        rethrow;
+      }
+      if (error.code == 'webdav_timeout') {
+        onTimeout();
+        Log.d('$label discover: timeout for $candidate');
+        return false;
+      }
+      if (error.code == 'webdav_invalid_xml') {
+        onInvalidXml();
+      }
+      if (error.code == 'webdav_404' ||
+          error.code == 'webdav_invalid_xml') {
+        final optionsOk =
+            await _probeWebDavOptions(apiClient, path, label, candidate);
+        if (optionsOk) {
+          Log.d('$label discover: OPTIONS OK for $candidate');
+          return true;
+        }
+        Log.d('$label discover: skip $candidate (${error.code})');
+        return false;
+      }
+      if (error.code != null) {
+        Log.d('$label discover: skip $candidate (${error.code})');
+        return false;
+      }
+      rethrow;
+    } on TimeoutException {
+      onTimeout();
+      Log.d('$label discover: timeout for $candidate');
+      return false;
+    }
+  }
+
+  bool _looksLikeHtmlResponse(List<int> bytes) {
+    if (bytes.isEmpty) {
+      return false;
+    }
+    String raw;
+    try {
+      raw = utf8.decode(bytes);
+    } catch (_) {
+      return false;
+    }
+    final lower = raw.toLowerCase();
+    return lower.contains('<html') ||
+        lower.contains('<head') ||
+        lower.contains('<body') ||
+        lower.contains('<!doctype html');
+  }
+
+  Future<bool> _probeWebDavOptions(
+    HttpWebDavApiClient apiClient,
+    String path,
+    String label,
+    Uri candidate,
+  ) async {
+    try {
+      final options = await apiClient.options(path);
+      return options.allowsPropfind || options.hasDav;
+    } on SyncAdapterException catch (error) {
+      Log.d('$label discover: OPTIONS failed for $candidate (${error.code})');
+      return false;
+    }
+  }
+
+  Future<WebDavCredentials> _resolveWebDavCredentials({
+    required WebDavCredentials credentials,
+  }) async {
+    final baseUri = Uri.tryParse(credentials.baseUrl);
+    if (baseUri == null) {
+      return credentials;
+    }
+    final normalizedBase = _normalizeWebDavBaseUri(baseUri);
+    try {
+      final probeClient = HttpWebDavApiClient(
+        baseUri: normalizedBase,
+        auth: WebDavAuth.basic(credentials.username, credentials.password),
+        allowInsecure: credentials.allowInsecure,
+        requestTimeout: const Duration(seconds: 5),
+      );
+      final initialSyncPath = _normalizeWebDavSyncPath(credentials.syncPath);
+      final probePath = initialSyncPath.isEmpty ? '/' : '/$initialSyncPath/';
+      final probeOk = await _probeWebDavPath(
+        probeClient,
+        probePath,
+        'WebDAV',
+        normalizedBase,
+        allowNotFound: initialSyncPath.isNotEmpty,
+        onTimeout: () {},
+        onInvalidXml: () {},
+      );
+      if (probeOk) {
+        return credentials;
+      }
+      final endpoint = await _discoverWebDavEndpoint(
+        label: 'WebDAV',
+        baseUri: normalizedBase,
+        username: credentials.username,
+        password: credentials.password,
+        allowInsecure: credentials.allowInsecure,
+        requestTimeout: const Duration(seconds: 5),
+        syncPath: credentials.syncPath,
+      );
+      final normalizedEndpoint = _normalizeWebDavBaseUri(endpoint);
+      var updated = credentials;
+      if (normalizedEndpoint.toString() != normalizedBase.toString()) {
+        updated = WebDavCredentials(
+          baseUrl: normalizedEndpoint.toString(),
+          username: credentials.username,
+          password: credentials.password,
+          allowInsecure: credentials.allowInsecure,
+          syncPath: credentials.syncPath,
+        );
+        await _syncAuthStore.saveWebDavCredentials(updated);
+        _webDavCredentials = updated;
+        _setInfo('WebDAV endpoint найден: $normalizedEndpoint');
+      }
+
+      final verifiedClient = HttpWebDavApiClient(
+        baseUri: normalizedEndpoint,
+        auth: WebDavAuth.basic(updated.username, updated.password),
+        allowInsecure: updated.allowInsecure,
+        requestTimeout: const Duration(seconds: 5),
+      );
+      final verifiedSyncPath = _normalizeWebDavSyncPath(updated.syncPath);
+      if (verifiedSyncPath.isEmpty) {
+        return updated;
+      }
+      final verifiedOk = await _probeWebDavPath(
+        verifiedClient,
+        '/$verifiedSyncPath/',
+        'WebDAV',
+        normalizedEndpoint,
+        allowNotFound: true,
+        onTimeout: () {},
+        onInvalidXml: () {},
+      );
+      if (verifiedOk) {
+        return updated;
+      }
+
+      final canAutoPrefix = !verifiedSyncPath.contains('/');
+      if (!canAutoPrefix) {
+        return updated;
+      }
+
+      List<WebDavItem> rootEntries;
+      try {
+        rootEntries = await verifiedClient.listFolder('/');
+      } catch (_) {
+        return updated;
+      }
+      final rootFolders = rootEntries
+          .where((item) => item.isDirectory && item.name.isNotEmpty)
+          .map((item) => item.name)
+          .toSet();
+      if (rootFolders.isNotEmpty) {
+        final sorted = rootFolders.toList()..sort();
+        Log.d('WebDAV root folders: ${sorted.join(', ')}');
+      }
+      final username = updated.username.trim();
+
+      final byLower = <String, String>{
+        for (final name in rootFolders) name.toLowerCase(): name,
+      };
+      final homeName = byLower['home'];
+      final homesName = byLower['homes'];
+      final publicName = byLower['public'];
+
+      String? homesUserDir;
+      if (homesName != null && username.isNotEmpty) {
+        try {
+          final entries = await verifiedClient.listFolder('/$homesName/');
+          final dirNames = entries
+              .where((item) => item.isDirectory && item.name.isNotEmpty)
+              .map((item) => item.name)
+              .toList();
+          final target = username.toLowerCase();
+          homesUserDir = dirNames
+              .firstWhere(
+                (name) => name.toLowerCase() == target,
+                orElse: () => username,
+              );
+        } catch (_) {
+          homesUserDir = username;
+        }
+      }
+
+      final candidates = <String>[];
+      void addCandidate(String? value) {
+        if (value == null || value.trim().isEmpty) {
+          return;
+        }
+        if (!candidates.contains(value)) {
+          candidates.add(value);
+        }
+      }
+
+      addCandidate(homeName);
+      addCandidate(
+        homesName != null && homesUserDir != null
+            ? '$homesName/$homesUserDir'
+            : null,
+      );
+      addCandidate(publicName);
+      addCandidate(
+        username.isNotEmpty && byLower.containsKey(username.toLowerCase())
+            ? byLower[username.toLowerCase()]
+            : null,
+      );
+      if (rootFolders.length == 1) {
+        addCandidate(rootFolders.first);
+      }
+      if (rootFolders.isNotEmpty) {
+        final sorted = rootFolders.toList()..sort();
+        for (final folder in sorted) {
+          addCandidate(folder);
+        }
+      }
+
+      for (final prefix in candidates) {
+        final candidateSyncPath = '$prefix/$verifiedSyncPath';
+        Log.d('WebDAV auto-path: trying /$candidateSyncPath/');
+        final ok = await _probeWebDavPath(
+          verifiedClient,
+          '/$candidateSyncPath/',
+          'WebDAV',
+          normalizedEndpoint,
+          allowNotFound: true,
+          onTimeout: () {},
+          onInvalidXml: () {},
+        );
+        if (!ok) {
+          continue;
+        }
+        updated = WebDavCredentials(
+          baseUrl: updated.baseUrl,
+          username: updated.username,
+          password: updated.password,
+          allowInsecure: updated.allowInsecure,
+          syncPath: candidateSyncPath,
+        );
+        await _syncAuthStore.saveWebDavCredentials(updated);
+        _webDavCredentials = updated;
+        _setInfo('WebDAV путь синхронизации: /$candidateSyncPath/');
+        return updated;
+      }
+
+      return updated;
+    } catch (error) {
+      Log.d('WebDAV auto-discovery failed: $error');
+      return credentials;
+    }
+  }
+
+  void _disableAutoSync(SyncAdapterException error) {
+    if (_autoSyncDisabled) {
+      return;
+    }
+    _autoSyncDisabled = true;
+    _pendingSync = false;
+    _scheduledSyncTimer?.cancel();
+    _autoSyncTimer?.cancel();
+    final label = _providerLabel(_syncProvider);
+    _setAuthError(
+      'Автосинхронизация отключена. ${_formatSyncAdapterError(label, error)}',
+    );
+  }
+
+  bool _isClientErrorCode(String? code) {
+    if (code == null) {
+      return false;
+    }
+    final parts = code.split('_');
+    if (parts.isEmpty) {
+      return false;
+    }
+    final status = int.tryParse(parts.last);
+    if (status == null) {
+      return false;
+    }
+    return status >= 400 && status < 500;
   }
 
   Future<void> deleteRemoteSyncFiles() async {
@@ -1374,6 +2305,8 @@ class LibraryController extends ChangeNotifier {
         url = YandexDiskOAuthClient(yandex).authorizationUrl(state: state);
         break;
       case SyncProvider.webDav:
+      case SyncProvider.synologyDrive:
+      case SyncProvider.smb:
         return null;
     }
     _authState = state;
@@ -1464,6 +2397,8 @@ class LibraryController extends ChangeNotifier {
         }
         return YandexDiskOAuthClient(yandex).exchangeCode(code);
       case SyncProvider.webDav:
+      case SyncProvider.synologyDrive:
+      case SyncProvider.smb:
         throw SyncAuthException('OAuth provider not supported');
     }
   }
@@ -1594,7 +2529,10 @@ class LibraryController extends ChangeNotifier {
       case SyncProvider.yandexDisk:
         return 'Yandex Disk';
       case SyncProvider.webDav:
-        return 'WebDAV';
+        return 'NAS (WebDAV/SMB)';
+      case SyncProvider.synologyDrive:
+      case SyncProvider.smb:
+        return 'NAS (WebDAV/SMB)';
     }
   }
 
@@ -1616,15 +2554,25 @@ class LibraryController extends ChangeNotifier {
     );
   }
 
-  Future<void> _runFileSync() async {
+  Future<void> _runFileSync({bool force = false}) async {
     final engine = _syncEngine;
     if (engine == null || _syncInProgress) {
       return;
     }
+    if (_autoSyncDisabled && !force) {
+      return;
+    }
     _syncInProgress = true;
+    _pendingSync = false;
     notifyListeners();
     try {
       final result = await engine.sync();
+      final error = result.error;
+      if (error != null) {
+        _handleSyncError(error);
+        Log.d('File sync failed: $error');
+        return;
+      }
       _lastSyncAt = result.uploadedAt;
       _lastSyncSummary =
           'Events: ${result.appliedEvents}, state: ${result.appliedState}';
@@ -1634,11 +2582,44 @@ class LibraryController extends ChangeNotifier {
         notifyListeners();
       }
     } catch (e) {
+      _handleSyncError(e);
       Log.d('File sync failed: $e');
     } finally {
       _syncInProgress = false;
       notifyListeners();
+      if (_pendingSync) {
+        _pendingSync = false;
+        _scheduleSync(delay: const Duration(seconds: 1));
+      }
     }
+  }
+
+  void _handleSyncError(Object error) {
+    if (error is SyncAdapterException) {
+      if (_isClientErrorCode(error.code)) {
+        _disableAutoSync(error);
+      } else {
+        _setAuthError(
+          _formatSyncAdapterError(_providerLabel(_syncProvider), error),
+        );
+      }
+      return;
+    }
+    if (error is HandshakeException) {
+      _setAuthError(
+        'SSL ошибка. Проверь сертификат или включи "Принимать все сертификаты".',
+      );
+      return;
+    }
+    if (error is SocketException) {
+      _setAuthError('Нет доступа к серверу. Проверь адрес, порт и сеть.');
+      return;
+    }
+    if (error is HttpException) {
+      _setAuthError('Ошибка HTTP. Проверь URL и доступ к WebDAV.');
+      return;
+    }
+    _setAuthError('Синхронизация не удалась: $error');
   }
 
   Future<String> _ensureDeviceId() async {
@@ -1659,10 +2640,17 @@ class LibraryController extends ChangeNotifier {
     if (stored == null || stored.isEmpty) {
       return;
     }
+    final normalized = stored == SyncProvider.synologyDrive.name ||
+            stored == SyncProvider.smb.name
+        ? SyncProvider.webDav.name
+        : stored;
     _syncProvider = SyncProvider.values.firstWhere(
-      (value) => value.name == stored,
+      (value) => value.name == normalized,
       orElse: () => SyncProvider.googleDrive,
     );
+    if (normalized != stored) {
+      await _preferencesStore.saveSyncProvider(_syncProvider.name);
+    }
     notifyListeners();
   }
 
@@ -1690,7 +2678,40 @@ class LibraryController extends ChangeNotifier {
   void dispose() {
     _globalSearchDebounce?.cancel();
     _authLinkSub?.cancel();
+    _autoSyncTimer?.cancel();
+    _scheduledSyncTimer?.cancel();
     super.dispose();
+  }
+
+  void _restartAutoSyncTimer() {
+    _autoSyncTimer?.cancel();
+    if (_syncAdapter == null || _autoSyncDisabled) {
+      return;
+    }
+    _autoSyncTimer = Timer.periodic(
+      _autoSyncInterval,
+      (_) => _scheduleSync(),
+    );
+  }
+
+  void _scheduleSync({Duration delay = _syncDebounce}) {
+    if (_syncAdapter == null || _autoSyncDisabled) {
+      return;
+    }
+    _pendingSync = true;
+    if (_syncInProgress) {
+      return;
+    }
+    _scheduledSyncTimer?.cancel();
+    _scheduledSyncTimer = Timer(delay, () async {
+      _scheduledSyncTimer = null;
+      try {
+        await _runFileSync();
+      } catch (error) {
+        Log.d('Scheduled sync failed: $error');
+        _handleSyncError(error);
+      }
+    });
   }
 }
 

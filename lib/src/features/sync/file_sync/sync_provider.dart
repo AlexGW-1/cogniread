@@ -4,4 +4,6 @@ enum SyncProvider {
   oneDrive,
   yandexDisk,
   webDav,
+  synologyDrive,
+  smb,
 }

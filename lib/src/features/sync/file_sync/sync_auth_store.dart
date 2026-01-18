@@ -1,5 +1,6 @@
 import 'package:cogniread/src/core/services/hive_bootstrap.dart';
 import 'package:cogniread/src/features/sync/file_sync/oauth.dart';
+import 'package:cogniread/src/features/sync/file_sync/smb_credentials.dart';
 import 'package:cogniread/src/features/sync/file_sync/sync_provider.dart';
 import 'package:cogniread/src/features/sync/file_sync/webdav_credentials.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -70,6 +71,8 @@ class SyncAuthStore {
     final baseUrl = map['baseUrl'] as String?;
     final username = map['username'] as String?;
     final password = map['password'] as String?;
+    final allowInsecure = map['allowInsecure'] as bool? ?? false;
+    final syncPath = map['syncPath'] as String? ?? 'cogniread';
     if (baseUrl == null || username == null || password == null) {
       return null;
     }
@@ -80,6 +83,8 @@ class SyncAuthStore {
       baseUrl: baseUrl,
       username: username,
       password: password,
+      allowInsecure: allowInsecure,
+      syncPath: syncPath,
     );
   }
 
@@ -88,6 +93,8 @@ class SyncAuthStore {
       'baseUrl': credentials.baseUrl,
       'username': credentials.username,
       'password': credentials.password,
+      'allowInsecure': credentials.allowInsecure,
+      'syncPath': credentials.syncPath,
     };
     await _requireBox.put(_webDavKey(), payload);
   }
@@ -96,7 +103,80 @@ class SyncAuthStore {
     await _requireBox.delete(_webDavKey());
   }
 
+  Future<WebDavCredentials?> loadSynologyCredentials() async {
+    final raw = _requireBox.get(_synologyKey());
+    if (raw is! Map) {
+      return null;
+    }
+    final map = raw.map(
+      (key, value) => MapEntry(key.toString(), value),
+    );
+    final baseUrl = map['baseUrl'] as String?;
+    final username = map['username'] as String?;
+    final password = map['password'] as String?;
+    final allowInsecure = map['allowInsecure'] as bool? ?? false;
+    final syncPath = map['syncPath'] as String? ?? 'cogniread';
+    if (baseUrl == null || username == null || password == null) {
+      return null;
+    }
+    if (baseUrl.trim().isEmpty || username.trim().isEmpty) {
+      return null;
+    }
+    return WebDavCredentials(
+      baseUrl: baseUrl,
+      username: username,
+      password: password,
+      allowInsecure: allowInsecure,
+      syncPath: syncPath,
+    );
+  }
+
+  Future<void> saveSynologyCredentials(WebDavCredentials credentials) async {
+    final payload = <String, Object?>{
+      'baseUrl': credentials.baseUrl,
+      'username': credentials.username,
+      'password': credentials.password,
+      'allowInsecure': credentials.allowInsecure,
+      'syncPath': credentials.syncPath,
+    };
+    await _requireBox.put(_synologyKey(), payload);
+  }
+
+  Future<void> clearSynologyCredentials() async {
+    await _requireBox.delete(_synologyKey());
+  }
+
+  Future<SmbCredentials?> loadSmbCredentials() async {
+    final raw = _requireBox.get(_smbKey());
+    if (raw is! Map) {
+      return null;
+    }
+    final map = raw.map(
+      (key, value) => MapEntry(key.toString(), value),
+    );
+    final mountPath = map['mountPath'] as String?;
+    if (mountPath == null || mountPath.trim().isEmpty) {
+      return null;
+    }
+    return SmbCredentials(mountPath: mountPath);
+  }
+
+  Future<void> saveSmbCredentials(SmbCredentials credentials) async {
+    final payload = <String, Object?>{
+      'mountPath': credentials.mountPath,
+    };
+    await _requireBox.put(_smbKey(), payload);
+  }
+
+  Future<void> clearSmbCredentials() async {
+    await _requireBox.delete(_smbKey());
+  }
+
   String _tokenKey(SyncProvider provider) => 'token_${provider.name}';
 
   String _webDavKey() => 'webdav_credentials';
+
+  String _synologyKey() => 'synology_credentials';
+
+  String _smbKey() => 'smb_credentials';
 }

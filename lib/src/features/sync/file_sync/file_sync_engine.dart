@@ -32,72 +32,101 @@ class FileSyncEngine {
   final String basePath;
 
   Future<FileSyncResult> sync() async {
+    final stopwatch = Stopwatch()..start();
+    Log.d('FileSyncEngine: sync started');
     final now = DateTime.now().toUtc();
-    final remoteEvents = await _readEventLog();
-    final remoteState = await _readState();
-    final booksSync = await _syncBooks();
+    try {
+      final remoteEvents = await _readEventLog();
+      final remoteState = await _readState();
+      final booksSync = await _syncBooks();
+      Log.d(
+        'FileSyncEngine: remote events=${remoteEvents.events.length}, '
+        'state=${remoteState.readingPositions.length}, '
+        'books uploaded=${booksSync.uploaded}, downloaded=${booksSync.downloaded}',
+      );
 
-    final localEvents = _eventLogStore.listEvents();
-    final localEventIds = localEvents.map((event) => event.id).toSet();
+      final localEvents = _eventLogStore.listEvents();
+      final localEventIds = localEvents.map((event) => event.id).toSet();
 
-    var appliedEvents = 0;
-    for (final event in remoteEvents.events) {
-      if (localEventIds.contains(event.id)) {
-        continue;
+      var appliedEvents = 0;
+      for (final event in remoteEvents.events) {
+        if (localEventIds.contains(event.id)) {
+          continue;
+        }
+        final applied = await _applyEvent(event);
+        if (applied) {
+          appliedEvents += 1;
+        }
+        await _eventLogStore.addEvent(event);
+        localEventIds.add(event.id);
       }
-      final applied = await _applyEvent(event);
-      if (applied) {
-        appliedEvents += 1;
-      }
-      await _eventLogStore.addEvent(event);
-      localEventIds.add(event.id);
+
+      final appliedState = await _applyState(remoteState);
+      Log.d(
+        'FileSyncEngine: applied events=$appliedEvents, '
+        'applied state=$appliedState',
+      );
+
+      final mergedEvents = _eventLogStore.listEvents()
+        ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+      final cursor = mergedEvents.isEmpty ? null : mergedEvents.last.id;
+      final eventLogFile = SyncEventLogFile(
+        schemaVersion: 1,
+        deviceId: _deviceId,
+        generatedAt: now,
+        cursor: cursor,
+        events: mergedEvents,
+      );
+      final stateFile = await _buildStateFile(cursor: cursor, now: now);
+      final metaFile = SyncMetaFile(
+        schemaVersion: 1,
+        deviceId: _deviceId,
+        lastUploadAt: now,
+        lastDownloadAt: now,
+        eventCount: mergedEvents.length,
+      );
+
+      await _safePutFile(
+        _path('event_log.json'),
+        eventLogFile.toJsonBytes(),
+        contentType: 'application/json',
+      );
+      await _safePutFile(
+        _path('state.json'),
+        stateFile.toJsonBytes(),
+        contentType: 'application/json',
+      );
+      await _safePutFile(
+        _path('meta.json'),
+        metaFile.toJsonBytes(),
+        contentType: 'application/json',
+      );
+
+      final result = FileSyncResult(
+        appliedEvents: appliedEvents,
+        appliedState: appliedState,
+        uploadedEvents: mergedEvents.length,
+        uploadedAt: now,
+        booksUploaded: booksSync.uploaded,
+        booksDownloaded: booksSync.downloaded,
+      );
+      Log.d(
+        'FileSyncEngine: sync finished in ${stopwatch.elapsedMilliseconds} ms',
+      );
+      return result;
+    } on SyncAdapterException catch (error) {
+      Log.d('FileSyncEngine: sync failed: $error');
+      return FileSyncResult.error(
+        error: error,
+        uploadedAt: now,
+      );
+    } catch (error) {
+      Log.d('FileSyncEngine: sync failed: $error');
+      return FileSyncResult.error(
+        error: SyncAdapterException(error.toString(), code: 'sync_error'),
+        uploadedAt: now,
+      );
     }
-
-    final appliedState = await _applyState(remoteState);
-
-    final mergedEvents = _eventLogStore.listEvents()
-      ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
-    final cursor = mergedEvents.isEmpty ? null : mergedEvents.last.id;
-    final eventLogFile = SyncEventLogFile(
-      schemaVersion: 1,
-      deviceId: _deviceId,
-      generatedAt: now,
-      cursor: cursor,
-      events: mergedEvents,
-    );
-    final stateFile = await _buildStateFile(cursor: cursor, now: now);
-    final metaFile = SyncMetaFile(
-      schemaVersion: 1,
-      deviceId: _deviceId,
-      lastUploadAt: now,
-      lastDownloadAt: now,
-      eventCount: mergedEvents.length,
-    );
-
-    await _adapter.putFile(
-      _path('event_log.json'),
-      eventLogFile.toJsonBytes(),
-      contentType: 'application/json',
-    );
-    await _adapter.putFile(
-      _path('state.json'),
-      stateFile.toJsonBytes(),
-      contentType: 'application/json',
-    );
-    await _adapter.putFile(
-      _path('meta.json'),
-      metaFile.toJsonBytes(),
-      contentType: 'application/json',
-    );
-
-    return FileSyncResult(
-      appliedEvents: appliedEvents,
-      appliedState: appliedState,
-      uploadedEvents: mergedEvents.length,
-      uploadedAt: now,
-      booksUploaded: booksSync.uploaded,
-      booksDownloaded: booksSync.downloaded,
-    );
   }
 
   Future<_BookSyncResult> _syncBooks() async {
@@ -122,6 +151,9 @@ class FileSyncEngine {
       );
     } on SyncAdapterException catch (error) {
       Log.d('Book sync skipped due to adapter error: $error');
+      if (_isClientError(error)) {
+        rethrow;
+      }
       return const _BookSyncResult(uploaded: 0, downloaded: 0);
     } catch (error) {
       Log.d('Book sync failed: $error');
@@ -211,9 +243,11 @@ class FileSyncEngine {
   }
 
   Future<SyncBooksIndexFile> _readBooksIndex() async {
+    Log.d('FileSyncEngine: reading ${_booksIndexPath()}');
     try {
       final file = await _adapter.getFile(_booksIndexPath());
       if (file == null) {
+        Log.d('FileSyncEngine: books_index.json not found, using empty');
         return SyncBooksIndexFile(
           schemaVersion: 1,
           generatedAt: DateTime.now().toUtc(),
@@ -223,7 +257,18 @@ class FileSyncEngine {
       final decoded = _decodeJsonMap(file.bytes);
       return SyncBooksIndexFile.fromMap(decoded);
     } on SyncAdapterException catch (error) {
+      if (_isNotFound(error)) {
+        Log.d('FileSyncEngine: books_index.json not found, using empty');
+        return SyncBooksIndexFile(
+          schemaVersion: 1,
+          generatedAt: DateTime.now().toUtc(),
+          books: const <SyncBookDescriptor>[],
+        );
+      }
       Log.d('FileSyncEngine: failed to read books_index.json: $error');
+      if (_isClientError(error)) {
+        rethrow;
+      }
       return SyncBooksIndexFile(
         schemaVersion: 1,
         generatedAt: DateTime.now().toUtc(),
@@ -343,9 +388,11 @@ class FileSyncEngine {
   }
 
   Future<SyncEventLogFile> _readEventLog() async {
+    Log.d('FileSyncEngine: reading ${_path('event_log.json')}');
     try {
       final file = await _adapter.getFile(_path('event_log.json'));
       if (file == null) {
+        Log.d('FileSyncEngine: event_log.json not found, using empty');
         return SyncEventLogFile(
           schemaVersion: 1,
           deviceId: _deviceId,
@@ -356,7 +403,19 @@ class FileSyncEngine {
       final decoded = _decodeJsonMap(file.bytes);
       return SyncEventLogFile.fromMap(decoded);
     } on SyncAdapterException catch (error) {
+      if (_isNotFound(error)) {
+        Log.d('FileSyncEngine: event_log.json not found, using empty');
+        return SyncEventLogFile(
+          schemaVersion: 1,
+          deviceId: _deviceId,
+          generatedAt: DateTime.now().toUtc(),
+          events: const <EventLogEntry>[],
+        );
+      }
       Log.d('FileSyncEngine: failed to read event_log.json: ${error.toString()}');
+      if (_isClientError(error)) {
+        rethrow;
+      }
       return SyncEventLogFile(
         schemaVersion: 1,
         deviceId: _deviceId,
@@ -367,9 +426,11 @@ class FileSyncEngine {
   }
 
   Future<SyncStateFile> _readState() async {
+    Log.d('FileSyncEngine: reading ${_path('state.json')}');
     try {
       final file = await _adapter.getFile(_path('state.json'));
       if (file == null) {
+        Log.d('FileSyncEngine: state.json not found, using empty');
         return SyncStateFile(
           schemaVersion: 1,
           generatedAt: DateTime.now().toUtc(),
@@ -379,7 +440,18 @@ class FileSyncEngine {
       final decoded = _decodeJsonMap(file.bytes);
       return SyncStateFile.fromMap(decoded);
     } on SyncAdapterException catch (error) {
+      if (_isNotFound(error)) {
+        Log.d('FileSyncEngine: state.json not found, using empty');
+        return SyncStateFile(
+          schemaVersion: 1,
+          generatedAt: DateTime.now().toUtc(),
+          readingPositions: const <SyncReadingPosition>[],
+        );
+      }
       Log.d('FileSyncEngine: failed to read state.json: ${error.toString()}');
+      if (_isClientError(error)) {
+        rethrow;
+      }
       return SyncStateFile(
         schemaVersion: 1,
         generatedAt: DateTime.now().toUtc(),
@@ -439,6 +511,57 @@ class FileSyncEngine {
       applied += 1;
     }
     return applied;
+  }
+
+  Future<void> _safePutFile(
+    String path,
+    List<int> bytes, {
+    String? contentType,
+  }) async {
+    try {
+      await _adapter.putFile(
+        path,
+        bytes,
+        contentType: contentType,
+      );
+    } on SyncAdapterException catch (error) {
+      Log.d('FileSyncEngine: failed to upload $path: $error');
+      if (_isClientError(error)) {
+        rethrow;
+      }
+    }
+  }
+
+  bool _isClientError(SyncAdapterException error) {
+    final code = error.code;
+    if (code == null) {
+      return false;
+    }
+    final parts = code.split('_');
+    if (parts.isEmpty) {
+      return false;
+    }
+    final status = int.tryParse(parts.last);
+    if (status == null) {
+      return false;
+    }
+    return status >= 400 && status < 500;
+  }
+
+  bool _isNotFound(SyncAdapterException error) {
+    final code = error.code;
+    if (code == null) {
+      return false;
+    }
+    if (code.contains('404')) {
+      return true;
+    }
+    final parts = code.split('_');
+    if (parts.isEmpty) {
+      return false;
+    }
+    final status = int.tryParse(parts.last);
+    return status == 404;
   }
 
   Future<bool> _applyEvent(EventLogEntry event) async {
@@ -647,7 +770,17 @@ class FileSyncResult {
     required this.uploadedAt,
     required this.booksUploaded,
     required this.booksDownloaded,
+    this.error,
   });
+
+  const FileSyncResult.error({
+    required this.error,
+    required this.uploadedAt,
+  })  : appliedEvents = 0,
+        appliedState = 0,
+        uploadedEvents = 0,
+        booksUploaded = 0,
+        booksDownloaded = 0;
 
   final int appliedEvents;
   final int appliedState;
@@ -655,6 +788,7 @@ class FileSyncResult {
   final DateTime uploadedAt;
   final int booksUploaded;
   final int booksDownloaded;
+  final SyncAdapterException? error;
 }
 
 class _MergeBooksResult {

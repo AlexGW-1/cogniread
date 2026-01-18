@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:cogniread/src/core/services/storage_service.dart';
+import 'package:cogniread/src/core/utils/logger.dart';
 import 'package:cogniread/src/features/library/presentation/library_controller.dart';
 import 'package:cogniread/src/features/reader/presentation/reader_screen.dart';
 import 'package:cogniread/src/features/sync/file_sync/sync_adapter.dart';
@@ -54,7 +55,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
       setState(_syncSelection);
     };
     _controller.addListener(_controllerListener);
-    _controller.init();
+    _controller.init().catchError((Object error, StackTrace stackTrace) {
+      Log.d('LibraryController init failed: $error');
+    });
     _searchController = TextEditingController(text: _controller.query);
     _globalSearchController = TextEditingController(
       text: _controller.globalSearchQuery,
@@ -170,8 +173,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   void _handleNotices() {
     final error = _controller.errorMessage;
+    final authError = _controller.authError;
     final info = _controller.infoMessage;
-    final message = error ?? info;
+    final message = error ?? authError ?? info;
     if (message == null || message == _lastNotice) {
       return;
     }
@@ -659,12 +663,14 @@ class _SettingsPanel extends StatelessWidget {
         final syncLabel = controller.syncAdapterLabel;
         final syncAvailable = syncLabel != 'none';
         final oauthConnected = controller.isSyncProviderConnected;
-        final isWebDav = controller.isWebDavProvider;
+        final isNas = controller.isNasProvider;
+        final isBasicAuth = controller.isBasicAuthProvider;
         final authInProgress = controller.authInProgress;
         final connectionInProgress = controller.connectionInProgress;
         final deleteInProgress = controller.deleteInProgress;
         final authError = controller.authError;
-        final webDavCredentials = controller.webDavCredentials;
+        final basicCredentials = controller.basicAuthCredentials;
+        final smbCredentials = controller.smbCredentials;
         return Container(
           padding: const EdgeInsets.all(24),
           decoration: BoxDecoration(
@@ -672,9 +678,13 @@ class _SettingsPanel extends StatelessWidget {
             borderRadius: BorderRadius.circular(20),
             border: Border.all(color: scheme.outlineVariant),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+          child: LayoutBuilder(
+            builder: (context, constraints) => SingleChildScrollView(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
               Text(
                 'Синхронизация',
                 style: Theme.of(context).textTheme.headlineSmall,
@@ -692,7 +702,13 @@ class _SettingsPanel extends StatelessWidget {
                     controller.setSyncProvider(value);
                   }
                 },
-                items: SyncProvider.values
+                items: const [
+                  SyncProvider.googleDrive,
+                  SyncProvider.dropbox,
+                  SyncProvider.oneDrive,
+                  SyncProvider.yandexDisk,
+                  SyncProvider.webDav,
+                ]
                     .map(
                       (provider) => DropdownMenuItem(
                         value: provider,
@@ -764,20 +780,46 @@ class _SettingsPanel extends StatelessWidget {
                 'Подключение',
                 style: Theme.of(context).textTheme.labelLarge,
               ),
-              if (isWebDav) ...[
+              if (isBasicAuth) ...[
                 const SizedBox(height: 6),
                 Text(
-                  'WebDAV использует логин/пароль.',
+                  'NAS использует WebDAV логин/пароль и SMB путь (резервный доступ).',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
-                if (webDavCredentials != null) ...[
+                if (basicCredentials != null) ...[
                   const SizedBox(height: 6),
                   Text(
-                    'URL: ${webDavCredentials.baseUrl}',
+                    'WebDAV URL: ${basicCredentials.baseUrl}',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                   Text(
-                    'Логин: ${webDavCredentials.username}',
+                    'WebDAV логин: ${basicCredentials.username}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  Text(
+                    basicCredentials.syncPath.isEmpty
+                        ? 'WebDAV папка: /'
+                        : 'WebDAV папка: ${basicCredentials.syncPath}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  Text(
+                    basicCredentials.allowInsecure
+                        ? 'SSL: проверка отключена'
+                        : 'SSL: проверка включена',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ],
+              if (isNas) ...[
+                const SizedBox(height: 6),
+                Text(
+                  'SMB использует путь к смонтированной папке.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                if (smbCredentials != null) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    'SMB путь: ${smbCredentials.mountPath}',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ],
@@ -795,59 +837,66 @@ class _SettingsPanel extends StatelessWidget {
                 ),
               ],
               const SizedBox(height: 10),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  if (!oauthConnected)
-                    FilledButton.icon(
-                      onPressed: authInProgress
-                          ? null
-                          : () {
-                              if (isWebDav) {
-                                _showWebDavDialog(context, controller);
-                              } else {
-                                controller.connectSyncProvider();
-                              }
-                            },
-                      icon: authInProgress
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.login),
-                      label: Text(
-                        authInProgress
-                            ? 'Открываем браузер...'
-                            : (isWebDav
-                                ? 'Настроить'
-                                : 'Подключить ${_providerLabel(controller.syncProvider)}'),
-                      ),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        if (!oauthConnected)
+                          FilledButton.icon(
+                            onPressed: authInProgress
+                                ? null
+                                : () {
+                                    if (isNas) {
+                                      _showNasDialog(context, controller);
+                                    } else {
+                                      controller.connectSyncProvider();
+                                    }
+                                  },
+                            icon: authInProgress
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.login),
+                            label: Text(
+                              authInProgress
+                                  ? 'Открываем браузер...'
+                                  : (isBasicAuth
+                                      ? 'Настроить'
+                                      : 'Подключить ${_providerLabel(controller.syncProvider)}'),
+                            ),
+                          ),
+                        if (oauthConnected)
+                          OutlinedButton.icon(
+                            onPressed: authInProgress
+                                ? null
+                                : controller.disconnectSyncProvider,
+                            icon: const Icon(Icons.logout),
+                            label: const Text('Отключить'),
+                          ),
+                        OutlinedButton.icon(
+                          onPressed: connectionInProgress || !oauthConnected
+                              ? null
+                              : controller.testSyncConnection,
+                          icon: connectionInProgress
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child:
+                                      CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.cloud_done),
+                          label: const Text('Проверить'),
+                        ),
+                      ],
                     ),
-                  if (oauthConnected)
-                    OutlinedButton.icon(
-                      onPressed:
-                          authInProgress ? null : controller.disconnectSyncProvider,
-                      icon: const Icon(Icons.logout),
-                      label: const Text('Отключить'),
-                    ),
-                  OutlinedButton.icon(
-                    onPressed: connectionInProgress || !oauthConnected
-                        ? null
-                        : controller.testSyncConnection,
-                    icon: connectionInProgress
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.cloud_done),
-                    label: const Text('Проверить'),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ],
+            ),
           ),
         );
       },
@@ -865,15 +914,19 @@ class _SettingsPanel extends StatelessWidget {
       case SyncProvider.yandexDisk:
         return 'Yandex Disk';
       case SyncProvider.webDav:
-        return 'NAS (WebDAV)';
+        return 'NAS (WebDAV/SMB)';
+      case SyncProvider.synologyDrive:
+      case SyncProvider.smb:
+        return 'NAS (WebDAV/SMB)';
     }
   }
 
-  Future<void> _showWebDavDialog(
+  Future<void> _showNasDialog(
     BuildContext context,
     LibraryController controller,
   ) async {
     final credentials = controller.webDavCredentials;
+    final smbCredentials = controller.smbCredentials;
     final baseController = TextEditingController(
       text: credentials?.baseUrl ?? '',
     );
@@ -883,17 +936,31 @@ class _SettingsPanel extends StatelessWidget {
     final passController = TextEditingController(
       text: credentials?.password ?? '',
     );
+    final pathController = TextEditingController(
+      text: credentials?.syncPath ?? 'cogniread',
+    );
+    final smbController = TextEditingController(
+      text: smbCredentials?.mountPath ?? '',
+    );
     bool obscurePassword = true;
-    bool testingConnection = false;
+    bool allowInsecure = credentials?.allowInsecure ?? false;
+    bool testingWebDav = false;
+    bool testingSmb = false;
+    bool listingFolders = false;
     await showDialog<void>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          title: const Text('WebDAV'),
+          title: const Text('NAS (WebDAV/SMB)'),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                Text(
+                  'WebDAV (предпочтительно)',
+                  style: Theme.of(context).textTheme.labelLarge,
+                ),
+                const SizedBox(height: 8),
                 TextField(
                   controller: baseController,
                   decoration: const InputDecoration(
@@ -901,6 +968,51 @@ class _SettingsPanel extends StatelessWidget {
                     hintText: 'https://nas.local/dav/',
                   ),
                   keyboardType: TextInputType.url,
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: pathController,
+                  decoration: const InputDecoration(
+                    labelText: 'Папка синхронизации',
+                    hintText: 'cogniread (пусто = корень)',
+                  ),
+                ),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: listingFolders
+                      ? null
+                      : () async {
+                          setDialogState(() {
+                            listingFolders = true;
+                          });
+                          final selected = await _pickWebDavFolder(
+                            context,
+                            controller,
+                            label: 'WebDAV',
+                            baseUrl: baseController.text,
+                            username: userController.text,
+                            password: passController.text,
+                            allowInsecure: allowInsecure,
+                          );
+                          if (selected != null) {
+                            pathController.text = selected;
+                          }
+                          if (context.mounted) {
+                            setDialogState(() {
+                              listingFolders = false;
+                            });
+                          }
+                        },
+                  icon: listingFolders
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.folder_open),
+                  label: Text(
+                    listingFolders ? 'Загрузка...' : 'Выбрать папку',
+                  ),
                 ),
                 const SizedBox(height: 12),
                 TextField(
@@ -927,6 +1039,95 @@ class _SettingsPanel extends StatelessWidget {
                   ),
                   obscureText: obscurePassword,
                 ),
+                const SizedBox(height: 12),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Принимать все сертификаты'),
+                  value: allowInsecure,
+                  onChanged: (value) {
+                    setDialogState(() {
+                      allowInsecure = value;
+                    });
+                  },
+                ),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: testingWebDav
+                      ? null
+                      : () async {
+                          setDialogState(() {
+                            testingWebDav = true;
+                          });
+                          await controller.testWebDavCredentials(
+                            baseUrl: baseController.text,
+                            username: userController.text,
+                            password: passController.text,
+                            allowInsecure: allowInsecure,
+                            syncPath: pathController.text,
+                          );
+                          if (context.mounted) {
+                            setDialogState(() {
+                              testingWebDav = false;
+                            });
+                          }
+                        },
+                  icon: testingWebDav
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.cloud_done),
+                  label: Text(
+                    testingWebDav ? 'Проверяем WebDAV...' : 'Проверить WebDAV',
+                  ),
+                ),
+                const Divider(height: 24),
+                Text(
+                  'SMB (резервный доступ)',
+                  style: Theme.of(context).textTheme.labelLarge,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Укажи путь к смонтированной папке. Подпапка берется из поля "Папка синхронизации".',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: smbController,
+                  decoration: const InputDecoration(
+                    labelText: 'SMB путь',
+                    hintText: '/Volumes/Share или \\\\server\\share',
+                  ),
+                ),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: testingSmb
+                      ? null
+                      : () async {
+                          setDialogState(() {
+                            testingSmb = true;
+                          });
+                          await controller.testSmbCredentials(
+                            mountPath: smbController.text,
+                          );
+                          if (context.mounted) {
+                            setDialogState(() {
+                              testingSmb = false;
+                            });
+                          }
+                        },
+                  icon: testingSmb
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.cloud_done),
+                  label: Text(
+                    testingSmb ? 'Проверяем SMB...' : 'Проверить SMB',
+                  ),
+                ),
               ],
             ),
           ),
@@ -935,40 +1136,17 @@ class _SettingsPanel extends StatelessWidget {
               onPressed: () => Navigator.of(context).pop(),
               child: const Text('Отмена'),
             ),
-            OutlinedButton(
-              onPressed: testingConnection
-                  ? null
-                  : () async {
-                      setDialogState(() {
-                        testingConnection = true;
-                      });
-                      await controller.testWebDavCredentials(
-                        baseUrl: baseController.text,
-                        username: userController.text,
-                        password: passController.text,
-                      );
-                      if (context.mounted) {
-                        setDialogState(() {
-                          testingConnection = false;
-                        });
-                      }
-                    },
-              child: testingConnection
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Text('Проверить'),
-            ),
             FilledButton(
               onPressed: () async {
-                await controller.saveWebDavCredentials(
+                final saved = await controller.saveNasCredentials(
                   baseUrl: baseController.text,
                   username: userController.text,
                   password: passController.text,
+                  allowInsecure: allowInsecure,
+                  syncPath: pathController.text,
+                  smbMountPath: smbController.text,
                 );
-                if (context.mounted) {
+                if (saved && context.mounted) {
                   Navigator.of(context).pop();
                 }
               },
@@ -978,6 +1156,63 @@ class _SettingsPanel extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  Future<String?> _pickWebDavFolder(
+    BuildContext context,
+    LibraryController controller, {
+    required String label,
+    required String baseUrl,
+    required String username,
+    required String password,
+    required bool allowInsecure,
+  }) async {
+    final folders = await controller.listWebDavFolders(
+      label: label,
+      baseUrl: baseUrl,
+      username: username,
+      password: password,
+      allowInsecure: allowInsecure,
+    );
+    if (!context.mounted) {
+      return null;
+    }
+    if (folders.isEmpty) {
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Папки не найдены'),
+          content: const Text(
+            'Не удалось найти папки на сервере. Проверь URL и доступ.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Ок'),
+            ),
+          ],
+        ),
+      );
+      return null;
+    }
+    final selection = await showDialog<String>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('Выбери папку'),
+        children: [
+          SimpleDialogOption(
+            onPressed: () => Navigator.of(context).pop(''),
+            child: const Text('Корень (/)'),
+          ),
+          for (final folder in folders)
+            SimpleDialogOption(
+              onPressed: () => Navigator.of(context).pop(folder),
+              child: Text(folder),
+            ),
+        ],
+      ),
+    );
+    return selection;
   }
 
   Future<void> _confirmDeleteRemote(

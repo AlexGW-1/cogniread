@@ -259,6 +259,8 @@ class SyncOAuthConfig {
       case SyncProvider.yandexDisk:
         return yandexDisk != null;
       case SyncProvider.webDav:
+      case SyncProvider.synologyDrive:
+      case SyncProvider.smb:
         return true;
     }
   }
