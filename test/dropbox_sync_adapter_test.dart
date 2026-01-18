@@ -102,6 +102,48 @@ class _FakeFile {
   final DateTime modifiedTime;
 }
 
+class _DeletePathLookupNotFoundDropboxApiClient implements DropboxApiClient {
+  @override
+  Future<List<DropboxApiFile>> listFolder(String path) async {
+    return const <DropboxApiFile>[];
+  }
+
+  @override
+  Future<DropboxApiFile?> getMetadata(String path) async {
+    return null;
+  }
+
+  @override
+  Future<List<int>> download(String path) async {
+    return const <int>[];
+  }
+
+  @override
+  Future<DropboxApiFile> upload({
+    required String path,
+    required List<int> bytes,
+    bool overwrite = true,
+  }) async {
+    return DropboxApiFile(
+      path: path,
+      name: path.split('/').last,
+      modifiedTime: DateTime.now().toUtc(),
+      size: bytes.length,
+    );
+  }
+
+  @override
+  Future<void> delete(String path) async {
+    throw SyncAdapterException(
+      'Dropbox API error 409: {"error_summary":"path_lookup/not_found/."}',
+      code: 'dropbox_409',
+    );
+  }
+
+  @override
+  Future<void> createFolder(String path) async {}
+}
+
 void main() {
   test('DropboxSyncAdapter uploads and downloads files', () async {
     final apiClient = _FakeDropboxApiClient();
@@ -187,6 +229,13 @@ void main() {
       expect(refs.map((ref) => ref.path), contains('state.json'));
     },
   );
+
+  test('DropboxSyncAdapter ignores path_lookup/not_found on delete', () async {
+    final apiClient = _DeletePathLookupNotFoundDropboxApiClient();
+    final adapter = DropboxSyncAdapter(apiClient: apiClient, basePath: '/testbase');
+
+    await adapter.deleteFile('event_log.json');
+  });
 }
 
 class _FolderAwareDropboxApiClient implements DropboxApiClient {

@@ -149,10 +149,11 @@ class DropboxSyncAdapter implements SyncAdapter {
   bool _isPathNotFound(SyncAdapterException error) {
     final code = error.code ?? '';
     final message = error.message;
+    const markers = <String>['path/not_found', 'path_lookup/not_found'];
+    bool containsMarker(String value) => markers.any(value.contains);
     return code.contains('path_not_found') ||
-        (code.startsWith('dropbox_409') &&
-            message.contains('path/not_found')) ||
-        error.toString().contains('path/not_found');
+        (code.startsWith('dropbox_409') && containsMarker(message)) ||
+        containsMarker(error.toString());
   }
 
   bool _isFolderConflict(SyncAdapterException error) {

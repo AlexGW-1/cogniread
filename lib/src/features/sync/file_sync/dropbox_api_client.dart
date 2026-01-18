@@ -236,7 +236,8 @@ class HttpDropboxApiClient implements DropboxApiClient {
       final message = error.message;
       Log.d('Dropbox API error caught: code=$code message=$message');
       if (code.startsWith('dropbox_409') &&
-          message.contains('path/not_found')) {
+          (message.contains('path/not_found') ||
+              message.contains('path_lookup/not_found'))) {
         Log.d('Dropbox API path not found: returning empty response');
         return const <String, Object?>{};
       }
@@ -288,7 +289,8 @@ class HttpDropboxApiClient implements DropboxApiClient {
       if (response.statusCode >= 400) {
         final bodyText = bytes.isEmpty ? '' : utf8.decode(bytes);
         final baseCode = 'dropbox_${response.statusCode}';
-        final isNotFound = bodyText.contains('path/not_found');
+        final isNotFound = bodyText.contains('path/not_found') ||
+            bodyText.contains('path_lookup/not_found');
         final code = isNotFound ? '${baseCode}_path_not_found' : baseCode;
         if (allowConflict && response.statusCode == 409) {
           Log.d('Dropbox HTTP 409 ignored uri=$uri');
