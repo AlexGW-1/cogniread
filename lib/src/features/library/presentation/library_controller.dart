@@ -653,15 +653,39 @@ class LibraryController extends ChangeNotifier {
       _setAuthError('Лог пока недоступен');
       return;
     }
-    final file = File(srcPath);
-    final exists = await file.exists();
-    final target = exists ? srcPath : p.dirname(srcPath);
-    final uri = Uri.file(target);
     try {
-      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
-      if (!ok) {
+      // `launchUrl(Uri.file(log))` opens the file in the default handler
+      // (Console.app on macOS), while the UI expects opening the *folder*.
+      if (Platform.isMacOS) {
+        final exists = await File(srcPath).exists();
+        if (exists) {
+          final reveal = await Process.run('open', <String>['-R', srcPath]);
+          if (reveal.exitCode == 0) {
+            return;
+          }
+        }
+        final dirPath = p.dirname(srcPath);
+        final openDir = await Process.run('open', <String>[dirPath]);
+        if (openDir.exitCode == 0) {
+          return;
+        }
         _setAuthError('Не удалось открыть папку с логом');
+        return;
       }
+
+      if (Platform.isWindows || Platform.isLinux) {
+        final dirPath = p.dirname(srcPath);
+        final ok = await launchUrl(
+          Uri.directory(dirPath),
+          mode: LaunchMode.externalApplication,
+        );
+        if (!ok) {
+          _setAuthError('Не удалось открыть папку с логом');
+        }
+        return;
+      }
+
+      _setAuthError('Открытие папки с логом недоступно на этой платформе');
     } catch (error) {
       _setAuthError('Не удалось открыть папку с логом: $error');
     }
