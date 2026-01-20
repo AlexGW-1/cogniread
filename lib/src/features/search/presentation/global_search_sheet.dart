@@ -137,6 +137,23 @@ class _GlobalSearchSheetState extends State<GlobalSearchSheet>
     }
   }
 
+  String _rebuildLabel(SearchIndexBooksRebuildProgress? progress) {
+    if (progress == null) {
+      return 'Подготовка…';
+    }
+    if (progress.stage == 'marks') {
+      return 'Индексируем заметки и цитаты…';
+    }
+    final title = progress.currentTitle?.trim();
+    final total = progress.totalBooks;
+    final processed = progress.processedBooks;
+    final base = total > 0 ? 'Книги: $processed/$total' : 'Книги: $processed';
+    if (title == null || title.isEmpty) {
+      return base;
+    }
+    return '$base · $title';
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -147,6 +164,8 @@ class _GlobalSearchSheetState extends State<GlobalSearchSheet>
           final query = _controller.query.trim();
           final searching = _controller.searching;
           final rebuilding = _controller.rebuilding;
+          final rebuildProgress = _controller.rebuildProgress;
+          final cancelingRebuild = _controller.cancelingRebuild;
           final error = _controller.error ?? _controller.status?.lastError;
           final tooShort =
               query.isNotEmpty &&
@@ -203,7 +222,53 @@ class _GlobalSearchSheetState extends State<GlobalSearchSheet>
                   ],
                 ),
                 const SizedBox(height: 12),
-                if (searching || rebuilding) const LinearProgressIndicator(),
+                if (searching) const LinearProgressIndicator(),
+                if (rebuilding) ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: scheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Expanded(
+                              child: Text(
+                                'Индексирование',
+                                style: TextStyle(fontWeight: FontWeight.w600),
+                              ),
+                            ),
+                            TextButton(
+                              onPressed: (cancelingRebuild ||
+                                      rebuildProgress?.stage == 'marks')
+                                  ? null
+                                  : _controller.cancelRebuild,
+                              child: Text(
+                                cancelingRebuild ? 'Отмена…' : 'Отменить',
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        LinearProgressIndicator(
+                          value: rebuildProgress?.fraction,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          _rebuildLabel(rebuildProgress),
+                          style: Theme.of(context).textTheme.bodySmall,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
                 if (error != null && error.trim().isNotEmpty) ...[
                   const SizedBox(height: 10),
                   Container(

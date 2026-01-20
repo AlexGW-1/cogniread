@@ -1,13 +1,56 @@
+import 'dart:async';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:cogniread/src/core/utils/logger.dart';
 import 'package:cogniread/src/core/types/anchor.dart';
 import 'package:cogniread/src/features/library/data/library_store.dart';
 import 'package:cogniread/src/features/search/book_text_extractor.dart';
+import 'package:cogniread/src/features/search/indexing/search_index_books_rebuild_isolate.dart';
 import 'package:cogniread/src/features/search/search_models.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqlite3/sqlite3.dart';
+
+class SearchIndexBooksRebuildProgress {
+  const SearchIndexBooksRebuildProgress({
+    required this.processedBooks,
+    required this.totalBooks,
+    required this.stage,
+    required this.insertedRows,
+    required this.elapsedMs,
+    this.currentTitle,
+  });
+
+  final int processedBooks;
+  final int totalBooks;
+  final String stage;
+  final int insertedRows;
+  final int elapsedMs;
+  final String? currentTitle;
+
+  double? get fraction {
+    if (totalBooks <= 0) {
+      return null;
+    }
+    if (processedBooks <= 0) {
+      return 0;
+    }
+    return processedBooks / totalBooks;
+  }
+}
+
+class SearchIndexBooksRebuildHandle {
+  const SearchIndexBooksRebuildHandle({
+    required this.progress,
+    required this.done,
+    required this.cancel,
+  });
+
+  final Stream<SearchIndexBooksRebuildProgress> progress;
+  final Future<void> done;
+  final Future<void> Function() cancel;
+}
 
 class SearchIndexService {
   factory SearchIndexService({
@@ -321,6 +364,228 @@ class SearchIndexService {
         <Object?>[error.toString()],
       );
       rethrow;
+    }
+  }
+
+  Future<int> libraryBooksCount() async {
+    await _store.init();
+    final entries = await _store.loadAll();
+    return entries.length;
+  }
+
+  Future<SearchIndexBooksRebuildHandle> startBooksRebuildInIsolate() async {
+    await init();
+    final dbPath = _dbPath;
+    if (dbPath == null || dbPath.trim().isEmpty) {
+      throw StateError('Search index file path is not available');
+    }
+
+    await _store.init();
+    final entries = await _store.loadAll();
+    final books = entries
+        .map(
+          (entry) => <String, Object?>{
+            'id': entry.id,
+            'title': entry.title,
+            'author': entry.author ?? '',
+            'localPath': entry.localPath,
+            'tocMode': entry.tocMode.name,
+            'hasStoredToc':
+                entry.tocOfficial.isNotEmpty || entry.tocGenerated.isNotEmpty,
+          },
+        )
+        .toList(growable: false);
+
+    final receive = ReceivePort();
+    SendPort? controlPort;
+    var cancelRequested = false;
+    final progress = StreamController<SearchIndexBooksRebuildProgress>.broadcast();
+    final done = Completer<void>();
+    Isolate? isolate;
+
+    final buildingPath = '$dbPath.building';
+    try {
+      final building = File(buildingPath);
+      if (await building.exists()) {
+        await building.delete();
+      }
+    } catch (_) {}
+
+    Future<void> finalizeSwap() async {
+      progress.add(
+        SearchIndexBooksRebuildProgress(
+          processedBooks: books.length,
+          totalBooks: books.length,
+          stage: 'swap',
+          insertedRows: 0,
+          elapsedMs: 0,
+        ),
+      );
+      await _swapIndexFile(buildingPath);
+    }
+
+    void completeWithError(Object error, [StackTrace? stackTrace]) {
+      if (!done.isCompleted) {
+        done.completeError(error, stackTrace);
+      }
+      progress.close();
+      receive.close();
+      try {
+        isolate?.kill(priority: Isolate.immediate);
+      } catch (_) {}
+    }
+
+    receive.listen((message) async {
+      final map = message is Map ? Map<String, Object?>.from(message) : null;
+      if (map == null) {
+        return;
+      }
+      final type = map['type'] as String?;
+      switch (type) {
+        case 'ready':
+          controlPort = map['controlPort'] as SendPort?;
+          if (cancelRequested) {
+            controlPort?.send('cancel');
+          }
+          break;
+        case 'progress':
+          progress.add(
+            SearchIndexBooksRebuildProgress(
+              processedBooks: (map['processedBooks'] as int?) ?? 0,
+              totalBooks: (map['totalBooks'] as int?) ?? 0,
+              stage: (map['stage'] as String?) ?? 'book',
+              insertedRows: (map['insertedRows'] as int?) ?? 0,
+              elapsedMs: (map['elapsedMs'] as int?) ?? 0,
+              currentTitle: map['currentTitle'] as String?,
+            ),
+          );
+          break;
+        case 'done':
+          try {
+            await finalizeSwap();
+            if (!done.isCompleted) {
+              done.complete();
+            }
+            await progress.close();
+            receive.close();
+          } catch (error, stackTrace) {
+            completeWithError(error, stackTrace);
+          } finally {
+            try {
+              isolate?.kill(priority: Isolate.immediate);
+            } catch (_) {}
+          }
+          break;
+        case 'canceled':
+          try {
+            if (!done.isCompleted) {
+              done.completeError(StateError('Rebuild canceled'));
+            }
+            await progress.close();
+            receive.close();
+          } finally {
+            try {
+              isolate?.kill(priority: Isolate.immediate);
+            } catch (_) {}
+          }
+          break;
+        case 'error':
+          completeWithError(StateError(map['error']?.toString() ?? 'Rebuild failed'));
+          break;
+      }
+    });
+
+    isolate = await Isolate.spawn<Map<String, Object?>>(
+      rebuildSearchBooksIndexIsolate,
+      <String, Object?>{
+        'sendPort': receive.sendPort,
+        'outputPath': buildingPath,
+        'schemaVersion': schemaVersion,
+        'books': books,
+      },
+      errorsAreFatal: true,
+    );
+
+    Future<void> cancel() async {
+      cancelRequested = true;
+      controlPort?.send('cancel');
+    }
+
+    return SearchIndexBooksRebuildHandle(
+      progress: progress.stream,
+      done: done.future,
+      cancel: cancel,
+    );
+  }
+
+  Future<void> _swapIndexFile(String buildingPath) async {
+    final dbPath = _dbPath;
+    if (dbPath == null || dbPath.trim().isEmpty) {
+      throw StateError('Search index file path is not available');
+    }
+    final building = File(buildingPath);
+    if (!await building.exists()) {
+      throw StateError('Rebuild output file missing: $buildingPath');
+    }
+
+    await init();
+    try {
+      _db.execute('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch (_) {}
+    close();
+
+    final original = File(dbPath);
+    final backup = File('$dbPath.bak');
+    final wal = File('$dbPath-wal');
+    final shm = File('$dbPath-shm');
+
+    Future<void> cleanupSidecars() async {
+      try {
+        if (await wal.exists()) {
+          await wal.delete();
+        }
+      } catch (_) {}
+      try {
+        if (await shm.exists()) {
+          await shm.delete();
+        }
+      } catch (_) {}
+    }
+
+    await cleanupSidecars();
+
+    if (await backup.exists()) {
+      try {
+        await backup.delete();
+      } catch (_) {}
+    }
+
+    final attempts = 5;
+    for (var attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        if (await original.exists()) {
+          await original.rename(backup.path);
+        }
+        await building.rename(original.path);
+        await cleanupSidecars();
+        try {
+          if (await backup.exists()) {
+            await backup.delete();
+          }
+        } catch (_) {}
+        await init();
+        return;
+      } catch (error) {
+        if (attempt == attempts - 1) {
+          try {
+            if (await building.exists()) {
+              await building.delete();
+            }
+          } catch (_) {}
+          rethrow;
+        }
+        await Future<void>.delayed(Duration(milliseconds: 80 * (attempt + 1)));
+      }
     }
   }
 
