@@ -2,6 +2,7 @@ import 'package:cogniread/src/core/types/toc.dart';
 import 'package:cogniread/src/core/utils/logger.dart';
 import 'package:cogniread/src/features/sync/data/event_log_store.dart';
 import 'package:cogniread/src/core/services/hive_bootstrap.dart';
+import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 class LibraryEntry {
@@ -387,6 +388,8 @@ class LibraryStore {
     }
     return box;
   }
+
+  ValueListenable<Box<dynamic>> listenable() => _requireBox.listenable();
 
   Future<List<LibraryEntry>> loadAll() async {
     final box = _requireBox;

@@ -24,6 +24,7 @@
     - Book → ReaderScreen
     - Note/Quote → ReaderScreen с jump-to-location
     - Concept → ConceptDetailScreen (позже)
+  - примечание: сейчас реализовано как `GlobalSearchSheet` (modal bottom sheet) из `LibraryScreen`
 
 ### Вкладка 3 — Читалка
 - ReaderScreen(lastOpened | deep link bookId)

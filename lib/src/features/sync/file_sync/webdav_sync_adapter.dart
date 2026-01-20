@@ -84,10 +84,13 @@ class WebDavSyncAdapter implements SyncAdapter {
     if (legacy != null && legacy.isNotEmpty && legacy != _basePath) {
       try {
         await _apiClient.delete(_fullPath(path, basePath: legacy));
-      } on SyncAdapterException catch (error) {
+      } catch (error, stackTrace) {
         // Legacy cleanup is best-effort: ignore errors for old paths.
-        Log.d('WebDAV legacy delete skipped: $error');
-        return;
+        Log.w(
+          'WebDAV legacy delete skipped',
+          error: error,
+          stackTrace: stackTrace,
+        );
       }
     }
   }

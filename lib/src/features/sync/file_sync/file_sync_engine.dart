@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:cogniread/src/features/library/data/free_notes_store.dart';
 import 'package:cogniread/src/features/library/data/library_store.dart';
 import 'package:cogniread/src/core/types/toc.dart';
 import 'package:cogniread/src/features/sync/data/event_log_store.dart';
@@ -14,6 +15,7 @@ class FileSyncEngine {
   FileSyncEngine({
     required SyncAdapter adapter,
     required LibraryStore libraryStore,
+    FreeNotesStore? freeNotesStore,
     required EventLogStore eventLogStore,
     required String deviceId,
     required StorageService storageService,
@@ -21,12 +23,14 @@ class FileSyncEngine {
     this.maxConcurrentBookUploads = 2,
   })  : _adapter = adapter,
         _libraryStore = libraryStore,
+        _freeNotesStore = freeNotesStore,
         _eventLogStore = eventLogStore,
         _deviceId = deviceId,
         _storageService = storageService;
 
   final SyncAdapter _adapter;
   final LibraryStore _libraryStore;
+  final FreeNotesStore? _freeNotesStore;
   final EventLogStore _eventLogStore;
   final String _deviceId;
   final StorageService _storageService;
@@ -136,7 +140,13 @@ class FileSyncEngine {
       final remoteIndex = await _readBooksIndex();
       final localEntries = await _libraryStore.loadAll();
       final now = DateTime.now().toUtc();
-      final result = await _mergeBooks(remoteIndex, localEntries, now);
+      final deletedByFingerprint = _collectLocalBookDeletions();
+      final result = await _mergeBooks(
+        remoteIndex,
+        localEntries,
+        now,
+        deletedByFingerprint,
+      );
       final nextIndex = SyncBooksIndexFile(
         schemaVersion: 1,
         generatedAt: now,
@@ -167,6 +177,7 @@ class FileSyncEngine {
     SyncBooksIndexFile remoteIndex,
     List<LibraryEntry> localEntries,
     DateTime now,
+    Map<String, DateTime> deletedByFingerprint,
   ) async {
     final remoteByFp = <String, SyncBookDescriptor>{
       for (final book in remoteIndex.books) book.fingerprint: book,
@@ -189,10 +200,21 @@ class FileSyncEngine {
       final stat = await file.stat();
       final localDesc = _descriptorFromEntry(entry, stat);
       final remote = remoteByFp[entry.fingerprint];
-      final shouldUpload = remote == null ||
-          remote.deleted ||
+      final shouldUpload =
+          remote == null ||
           _isNewer(localDesc.updatedAt, remote.updatedAt) ||
           remote.size != localDesc.size;
+
+      if (remote != null && remote.deleted) {
+        if (_isNewer(localDesc.updatedAt, remote.updatedAt)) {
+          // Resurrect locally modified file after a remote tombstone.
+        } else {
+          // Remote tombstone wins: remove local copy and keep deletion in index.
+          await _removeLocalBook(entry);
+          nextIndex[remote.fingerprint] = remote;
+          continue;
+        }
+      }
       if (!shouldUpload) {
         nextIndex[localDesc.fingerprint] = remote;
         continue;
@@ -215,11 +237,24 @@ class FileSyncEngine {
       if (nextIndex.containsKey(remote.fingerprint)) {
         continue;
       }
+      final deletedAt = deletedByFingerprint[remote.fingerprint];
       final local = localByFp[remote.fingerprint];
+      if (deletedAt != null &&
+          !remote.deleted &&
+          _isNewer(deletedAt, remote.updatedAt)) {
+        final tombstone = _tombstoneFromRemote(remote, deletedAt);
+        await _deleteRemoteBookFile(remote);
+        if (local != null) {
+          await _removeLocalBook(local);
+        }
+        nextIndex[remote.fingerprint] = tombstone;
+        continue;
+      }
       if (remote.deleted) {
         if (local != null) {
           await _removeLocalBook(local);
         }
+        await _deleteRemoteBookFile(remote);
         nextIndex[remote.fingerprint] = remote;
         continue;
       }
@@ -246,6 +281,64 @@ class FileSyncEngine {
       uploaded: uploaded,
       downloaded: downloaded,
     );
+  }
+
+  Map<String, DateTime> _collectLocalBookDeletions() {
+    final deletedByFingerprint = <String, DateTime>{};
+    final events = _eventLogStore.listEvents();
+    for (final event in events) {
+      if (event.entityType != 'book' || event.op != 'delete') {
+        continue;
+      }
+      final payload = _coerceMap(event.payload);
+      final fingerprint =
+          (payload['fingerprint'] as String?) ??
+          (payload['hash'] as String?) ??
+          event.entityId;
+      if (fingerprint.isEmpty) {
+        continue;
+      }
+      final deletedAt = _extractUpdatedAt(payload) ?? event.createdAt.toUtc();
+      final existing = deletedByFingerprint[fingerprint];
+      if (existing == null || deletedAt.isAfter(existing)) {
+        deletedByFingerprint[fingerprint] = deletedAt;
+      }
+    }
+    return deletedByFingerprint;
+  }
+
+  SyncBookDescriptor _tombstoneFromRemote(
+    SyncBookDescriptor remote,
+    DateTime deletedAt,
+  ) {
+    return SyncBookDescriptor(
+      id: remote.id,
+      title: remote.title,
+      author: remote.author,
+      fingerprint: remote.fingerprint,
+      size: remote.size,
+      updatedAt: deletedAt.toUtc(),
+      extension: remote.extension,
+      path: remote.path,
+      deleted: true,
+    );
+  }
+
+  Future<void> _deleteRemoteBookFile(SyncBookDescriptor remote) async {
+    final remotePath = remote.path ?? _defaultBookPath(remote);
+    try {
+      await _adapter.deleteFile(remotePath);
+    } on SyncAdapterException catch (error) {
+      if (_isNotFound(error)) {
+        return;
+      }
+      Log.d('FileSyncEngine: failed to delete remote book $remotePath: $error');
+      if (_isClientError(error)) {
+        rethrow;
+      }
+    } catch (error) {
+      Log.d('FileSyncEngine: failed to delete remote book $remotePath: $error');
+    }
   }
 
   Future<void> _runJobs(
@@ -609,9 +702,41 @@ class FileSyncEngine {
         return _applyBookmarkEvent(event, payload);
       case 'reading_position':
         return _applyReadingPositionEvent(event, payload);
+      case 'free_note':
+        return _applyFreeNoteEvent(event, payload);
       default:
         return false;
     }
+  }
+
+  Future<bool> _applyFreeNoteEvent(
+    EventLogEntry event,
+    Map<String, Object?> payload,
+  ) async {
+    final store = _freeNotesStore;
+    if (store == null) {
+      return false;
+    }
+    final incomingAt = _extractUpdatedAt(payload) ?? event.createdAt;
+    final noteId = payload['id'] as String? ?? event.entityId;
+    if (noteId.trim().isEmpty) {
+      return false;
+    }
+    final current = await store.getById(noteId);
+    final currentAt = _effectiveUpdatedAt(current?.updatedAt, current?.createdAt);
+    if (event.op == 'delete') {
+      if (!_isNewer(incomingAt, currentAt)) {
+        return false;
+      }
+      await store.removeRaw(noteId);
+      return true;
+    }
+    if (!_isNewer(incomingAt, currentAt) && current != null) {
+      return false;
+    }
+    final note = FreeNote.fromMap(payload);
+    await store.upsert(note);
+    return true;
   }
 
   Future<bool> _applyNoteEvent(

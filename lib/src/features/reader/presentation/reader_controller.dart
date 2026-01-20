@@ -8,6 +8,7 @@ import 'package:cogniread/src/core/types/toc.dart';
 import 'package:cogniread/src/core/utils/logger.dart';
 import 'package:cogniread/src/core/types/anchor.dart';
 import 'package:cogniread/src/features/library/data/library_store.dart';
+import 'package:cogniread/src/features/search/search_index_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:xml/xml.dart';
@@ -60,10 +61,13 @@ class _ReaderLoadException implements Exception {
 class ReaderController extends ChangeNotifier {
   ReaderController({LibraryStore? store, bool? perfLogsEnabled})
       : _store = store ?? LibraryStore(),
-        _perfLogsEnabled = perfLogsEnabled ?? kDebugMode;
+        _perfLogsEnabled = perfLogsEnabled ?? kDebugMode {
+    _searchIndex = SearchIndexService(store: _store);
+  }
 
   final LibraryStore _store;
   final bool _perfLogsEnabled;
+  late final SearchIndexService _searchIndex;
 
   static const int _cacheLimit = 3;
   static final Map<String, List<ReaderChapter>> _chapterCache =
@@ -215,6 +219,7 @@ class ReaderController extends ChangeNotifier {
   @override
   void dispose() {
     _searchDebounce?.cancel();
+    _searchIndex.close();
     super.dispose();
   }
 
@@ -320,6 +325,7 @@ class ReaderController extends ChangeNotifier {
     await _store.addHighlight(bookId, highlight);
     _highlights = [..._highlights, highlight];
     notifyListeners();
+    unawaited(_searchIndex.indexMarksForBook(bookId));
     return true;
   }
 
@@ -349,6 +355,7 @@ class ReaderController extends ChangeNotifier {
         )
         .toList();
     notifyListeners();
+    unawaited(_searchIndex.indexMarksForBook(bookId));
     return true;
   }
 
@@ -444,6 +451,7 @@ class ReaderController extends ChangeNotifier {
     await _store.addNote(bookId, note);
     _notes = [..._notes, note];
     notifyListeners();
+    unawaited(_searchIndex.indexMarksForBook(bookId));
     return true;
   }
 
@@ -456,6 +464,7 @@ class ReaderController extends ChangeNotifier {
     await _store.removeNote(bookId, noteId);
     _notes = _notes.where((item) => item.id != noteId).toList();
     notifyListeners();
+    unawaited(_searchIndex.indexMarksForBook(bookId));
   }
 
   Future<void> removeHighlight(String highlightId) async {
@@ -467,6 +476,7 @@ class ReaderController extends ChangeNotifier {
     await _store.removeHighlight(bookId, highlightId);
     _highlights = _highlights.where((item) => item.id != highlightId).toList();
     notifyListeners();
+    unawaited(_searchIndex.indexMarksForBook(bookId));
   }
 
   void _setLoading() {

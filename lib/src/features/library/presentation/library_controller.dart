@@ -9,6 +9,7 @@ import 'package:cogniread/src/core/services/storage_service_impl.dart';
 import 'package:cogniread/src/core/types/toc.dart';
 import 'package:cogniread/src/core/utils/logger.dart';
 import 'package:cogniread/src/features/library/data/library_preferences_store.dart';
+import 'package:cogniread/src/features/library/data/free_notes_store.dart';
 import 'package:cogniread/src/features/library/data/library_store.dart';
 import 'package:cogniread/src/features/sync/data/event_log_store.dart';
 import 'package:cogniread/src/features/sync/file_sync/file_sync_engine.dart';
@@ -38,6 +39,7 @@ import 'package:cogniread/src/features/sync/file_sync/sync_auth_store.dart';
 import 'package:cogniread/src/features/sync/file_sync/sync_errors.dart';
 import 'package:cogniread/src/features/sync/file_sync/sync_provider.dart';
 import 'package:cogniread/src/features/sync/file_sync/stored_oauth_token_provider.dart';
+import 'package:cogniread/src/features/search/search_index_service.dart';
 import 'package:epubx/epubx.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
@@ -104,16 +106,9 @@ class LibraryBookItem {
   final List<Highlight> highlights;
 }
 
-enum LibraryViewMode {
-  list,
-  grid,
-}
+enum LibraryViewMode { list, grid }
 
-enum LibrarySearchResultType {
-  book,
-  note,
-  highlight,
-}
+enum LibrarySearchResultType { book, note, highlight }
 
 class LibrarySearchResult {
   const LibrarySearchResult({
@@ -135,30 +130,66 @@ class LibrarySearchResult {
   final String? markId;
 }
 
+enum NotesItemType { note, highlight, freeNote }
+
+class NotesItem {
+  const NotesItem({
+    required this.type,
+    required this.id,
+    required this.color,
+    required this.createdAt,
+    required this.updatedAt,
+    this.bookId,
+    this.bookTitle,
+    this.bookAuthor,
+    this.anchor,
+    this.excerpt = '',
+    this.text = '',
+  });
+
+  final NotesItemType type;
+  final String id;
+  final String? bookId;
+  final String? bookTitle;
+  final String? bookAuthor;
+  final String? anchor;
+  final String excerpt;
+  final String text;
+  final String color;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  String get key => '${type.name}:${bookId ?? ''}:$id';
+}
+
 class LibraryController extends ChangeNotifier {
-  static const bool _showAllSyncProviders =
-      bool.fromEnvironment(
-        'COGNIREAD_SHOW_ALL_SYNC_PROVIDERS',
-        defaultValue: false,
-      );
+  static const bool _showAllSyncProviders = bool.fromEnvironment(
+    'COGNIREAD_SHOW_ALL_SYNC_PROVIDERS',
+    defaultValue: false,
+  );
   static bool get _developerMode => _showAllSyncProviders;
   LibraryController({
     StorageService? storageService,
     LibraryStore? store,
+    FreeNotesStore? freeNotesStore,
     LibraryPreferencesStore? preferencesStore,
     Future<String?> Function()? pickEpubPath,
     SyncAdapter? syncAdapter,
     bool stubImport = false,
-  })  : _storageService = storageService ?? AppStorageService(),
-        _store = store ?? LibraryStore(),
-        _preferencesStore = preferencesStore ?? LibraryPreferencesStore(),
-        _pickEpubPath = pickEpubPath,
-        _fallbackSyncAdapter = syncAdapter,
-        _syncAdapter = syncAdapter,
-        _stubImport = stubImport;
+  }) : _storageService = storageService ?? AppStorageService(),
+       _store = store ?? LibraryStore(),
+       _freeNotesStore = freeNotesStore ?? FreeNotesStore(),
+       _preferencesStore = preferencesStore ?? LibraryPreferencesStore(),
+       _pickEpubPath = pickEpubPath,
+       _fallbackSyncAdapter = syncAdapter,
+       _syncAdapter = syncAdapter,
+       _stubImport = stubImport {
+    _searchIndex = SearchIndexService(store: _store);
+  }
 
   final StorageService _storageService;
   final LibraryStore _store;
+  final FreeNotesStore _freeNotesStore;
   final LibraryPreferencesStore _preferencesStore;
   final Future<String?> Function()? _pickEpubPath;
   final SyncAdapter? _fallbackSyncAdapter;
@@ -167,6 +198,8 @@ class LibraryController extends ChangeNotifier {
   Future<void>? _storeReady;
   final EventLogStore _syncEventLogStore = EventLogStore();
   final SyncAuthStore _syncAuthStore = SyncAuthStore();
+  late final SearchIndexService _searchIndex;
+  Listenable? _notesDataListenable;
   SyncOAuthConfig? _oauthConfig;
   FileSyncEngine? _syncEngine;
   bool _syncInProgress = false;
@@ -181,8 +214,7 @@ class LibraryController extends ChangeNotifier {
   SmbCredentials? _smbCredentials;
   final AppLinks _appLinks = AppLinks();
   StreamSubscription<Uri?>? _authLinkSub;
-  final Map<SyncProvider, bool> _providerConnected =
-      <SyncProvider, bool>{};
+  final Map<SyncProvider, bool> _providerConnected = <SyncProvider, bool>{};
   String? _yandexPkceVerifier;
   String? _dropboxPkceVerifier;
   Timer? _autoSyncTimer;
@@ -209,6 +241,7 @@ class LibraryController extends ChangeNotifier {
       const <LibrarySearchResult>[];
   Timer? _globalSearchDebounce;
   int _globalSearchNonce = 0;
+  List<String> _searchHistory = <String>[];
   static const Duration _autoSyncInterval = Duration(minutes: 15);
   static const Duration _syncDebounce = Duration(seconds: 5);
   DateTime? _lastSyncAt;
@@ -222,6 +255,8 @@ class LibraryController extends ChangeNotifier {
   String get query => _query;
   LibraryViewMode get viewMode => _viewMode;
   SyncProvider get syncProvider => _syncProvider;
+
+  Listenable get notesDataListenable => _notesDataListenable ?? this;
   bool get syncInProgress => _syncInProgress;
   bool get authInProgress => _authInProgress;
   bool get connectionInProgress => _connectionInProgress;
@@ -242,6 +277,7 @@ class LibraryController extends ChangeNotifier {
   bool? get lastSyncOk => _lastSyncOk;
   String? get lastSyncSummary => _lastSyncSummary;
   String? get logFilePath => Log.logFilePath;
+  SearchIndexService get searchIndex => _searchIndex;
   String get syncAdapterLabel =>
       _syncAdapter == null ? 'none' : _providerLabel(_syncProvider);
   bool get requiresManualOAuthCode {
@@ -251,6 +287,7 @@ class LibraryController extends ChangeNotifier {
     final redirectUri = _oauthConfig?.yandexDisk?.redirectUri ?? '';
     return redirectUri.contains('oauth.yandex.ru/verification_code');
   }
+
   List<SyncProvider> get availableSyncProviders {
     final config = _oauthConfig;
     final candidates = <SyncProvider>[
@@ -273,10 +310,12 @@ class LibraryController extends ChangeNotifier {
         )
         .toList();
   }
+
   String get globalSearchQuery => _globalSearchQuery;
   bool get globalSearching => _globalSearching;
   List<LibrarySearchResult> get globalSearchResults =>
       List<LibrarySearchResult>.unmodifiable(_globalSearchResults);
+  List<String> get searchHistory => List<String>.unmodifiable(_searchHistory);
 
   List<LibraryBookItem> get filteredBooks {
     final needle = _query.toLowerCase().trim();
@@ -340,7 +379,9 @@ class LibraryController extends ChangeNotifier {
       if (_showAllSyncProviders) {
         _setAuthError('Подключение не удалось: $error');
       } else {
-        _setAuthError('Подключение не удалось. Проверь код и попробуй ещё раз.');
+        _setAuthError(
+          'Подключение не удалось. Проверь код и попробуй ещё раз.',
+        );
       }
     } finally {
       _authInProgress = false;
@@ -375,8 +416,15 @@ class LibraryController extends ChangeNotifier {
         return;
       }
       _storeReady = _store.init();
+      await _storeReady;
+      await _freeNotesStore.init();
+      _notesDataListenable = Listenable.merge(<Listenable>[
+        _store.listenable(),
+        _freeNotesStore.listenable(),
+      ]);
       await _preferencesStore.init();
       await _syncAuthStore.init();
+      await _loadSearchHistory();
       await _loadOAuthConfig();
       await _initAuthLinks();
       await _ensureDeviceId();
@@ -419,6 +467,323 @@ class LibraryController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> _loadSearchHistory() async {
+    try {
+      _searchHistory = await _preferencesStore.loadSearchHistory();
+      notifyListeners();
+    } catch (_) {
+      _searchHistory = <String>[];
+    }
+  }
+
+  Future<void> addSearchHistoryQuery(String query) async {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) {
+      return;
+    }
+    _searchHistory = <String>[
+      trimmed,
+      ..._searchHistory.where((item) => item != trimmed),
+    ];
+    if (_searchHistory.length > 50) {
+      _searchHistory = _searchHistory.sublist(0, 50);
+    }
+    notifyListeners();
+    try {
+      await _preferencesStore.saveSearchHistory(_searchHistory);
+    } catch (error) {
+      Log.d('Failed to save search history: $error');
+    }
+  }
+
+  Future<void> removeSearchHistoryQuery(String query) async {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) {
+      return;
+    }
+    final next = _searchHistory.where((item) => item != trimmed).toList();
+    if (next.length == _searchHistory.length) {
+      return;
+    }
+    _searchHistory = next;
+    notifyListeners();
+    try {
+      await _preferencesStore.saveSearchHistory(_searchHistory);
+    } catch (error) {
+      Log.d('Failed to save search history: $error');
+    }
+  }
+
+  Future<void> clearSearchHistory() async {
+    if (_searchHistory.isEmpty) {
+      return;
+    }
+    _searchHistory = <String>[];
+    notifyListeners();
+    try {
+      await _preferencesStore.clearSearchHistory();
+    } catch (error) {
+      Log.d('Failed to clear search history: $error');
+    }
+  }
+
+  Future<List<NotesItem>> loadAllNotesItems() async {
+    if (_stubImport) {
+      return const <NotesItem>[];
+    }
+    await _storeReady;
+    await _freeNotesStore.init();
+    try {
+      final entries = await _store.loadAll();
+      final items = <NotesItem>[];
+      for (final entry in entries) {
+        for (final note in entry.notes) {
+          items.add(
+            NotesItem(
+              type: NotesItemType.note,
+              id: note.id,
+              bookId: entry.id,
+              bookTitle: entry.title,
+              bookAuthor: entry.author,
+              anchor: note.anchor,
+              excerpt: note.excerpt,
+              text: note.noteText,
+              color: note.color,
+              createdAt: note.createdAt,
+              updatedAt: note.updatedAt,
+            ),
+          );
+        }
+        for (final highlight in entry.highlights) {
+          items.add(
+            NotesItem(
+              type: NotesItemType.highlight,
+              id: highlight.id,
+              bookId: entry.id,
+              bookTitle: entry.title,
+              bookAuthor: entry.author,
+              anchor: highlight.anchor,
+              excerpt: highlight.excerpt,
+              color: highlight.color,
+              createdAt: highlight.createdAt,
+              updatedAt: highlight.updatedAt,
+            ),
+          );
+        }
+      }
+      final freeNotes = await _freeNotesStore.loadAll();
+      for (final note in freeNotes) {
+        items.add(
+          NotesItem(
+            type: NotesItemType.freeNote,
+            id: note.id,
+            text: note.text,
+            color: note.color,
+            createdAt: note.createdAt,
+            updatedAt: note.updatedAt,
+          ),
+        );
+      }
+      items.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+      return items;
+    } catch (error) {
+      Log.d('Failed to load notes items: $error');
+      rethrow;
+    }
+  }
+
+  Future<void> addFreeNote({
+    required String text,
+    required String color,
+  }) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) {
+      return;
+    }
+    await _freeNotesStore.init();
+    final now = DateTime.now().toUtc();
+    final note = FreeNote(
+      id: 'fn-${now.microsecondsSinceEpoch}',
+      text: trimmed,
+      color: color,
+      createdAt: now,
+      updatedAt: now,
+    );
+    await _freeNotesStore.add(note);
+    _setInfo('Заметка сохранена');
+    notifyListeners();
+  }
+
+  Future<void> updateFreeNote({
+    required String id,
+    required String text,
+    required String color,
+  }) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) {
+      return;
+    }
+    await _freeNotesStore.init();
+    final existing = await _freeNotesStore.getById(id);
+    if (existing == null) {
+      return;
+    }
+    final now = DateTime.now().toUtc();
+    final updated = FreeNote(
+      id: existing.id,
+      text: trimmed,
+      color: color,
+      createdAt: existing.createdAt,
+      updatedAt: now,
+    );
+    await _freeNotesStore.update(updated);
+    _setInfo('Заметка обновлена');
+    notifyListeners();
+  }
+
+  Future<void> deleteNotesItems(List<NotesItem> items) async {
+    if (items.isEmpty) {
+      return;
+    }
+    await _storeReady;
+    await _freeNotesStore.init();
+    for (final item in items) {
+      switch (item.type) {
+        case NotesItemType.note:
+          final bookId = item.bookId;
+          if (bookId == null) {
+            continue;
+          }
+          await _store.removeNote(bookId, item.id);
+          break;
+        case NotesItemType.highlight:
+          final bookId = item.bookId;
+          if (bookId == null) {
+            continue;
+          }
+          await _store.removeHighlight(bookId, item.id);
+          break;
+        case NotesItemType.freeNote:
+          await _freeNotesStore.remove(item.id);
+          break;
+      }
+    }
+    _setInfo('Удалено: ${items.length}');
+    notifyListeners();
+  }
+
+  Future<void> exportNotesItems(List<NotesItem> items) async {
+    if (items.isEmpty) {
+      return;
+    }
+    final now = DateTime.now().toUtc();
+    final timestamp = now
+        .toIso8601String()
+        .replaceAll(':', '-')
+        .replaceAll('.', '-');
+    final suggestedName = 'cogniread_notes_$timestamp.zip';
+    final destPath = await FilePicker.platform.saveFile(
+      dialogTitle: 'Экспорт заметок',
+      fileName: suggestedName,
+      type: FileType.custom,
+      allowedExtensions: const <String>['zip'],
+    );
+    if (destPath == null || destPath.trim().isEmpty) {
+      return;
+    }
+    try {
+      final archive = Archive();
+      final jsonText = _buildNotesExportJson(items, generatedAt: now);
+      final mdText = _buildNotesExportMarkdown(items, generatedAt: now);
+      final jsonBytes = utf8.encode(jsonText);
+      final mdBytes = utf8.encode(mdText);
+      archive.addFile(ArchiveFile('notes.json', jsonBytes.length, jsonBytes));
+      archive.addFile(ArchiveFile('notes.md', mdBytes.length, mdBytes));
+      final bytes = ZipEncoder().encode(archive);
+      if (bytes == null) {
+        _setError('Не удалось подготовить экспорт');
+        notifyListeners();
+        return;
+      }
+      await File(destPath).writeAsBytes(bytes, flush: true);
+      _setInfo('Экспорт сохранён: $destPath');
+      notifyListeners();
+    } catch (error) {
+      _setError('Не удалось сохранить экспорт: $error');
+      notifyListeners();
+    }
+  }
+
+  String _buildNotesExportJson(
+    List<NotesItem> items, {
+    required DateTime generatedAt,
+  }) {
+    final sorted = items.toList()
+      ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    final payload = <String, Object?>{
+      'generatedAt': generatedAt.toIso8601String(),
+      'items':
+          sorted.map((item) {
+            return <String, Object?>{
+              'type':
+                  switch (item.type) {
+                    NotesItemType.note => 'note',
+                    NotesItemType.highlight => 'highlight',
+                    NotesItemType.freeNote => 'free_note',
+                  },
+              'id': item.id,
+              'bookId': item.bookId,
+              'bookTitle': item.bookTitle,
+              'bookAuthor': item.bookAuthor,
+              'anchor': item.anchor,
+              'excerpt': item.excerpt,
+              'text': item.text,
+              'color': item.color,
+              'createdAt': item.createdAt.toIso8601String(),
+              'updatedAt': item.updatedAt.toIso8601String(),
+            };
+          }).toList(growable: false),
+    };
+    return const JsonEncoder.withIndent('  ').convert(payload);
+  }
+
+  String _buildNotesExportMarkdown(
+    List<NotesItem> items, {
+    required DateTime generatedAt,
+  }) {
+    final sorted = items.toList()
+      ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    final buffer = StringBuffer()
+      ..writeln('# CogniRead — Export (Notes)')
+      ..writeln()
+      ..writeln('GeneratedAt: ${generatedAt.toIso8601String()}')
+      ..writeln();
+    for (final item in sorted) {
+      final date = item.updatedAt.toIso8601String();
+      final color = item.color;
+      final title =
+          item.type == NotesItemType.freeNote
+              ? 'Без книги'
+              : (item.bookTitle ?? 'Без названия');
+      final typeLabel =
+          switch (item.type) {
+            NotesItemType.note => 'Заметка',
+            NotesItemType.highlight => 'Выделение',
+            NotesItemType.freeNote => 'Заметка',
+          };
+      final text = item.text.trim();
+      final excerpt = item.excerpt.trim();
+      buffer.writeln('- [$date] ($color) $title · $typeLabel');
+      if (text.isNotEmpty) {
+        buffer.writeln('  $text');
+      }
+      if (excerpt.isNotEmpty) {
+        buffer.writeln('  > $excerpt');
+      }
+    }
+    return buffer.toString().trimRight();
+  }
+
   Future<void> setViewMode(LibraryViewMode mode) async {
     if (_viewMode == mode) {
       return;
@@ -431,8 +796,8 @@ class LibraryController extends ChangeNotifier {
   }
 
   Future<void> setSyncProvider(SyncProvider provider) async {
-    final normalized = provider == SyncProvider.synologyDrive ||
-            provider == SyncProvider.smb
+    final normalized =
+        provider == SyncProvider.synologyDrive || provider == SyncProvider.smb
         ? SyncProvider.webDav
         : provider;
     if (!_developerMode && !_isProviderUsable(normalized)) {
@@ -598,9 +963,7 @@ class LibraryController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> resetSyncSettingsForTesting({
-    bool resetDeviceId = true,
-  }) async {
+  Future<void> resetSyncSettingsForTesting({bool resetDeviceId = true}) async {
     if (_syncInProgress || _authInProgress || _connectionInProgress) {
       _setAuthError('Дождись окончания операции и повтори');
       return;
@@ -724,10 +1087,112 @@ class LibraryController extends ChangeNotifier {
     }
   }
 
+  Future<void> uploadDiagnosticsToCloud({
+    bool includeSearchIndex = true,
+    int maxLogBytes = 512 * 1024,
+  }) async {
+    final adapter = _syncAdapter;
+    if (adapter == null || !isSyncProviderConnected) {
+      _setAuthError('Синхронизация не подключена');
+      return;
+    }
+    final deviceId = await _ensureDeviceId();
+    final now = DateTime.now().toUtc();
+    final timestamp = now
+        .toIso8601String()
+        .replaceAll(':', '-')
+        .replaceAll('.', '-');
+
+    final archive = Archive();
+
+    final logPath = logFilePath;
+    if (logPath != null && logPath.trim().isNotEmpty) {
+      try {
+        final bytes = await _readTailBytes(File(logPath), maxBytes: maxLogBytes);
+        if (bytes != null && bytes.isNotEmpty) {
+          archive.addFile(ArchiveFile('cogniread.log', bytes.length, bytes));
+        }
+      } catch (error) {
+        Log.d('Diagnostics upload: failed to read log: $error');
+      }
+    }
+
+    File? snapshot;
+    if (includeSearchIndex) {
+      try {
+        snapshot = await _searchIndex.exportSnapshot(
+          fileName: 'search_index_snapshot_$timestamp.sqlite',
+        );
+        if (snapshot != null && await snapshot.exists()) {
+          final bytes = await snapshot.readAsBytes();
+          if (bytes.isNotEmpty) {
+            archive.addFile(
+              ArchiveFile('search_index.sqlite', bytes.length, bytes),
+            );
+          }
+        }
+      } catch (error) {
+        Log.d('Diagnostics upload: failed to export search index: $error');
+      } finally {
+        if (snapshot != null) {
+          try {
+            await snapshot.delete();
+          } catch (_) {}
+        }
+      }
+    }
+
+    if (archive.files.isEmpty) {
+      _setAuthError('Нечего выгружать');
+      return;
+    }
+    final bytes = ZipEncoder().encode(archive);
+    if (bytes == null || bytes.isEmpty) {
+      _setAuthError('Не удалось подготовить архив');
+      return;
+    }
+    final remotePath = 'diagnostics/$deviceId/cogniread_diagnostics_$timestamp.zip';
+    try {
+      await adapter.putFile(
+        remotePath,
+        bytes,
+        contentType: 'application/zip',
+      );
+      _setInfo('Диагностика выгружена: $remotePath');
+    } catch (error) {
+      _setAuthError('Не удалось выгрузить диагностику: $error');
+    }
+  }
+
   Future<void> syncNow() async {
     _autoSyncDisabled = false;
     _restartAutoSyncTimer();
     await _runFileSync(force: true);
+  }
+
+  Future<List<int>?> _readTailBytes(File file, {required int maxBytes}) async {
+    if (maxBytes <= 0) {
+      return null;
+    }
+    if (!await file.exists()) {
+      return null;
+    }
+    RandomAccessFile? raf;
+    try {
+      raf = await file.open();
+      final length = await raf.length();
+      if (length <= 0) {
+        return null;
+      }
+      final start = length > maxBytes ? length - maxBytes : 0;
+      await raf.setPosition(start);
+      final toRead = length - start;
+      return await raf.read(toRead);
+    } finally {
+      try {
+        await raf?.close();
+      } catch (_) {}
+    }
   }
 
   Future<void> importEpub() async {
@@ -763,7 +1228,9 @@ class LibraryController extends ChangeNotifier {
         final existingMissing = existingPath == null
             ? true
             : !(await File(existingPath).exists());
-        Log.d('Import book existingPath=$existingPath missing=$existingMissing');
+        Log.d(
+          'Import book existingPath=$existingPath missing=$existingMissing',
+        );
         final index = _books.indexWhere((book) => book.id == stored.hash);
         final listMissing = index != -1 && _books[index].isMissing;
         if (existing != null && (existingMissing || listMissing)) {
@@ -789,6 +1256,7 @@ class LibraryController extends ChangeNotifier {
           if (existingMissing) {
             await _store.upsert(repaired);
           }
+          unawaited(_searchIndex.indexBook(repaired.id));
           if (index != -1) {
             _books[index] = LibraryBookItem.fromEntry(
               existingMissing ? repaired : existing,
@@ -843,6 +1311,7 @@ class LibraryController extends ChangeNotifier {
         tocMode: TocMode.official,
       );
       await _store.upsert(entry);
+      unawaited(_searchIndex.indexBook(entry.id));
       _books.add(LibraryBookItem.fromEntry(entry, isMissing: false));
       _books.sort(_sortByLastOpenedAt);
       notifyListeners();
@@ -865,7 +1334,9 @@ class LibraryController extends ChangeNotifier {
     final book = _books[index];
     try {
       await _storeReady;
+      await _logBookDeleteForSync(book);
       await _store.remove(book.id);
+      unawaited(_searchIndex.deleteBook(book.id));
       final file = File(book.storedPath);
       if (await file.exists()) {
         await file.delete();
@@ -888,12 +1359,36 @@ class LibraryController extends ChangeNotifier {
     }
   }
 
+  Future<void> _logBookDeleteForSync(LibraryBookItem book) async {
+    try {
+      await _syncEventLogStore.init();
+      final now = DateTime.now().toUtc();
+      await _syncEventLogStore.addEvent(
+        EventLogEntry(
+          id: 'evt-${now.microsecondsSinceEpoch}',
+          entityType: 'book',
+          entityId: book.hash,
+          op: 'delete',
+          payload: <String, Object?>{
+            'bookId': book.id,
+            'fingerprint': book.hash,
+            'updatedAt': now.toIso8601String(),
+          },
+          createdAt: now,
+        ),
+      );
+    } catch (error) {
+      Log.d('Book deletion sync event write failed: $error');
+    }
+  }
+
   Future<void> clearLibrary() async {
     _books.clear();
     notifyListeners();
     try {
       await _storeReady;
       await _store.clear();
+      unawaited(_searchIndex.resetIndexForTesting());
       final dirPath = await _storageService.appStoragePath();
       final dir = Directory(dirPath);
       if (await dir.exists()) {
@@ -1083,8 +1578,9 @@ class LibraryController extends ChangeNotifier {
   Future<String?> _pickBookFromFilePicker() async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions:
-          _supportedExtensions.map((ext) => ext.replaceFirst('.', '')).toList(),
+      allowedExtensions: _supportedExtensions
+          .map((ext) => ext.replaceFirst('.', ''))
+          .toList(),
       withData: false,
     );
     if (result == null || result.files.isEmpty) {
@@ -1132,8 +1628,7 @@ class LibraryController extends ChangeNotifier {
       } else if (extension == '.fb2') {
         cover = _readFb2CoverFromBytes(await File(path).readAsBytes());
       } else if (extension == '.zip') {
-        cover =
-            _readFb2CoverFromZipBytes(await File(path).readAsBytes());
+        cover = _readFb2CoverFromZipBytes(await File(path).readAsBytes());
       }
       if (cover == null || cover.bytes.isEmpty) {
         return null;
@@ -1353,6 +1848,24 @@ class LibraryController extends ChangeNotifier {
           await _syncAuthStore.clearSynologyCredentials();
         }
       }
+      final storedWebDav = _webDavCredentials;
+      if (storedWebDav != null) {
+        final parsed = Uri.tryParse(storedWebDav.baseUrl);
+        if (parsed != null) {
+          final normalizedBase = _normalizeWebDavBaseUri(parsed).toString();
+          if (normalizedBase != storedWebDav.baseUrl) {
+            final updated = WebDavCredentials(
+              baseUrl: normalizedBase,
+              username: storedWebDav.username,
+              password: storedWebDav.password,
+              allowInsecure: storedWebDav.allowInsecure,
+              syncPath: storedWebDav.syncPath,
+            );
+            await _syncAuthStore.saveWebDavCredentials(updated);
+            _webDavCredentials = updated;
+          }
+        }
+      }
       _smbCredentials = await _syncAuthStore.loadSmbCredentials();
       _updateNasConnection();
       notifyListeners();
@@ -1424,10 +1937,7 @@ class LibraryController extends ChangeNotifier {
         // Пишем в корень App Folder Dropbox (без дополнительных вложенных папок),
         // чтобы избежать неожиданных конфликтов пути.
         const basePath = '';
-        return DropboxSyncAdapter(
-          apiClient: apiClient,
-          basePath: basePath,
-        );
+        return DropboxSyncAdapter(apiClient: apiClient, basePath: basePath);
       case SyncProvider.oneDrive:
         final oneDriveConfig = config.oneDrive;
         if (oneDriveConfig == null) {
@@ -1468,11 +1978,7 @@ class LibraryController extends ChangeNotifier {
       return null;
     }
     if (webDav != null && smb != null) {
-      return FallbackSyncAdapter(
-        primary: webDav,
-        secondary: smb,
-        label: 'NAS',
-      );
+      return FallbackSyncAdapter(primary: webDav, secondary: smb, label: 'NAS');
     }
     return webDav ?? smb;
   }
@@ -1482,19 +1988,14 @@ class LibraryController extends ChangeNotifier {
     if (credentials == null) {
       return null;
     }
-    final resolved = await _resolveWebDavCredentials(
-      credentials: credentials,
-    );
+    final resolved = await _resolveWebDavCredentials(credentials: credentials);
     final baseUri = Uri.tryParse(resolved.baseUrl);
     if (baseUri == null) {
       return null;
     }
     final apiClient = HttpWebDavApiClient(
       baseUri: baseUri,
-      auth: WebDavAuth.basic(
-        resolved.username,
-        resolved.password,
-      ),
+      auth: WebDavAuth.basic(resolved.username, resolved.password),
       allowInsecure: resolved.allowInsecure,
     );
     return WebDavSyncAdapter(
@@ -1511,10 +2012,7 @@ class LibraryController extends ChangeNotifier {
     final syncPath = _webDavCredentials?.syncPath ?? 'cogniread';
     final normalized = _normalizeWebDavSyncPath(syncPath);
     final basePath = normalized.isEmpty ? '' : normalized;
-    return SmbSyncAdapter(
-      mountPath: credentials.mountPath,
-      basePath: basePath,
-    );
+    return SmbSyncAdapter(mountPath: credentials.mountPath, basePath: basePath);
   }
 
   Future<void> connectSyncProvider() async {
@@ -1630,10 +2128,7 @@ class LibraryController extends ChangeNotifier {
         refresh: false,
       );
     } else {
-      await _clearSmbCredentials(
-        refresh: false,
-        clearAuthError: webDavSaved,
-      );
+      await _clearSmbCredentials(refresh: false, clearAuthError: webDavSaved);
     }
     _updateNasConnection();
     await _refreshSyncAdapter();
@@ -1895,10 +2390,7 @@ class LibraryController extends ChangeNotifier {
     return '$label проверка не удалась: $error';
   }
 
-  String _formatSyncAdapterError(
-    String label,
-    SyncAdapterException error,
-  ) {
+  String _formatSyncAdapterError(String label, SyncAdapterException error) {
     if (error.code == 'webdav_401' || error.code == 'webdav_403') {
       return '$label: неверный логин/пароль или нет доступа.';
     }
@@ -1949,10 +2441,20 @@ class LibraryController extends ChangeNotifier {
   }
 
   Uri _normalizeWebDavBaseUri(Uri uri) {
-    if (uri.path.isEmpty || uri.path.endsWith('/')) {
-      return uri;
+    var normalized = uri;
+    if (normalized.userInfo.isNotEmpty) {
+      normalized = normalized.replace(userInfo: '');
     }
-    return uri.replace(path: '${uri.path}/');
+    if (normalized.hasQuery) {
+      normalized = normalized.replace(query: '');
+    }
+    if (normalized.fragment.isNotEmpty) {
+      normalized = normalized.replace(fragment: '');
+    }
+    if (normalized.path.isEmpty || normalized.path.endsWith('/')) {
+      return normalized;
+    }
+    return normalized.replace(path: '${normalized.path}/');
   }
 
   String _normalizeWebDavSyncPath(String path) {
@@ -2005,8 +2507,9 @@ class LibraryController extends ChangeNotifier {
     }
     for (final path in candidatePaths) {
       final normalizedPath = path.startsWith('/') ? path : '/$path';
-      final withSlash =
-          normalizedPath.endsWith('/') ? normalizedPath : '$normalizedPath/';
+      final withSlash = normalizedPath.endsWith('/')
+          ? normalizedPath
+          : '$normalizedPath/';
       add(root.replace(path: withSlash));
     }
     if (normalizedBase.path.isEmpty || normalizedBase.path == '/') {
@@ -2065,14 +2568,10 @@ class LibraryController extends ChangeNotifier {
     var sawTimeout = false;
     var sawInvalidXml = false;
     final normalizedSyncPath = _normalizeWebDavSyncPath(syncPath);
-    final baseUris = <Uri>[
-      baseUri,
-      ..._fallbackWebDavBaseUris(baseUri),
-    ];
+    final baseUris = <Uri>[baseUri, ..._fallbackWebDavBaseUris(baseUri)];
     for (var i = 0; i < baseUris.length; i += 1) {
       final base = baseUris[i];
-      final timeout =
-          i == 0 ? requestTimeout : const Duration(seconds: 3);
+      final timeout = i == 0 ? requestTimeout : const Duration(seconds: 3);
       for (final candidate in _buildWebDavCandidateUris(base, username)) {
         Log.d('$label discover: trying $candidate');
         final apiClient = HttpWebDavApiClient(
@@ -2112,10 +2611,7 @@ class LibraryController extends ChangeNotifier {
       }
     }
     if (sawTimeout) {
-      throw SyncAdapterException(
-        'WebDAV timeout',
-        code: 'webdav_timeout',
-      );
+      throw SyncAdapterException('WebDAV timeout', code: 'webdav_timeout');
     }
     if (sawInvalidXml) {
       throw SyncAdapterException(
@@ -2165,12 +2661,13 @@ class LibraryController extends ChangeNotifier {
         allowInsecure: allowInsecure,
       );
       final entries = await apiClient.listFolder('/');
-      final folders = entries
-          .where((item) => item.isDirectory)
-          .map((item) => item.name)
-          .where((name) => name.isNotEmpty && name != '.' && name != '..')
-          .toList()
-        ..sort();
+      final folders =
+          entries
+              .where((item) => item.isDirectory)
+              .map((item) => item.name)
+              .where((name) => name.isNotEmpty && name != '.' && name != '..')
+              .toList()
+            ..sort();
       if (folders.isEmpty) {
         _setInfo('$label: папки не найдены');
       }
@@ -2214,7 +2711,9 @@ class LibraryController extends ChangeNotifier {
           folderPath != '/' &&
           (statusCode == 404 || statusCode == 405)) {
         try {
-          Log.d('$label discover: attempting MKCOL for $folderPath on $candidate');
+          Log.d(
+            '$label discover: attempting MKCOL for $folderPath on $candidate',
+          );
           final mkcol = await apiClient.mkcolRaw(folderPath);
           final mkcolOk = mkcol.statusCode < 400;
           Log.d(
@@ -2231,8 +2730,12 @@ class LibraryController extends ChangeNotifier {
           }
         } catch (_) {}
         if (statusCode == 404) {
-          final optionsOk =
-              await _probeWebDavOptions(apiClient, path, label, candidate);
+          final optionsOk = await _probeWebDavOptions(
+            apiClient,
+            path,
+            label,
+            candidate,
+          );
           if (optionsOk) {
             Log.d('$label discover: OPTIONS OK for $candidate');
             return true;
@@ -2260,10 +2763,13 @@ class LibraryController extends ChangeNotifier {
       if (error.code == 'webdav_invalid_xml') {
         onInvalidXml();
       }
-      if (error.code == 'webdav_404' ||
-          error.code == 'webdav_invalid_xml') {
-        final optionsOk =
-            await _probeWebDavOptions(apiClient, path, label, candidate);
+      if (error.code == 'webdav_404' || error.code == 'webdav_invalid_xml') {
+        final optionsOk = await _probeWebDavOptions(
+          apiClient,
+          path,
+          label,
+          candidate,
+        );
         if (optionsOk) {
           Log.d('$label discover: OPTIONS OK for $candidate');
           return true;
@@ -2428,11 +2934,10 @@ class LibraryController extends ChangeNotifier {
               .map((item) => item.name)
               .toList();
           final target = username.toLowerCase();
-          homesUserDir = dirNames
-              .firstWhere(
-                (name) => name.toLowerCase() == target,
-                orElse: () => username,
-              );
+          homesUserDir = dirNames.firstWhere(
+            (name) => name.toLowerCase() == target,
+            orElse: () => username,
+          );
         } catch (_) {
           homesUserDir = username;
         }
@@ -2547,10 +3052,65 @@ class LibraryController extends ChangeNotifier {
     _authError = null;
     notifyListeners();
     try {
+      final failures = <String, Object>{};
       for (final name in _syncFileNames) {
-        await adapter.deleteFile(_buildSyncPath(name));
+        try {
+          await adapter.deleteFile(_buildSyncPath(name));
+        } catch (error) {
+          if (_isNotFoundSyncError(error)) {
+            continue;
+          }
+          failures[name] = error;
+        }
       }
-      _setInfo('Файлы синка удалены в облаке');
+      for (final folder in _syncFolderNames) {
+        try {
+          await adapter.deleteFile(_buildSyncPath(folder));
+        } catch (error) {
+          if (_isNotFoundSyncError(error)) {
+            continue;
+          }
+          failures[folder] = error;
+        }
+      }
+
+      // Google Drive adapter stores everything flat; best-effort cleanup of
+      // book files that use `books/...` names.
+      if (_syncProvider == SyncProvider.googleDrive) {
+        try {
+          final refs = await adapter.listFiles();
+          for (final ref in refs) {
+            if (!ref.path.startsWith('books/')) {
+              continue;
+            }
+            try {
+              await adapter.deleteFile(ref.path);
+            } catch (error) {
+              if (_isNotFoundSyncError(error)) {
+                continue;
+              }
+              failures[ref.path] = error;
+            }
+          }
+        } catch (error) {
+          failures['books/*'] = error;
+        }
+      }
+
+      if (failures.isEmpty) {
+        _setInfo('Данные синхронизации удалены в облаке');
+        return;
+      }
+      final label = _providerLabel(_syncProvider);
+      final first = failures.entries.first;
+      final error = first.value;
+      if (error is SyncAdapterException) {
+        _setAuthError(
+          'Удаление завершено с ошибками: ${first.key}. ${_formatSyncAdapterError(label, error)}',
+        );
+      } else {
+        _setAuthError('Удаление завершено с ошибками: ${first.key}. $error');
+      }
     } catch (error) {
       final label = _providerLabel(_syncProvider);
       if (error is SyncAdapterException) {
@@ -2581,7 +3141,25 @@ class LibraryController extends ChangeNotifier {
     'event_log.json',
     'state.json',
     'meta.json',
+    'books_index.json',
   ];
+
+  static const List<String> _syncFolderNames = <String>['books'];
+
+  bool _isNotFoundSyncError(Object error) {
+    if (error is! SyncAdapterException) {
+      return false;
+    }
+    final code = error.code ?? '';
+    if (code.contains('404')) {
+      return true;
+    }
+    if (code.contains('not_found')) {
+      return true;
+    }
+    final message = error.message;
+    return message.contains('not_found') || message.contains('NotFound');
+  }
 
   Uri? _buildAuthorizationUrl(SyncProvider provider) {
     final config = _oauthConfig;
@@ -2605,10 +3183,9 @@ class LibraryController extends ChangeNotifier {
         }
         final pkce = DropboxOAuthClient.createPkce();
         _dropboxPkceVerifier = pkce.verifier;
-        url = DropboxOAuthClient(dropbox).authorizationUrl(
-          state: state,
-          codeChallenge: pkce.challenge,
-        );
+        url = DropboxOAuthClient(
+          dropbox,
+        ).authorizationUrl(state: state, codeChallenge: pkce.challenge);
         break;
       case SyncProvider.oneDrive:
         final oneDrive = config.oneDrive;
@@ -2623,17 +3200,18 @@ class LibraryController extends ChangeNotifier {
           return null;
         }
         final redirect = yandex.redirectUri.trim();
-        final usesVerificationCode =
-            redirect.contains('oauth.yandex.ru/verification_code');
+        final usesVerificationCode = redirect.contains(
+          'oauth.yandex.ru/verification_code',
+        );
         Log.d(
           'Yandex OAuth: redirect=$redirect, verification_code=$usesVerificationCode',
         );
         final responseType = usesVerificationCode
             ? 'code'
             : ((yandex.clientSecret == null ||
-                    yandex.clientSecret!.trim().isEmpty)
-                ? 'token'
-                : 'code');
+                      yandex.clientSecret!.trim().isEmpty)
+                  ? 'token'
+                  : 'code');
         String? codeChallenge;
         if (responseType == 'code') {
           final pkce = YandexDiskOAuthClient.createPkce();
@@ -2732,10 +3310,9 @@ class LibraryController extends ChangeNotifier {
         if (dropbox == null) {
           throw SyncAuthException('Dropbox OAuth not configured');
         }
-        return DropboxOAuthClient(dropbox).exchangeCode(
-          code,
-          codeVerifier: _dropboxPkceVerifier,
-        );
+        return DropboxOAuthClient(
+          dropbox,
+        ).exchangeCode(code, codeVerifier: _dropboxPkceVerifier);
       case SyncProvider.oneDrive:
         final oneDrive = config.oneDrive;
         if (oneDrive == null) {
@@ -2747,10 +3324,9 @@ class LibraryController extends ChangeNotifier {
         if (yandex == null) {
           throw SyncAuthException('Yandex OAuth not configured');
         }
-        return YandexDiskOAuthClient(yandex).exchangeCode(
-          code,
-          codeVerifier: _yandexPkceVerifier,
-        );
+        return YandexDiskOAuthClient(
+          yandex,
+        ).exchangeCode(code, codeVerifier: _yandexPkceVerifier);
       case SyncProvider.webDav:
       case SyncProvider.synologyDrive:
       case SyncProvider.smb:
@@ -2784,8 +3360,9 @@ class LibraryController extends ChangeNotifier {
         ? null
         : DateTime.now().toUtc().add(Duration(seconds: expiresIn));
     final tokenTypeRaw = fragment['token_type'] ?? 'OAuth';
-    final tokenType =
-        tokenTypeRaw.trim().toUpperCase() == 'BEARER' ? 'OAuth' : tokenTypeRaw;
+    final tokenType = tokenTypeRaw.trim().toUpperCase() == 'BEARER'
+        ? 'OAuth'
+        : tokenTypeRaw;
     return OAuthToken(
       accessToken: accessToken,
       refreshToken: null,
@@ -2832,7 +3409,8 @@ class LibraryController extends ChangeNotifier {
     if (!(Platform.isMacOS || Platform.isWindows || Platform.isLinux)) {
       return null;
     }
-    if (provider != SyncProvider.dropbox && provider != SyncProvider.yandexDisk) {
+    if (provider != SyncProvider.dropbox &&
+        provider != SyncProvider.yandexDisk) {
       return null;
     }
     final raw = provider == SyncProvider.dropbox
@@ -2867,7 +3445,9 @@ class LibraryController extends ChangeNotifier {
       );
     } catch (error) {
       Log.d('Loopback bind failed: $error');
-      _finishAuthWithError('Подключение недоступно. Проверь настройки подключения.');
+      _finishAuthWithError(
+        'Подключение недоступно. Проверь настройки подключения.',
+      );
       return;
     }
 
@@ -2972,11 +3552,13 @@ class LibraryController extends ChangeNotifier {
       return;
     }
     await _storeReady;
+    await _freeNotesStore.init();
     await _syncEventLogStore.init();
     final deviceId = await _ensureDeviceId();
     _syncEngine = FileSyncEngine(
       adapter: adapter,
       libraryStore: _store,
+      freeNotesStore: _freeNotesStore,
       eventLogStore: _syncEventLogStore,
       deviceId: deviceId,
       storageService: _storageService,
@@ -3026,8 +3608,12 @@ class LibraryController extends ChangeNotifier {
           summary: _lastSyncSummary!,
         ),
       );
-      if (result.appliedEvents > 0 || result.appliedState > 0) {
+      if (result.appliedEvents > 0 ||
+          result.appliedState > 0 ||
+          result.booksUploaded > 0 ||
+          result.booksDownloaded > 0) {
         await _loadLibrary();
+        unawaited(_searchIndex.reconcileWithLibrary());
       } else {
         notifyListeners();
       }
@@ -3037,11 +3623,7 @@ class LibraryController extends ChangeNotifier {
       _lastSyncOk = false;
       _lastSyncSummary = 'Синхронизация не удалась: $e';
       await _preferencesStore.saveSyncStatus(
-        SyncStatusSnapshot(
-          at: now,
-          ok: false,
-          summary: _lastSyncSummary!,
-        ),
+        SyncStatusSnapshot(at: now, ok: false, summary: _lastSyncSummary!),
       );
       _handleSyncError(e);
       Log.d('File sync failed: $e');
@@ -3101,7 +3683,8 @@ class LibraryController extends ChangeNotifier {
     if (stored == null || stored.isEmpty) {
       return;
     }
-    final normalized = stored == SyncProvider.synologyDrive.name ||
+    final normalized =
+        stored == SyncProvider.synologyDrive.name ||
             stored == SyncProvider.smb.name
         ? SyncProvider.webDav.name
         : stored;
@@ -3178,6 +3761,7 @@ class LibraryController extends ChangeNotifier {
     _authLinkSub?.cancel();
     _autoSyncTimer?.cancel();
     _scheduledSyncTimer?.cancel();
+    _searchIndex.close();
     super.dispose();
   }
 
@@ -3186,10 +3770,7 @@ class LibraryController extends ChangeNotifier {
     if (_syncAdapter == null || _autoSyncDisabled) {
       return;
     }
-    _autoSyncTimer = Timer.periodic(
-      _autoSyncInterval,
-      (_) => _scheduleSync(),
-    );
+    _autoSyncTimer = Timer.periodic(_autoSyncInterval, (_) => _scheduleSync());
   }
 
   void _scheduleSync({Duration delay = _syncDebounce}) {
@@ -3229,10 +3810,7 @@ const Map<String, String> _fb2CoverExtensions = <String, String>{
 };
 
 @visibleForTesting
-BookMetadata readFb2MetadataForTest(
-  List<int> bytes,
-  String fallbackTitle,
-) =>
+BookMetadata readFb2MetadataForTest(List<int> bytes, String fallbackTitle) =>
     _readFb2MetadataFromBytes(bytes, fallbackTitle);
 
 @visibleForTesting
@@ -3333,8 +3911,7 @@ Future<CoverPayload?> _readImageBytesFromHref(
   EpubBookRef bookRef,
   String? href, {
   String? mediaType,
-}
-) async {
+}) async {
   if (href == null || href.isEmpty) {
     return null;
   }
@@ -3349,7 +3926,8 @@ Future<CoverPayload?> _readImageBytesFromHref(
       final bytes = await direct.readContentAsBytes();
       return CoverPayload(
         bytes: bytes,
-        extension: _extensionFromMediaType(mediaType) ??
+        extension:
+            _extensionFromMediaType(mediaType) ??
             _extensionFromPath(normalized),
       );
     } catch (e) {
@@ -3505,34 +4083,29 @@ BookMetadata _extractMetadata({
   required List<String?>? authorList,
   required EpubSchema? schema,
 }) {
-  final rawTitle = _firstNonEmpty(
-    [
-      title,
-      ...?schema?.Package?.Metadata?.Titles,
-      ...?schema?.Navigation?.DocTitle?.Titles,
-    ],
-  );
-  final rawAuthor = _firstNonEmpty(
-    [
-      author,
-      ...?authorList,
-      ...?schema?.Package?.Metadata?.Creators
-          ?.map((creator) => creator.Creator),
-      ...?schema?.Navigation?.DocAuthors
-          ?.expand((author) => author.Authors ?? const <String>[]),
-    ],
-  );
-  final resolvedTitle =
-      (rawTitle == null || rawTitle.isEmpty) ? fallbackTitle : rawTitle;
-  final resolvedAuthor =
-      (rawAuthor == null || rawAuthor.isEmpty) ? null : rawAuthor;
+  final rawTitle = _firstNonEmpty([
+    title,
+    ...?schema?.Package?.Metadata?.Titles,
+    ...?schema?.Navigation?.DocTitle?.Titles,
+  ]);
+  final rawAuthor = _firstNonEmpty([
+    author,
+    ...?authorList,
+    ...?schema?.Package?.Metadata?.Creators?.map((creator) => creator.Creator),
+    ...?schema?.Navigation?.DocAuthors?.expand(
+      (author) => author.Authors ?? const <String>[],
+    ),
+  ]);
+  final resolvedTitle = (rawTitle == null || rawTitle.isEmpty)
+      ? fallbackTitle
+      : rawTitle;
+  final resolvedAuthor = (rawAuthor == null || rawAuthor.isEmpty)
+      ? null
+      : rawAuthor;
   return BookMetadata(title: resolvedTitle, author: resolvedAuthor);
 }
 
-BookMetadata _readFb2MetadataFromBytes(
-  List<int> bytes,
-  String fallbackTitle,
-) {
+BookMetadata _readFb2MetadataFromBytes(List<int> bytes, String fallbackTitle) {
   try {
     final xml = _decodeFb2Xml(bytes);
     return _extractFb2Metadata(xml, fallbackTitle);
@@ -3542,10 +4115,7 @@ BookMetadata _readFb2MetadataFromBytes(
   }
 }
 
-BookMetadata _readFb2MetadataFromZip(
-  List<int> bytes,
-  String fallbackTitle,
-) {
+BookMetadata _readFb2MetadataFromZip(List<int> bytes, String fallbackTitle) {
   try {
     final archive = ZipDecoder().decodeBytes(bytes, verify: false);
     final xml = _extractFb2XmlFromArchive(archive);
@@ -3610,8 +4180,7 @@ String _decodeFb2Xml(List<int> bytes) {
 
 String? _detectXmlEncoding(List<int> bytes) {
   final header = String.fromCharCodes(bytes.take(200));
-  final match = RegExp('encoding=["\\\']([^"\\\']+)["\\\']')
-      .firstMatch(header);
+  final match = RegExp('encoding=["\\\']([^"\\\']+)["\\\']').firstMatch(header);
   return match?.group(1);
 }
 
@@ -3775,12 +4344,12 @@ String? _extractFb2XmlFromArchive(Archive archive) {
 
 BookMetadata _extractFb2Metadata(String xml, String fallbackTitle) {
   final doc = XmlDocument.parse(xml);
-  final titleInfo = doc.findAllElements('title-info').firstWhere(
-        (_) => true,
-        orElse: () => XmlElement(XmlName('title-info')),
-      );
+  final titleInfo = doc
+      .findAllElements('title-info')
+      .firstWhere((_) => true, orElse: () => XmlElement(XmlName('title-info')));
   final scope = titleInfo.name.local == 'title-info' ? titleInfo : doc;
-  final title = _firstNonEmpty(
+  final title =
+      _firstNonEmpty(
         scope.findAllElements('book-title').map((element) => element.innerText),
       ) ??
       fallbackTitle;
@@ -3789,10 +4358,9 @@ BookMetadata _extractFb2Metadata(String xml, String fallbackTitle) {
 }
 
 String? _extractFb2Author(XmlNode node) {
-  final author = node.findAllElements('author').firstWhere(
-        (_) => true,
-        orElse: () => XmlElement(XmlName('author')),
-      );
+  final author = node
+      .findAllElements('author')
+      .firstWhere((_) => true, orElse: () => XmlElement(XmlName('author')));
   if (author.name.local != 'author') {
     return null;
   }
@@ -3823,12 +4391,12 @@ String? _extractFb2Author(XmlNode node) {
 
 CoverPayload? _extractFb2Cover(String xml) {
   final doc = XmlDocument.parse(xml);
-  final image = doc.findAllElements('coverpage').expand((node) {
-    return node.findAllElements('image');
-  }).firstWhere(
-        (_) => true,
-        orElse: () => XmlElement(XmlName('image')),
-      );
+  final image = doc
+      .findAllElements('coverpage')
+      .expand((node) {
+        return node.findAllElements('image');
+      })
+      .firstWhere((_) => true, orElse: () => XmlElement(XmlName('image')));
   if (image.name.local != 'image') {
     return null;
   }
@@ -3843,7 +4411,9 @@ CoverPayload? _extractFb2Cover(String xml) {
     return null;
   }
   final id = href.startsWith('#') ? href.substring(1) : href;
-  final binary = doc.findAllElements('binary').firstWhere(
+  final binary = doc
+      .findAllElements('binary')
+      .firstWhere(
         (node) => node.getAttribute('id') == id,
         orElse: () => XmlElement(XmlName('binary')),
       );

@@ -1,6 +1,9 @@
-# Scope for CogniRead (MVP0/MVP1/MVP2)
+# Scope for CogniRead (MVP0/MVP1/MVP2 → Stages)
 
 Источники: docs/final_tech_stack.docx, docs/solution_architecture_doc.docx, docs/architecture_diagrams.docx.
+
+## Статус (актуально)
+MVP0–MVP2 в репозитории уже существенно расширены: реализованы импорт/чтение, заметки/выделения/закладки, поиск и Stage 1 (server‑less file-based sync). Этот файл оставляем как “исторический” baseline и дополняем текущими этапами ниже.
 
 ## MVP0 (локальный клиент)
 
@@ -49,7 +52,19 @@
 - Поиск по библиотеке.
 - Улучшения UX чтения (прогресс, оглавление).
 
-## После MVP2 (следующие фазы)
-- AI-summary и аналитика чтения.
-- Синхронизация между устройствами.
-- Backend API + PostgreSQL + файловое хранилище.
+## После MVP2 (следующие этапы)
+
+### Stage 1 — Server-less sync (file-based)
+- Единый `SyncAdapter` + локальный sync engine (event log/state) и провайдеры облачных дисков/NAS.
+- Цель: “пользовательское качество” синка без собственного backend.
+- Документы: `docs/release_plan_stage1.md`, `docs/test_plan_stage1_sync.md`, `docs/sync_file_based.md`.
+
+### Stage 1.1 — Добавление провайдеров (план)
+- Google Drive + OneDrive: OAuth-конфиг/UX подключения и прогон acceptance criteria.
+
+### Stage 2 — Backend sync-gateway (future)
+- Собственный sync-gateway (API + storage + LWW) + WebSockets (real-time канал).
+- Документы: `docs/sync_gateway_api.md`, `docs/sync_gateway_storage.md`, `docs/sync_policy.md`, `docs/sync_observability.md`.
+
+### Stage 3 — AI и база знаний (future)
+- AI-summary/объяснения/вопросы, кеширование и постепенный переход к knowledge graph (Qdrant/Neo4j) по мере готовности backend.

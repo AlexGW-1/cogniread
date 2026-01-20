@@ -240,8 +240,98 @@ class HttpWebDavApiClient implements WebDavApiClient {
 
   @override
   Future<void> delete(String path) async {
+    final candidates = <String>{path};
+    if (path.endsWith('/') && path.length > 1) {
+      candidates.add(path.substring(0, path.length - 1));
+    } else {
+      candidates.add('$path/');
+    }
+    SyncAdapterException? lastError;
+    for (final candidate in candidates) {
+      final uri = _resolve(candidate);
+      final response = await _requestRaw('DELETE', uri, timeout: _requestTimeout);
+      if (response.statusCode < 400 || response.statusCode == 404) {
+        return;
+      }
+      if (response.statusCode == 405) {
+        final exists = await _exists(candidate);
+        if (!exists) {
+          return;
+        }
+        final safeUri = _safeUriForLogs(uri);
+        lastError = SyncAdapterException(
+          'WebDAV DELETE not allowed: $safeUri',
+          code: 'webdav_405',
+        );
+        continue;
+      }
+      final safeUri = _safeUriForLogs(uri);
+      throw SyncAdapterException(
+        'WebDAV error ${response.statusCode}: DELETE $safeUri',
+        code: 'webdav_${response.statusCode}',
+      );
+    }
+    if (lastError != null) {
+      throw lastError;
+    }
+  }
+
+  Future<bool> _exists(String path) async {
     final uri = _resolve(path);
-    await _request('DELETE', uri, timeout: _requestTimeout);
+    final body = utf8.encode('''
+<?xml version="1.0" encoding="utf-8" ?>
+<propfind xmlns="DAV:">
+  <prop>
+    <resourcetype />
+  </prop>
+</propfind>
+''');
+
+    // Prefer a proper DAV existence check first.
+    final propfind = await _requestRaw(
+      'PROPFIND',
+      uri,
+      body: body,
+      contentType: 'text/xml',
+      headers: const <String, String>{'Depth': '0'},
+      timeout: _requestTimeout,
+    );
+    if (propfind.statusCode == 404) {
+      return false;
+    }
+    if (propfind.statusCode < 400 || propfind.statusCode == 207) {
+      return true;
+    }
+
+    // Some servers/paths return 405 for PROPFIND even though the resource is
+    // accessible via regular HTTP methods. Fallback to HEAD/GET to distinguish
+    // between "missing" and "exists but not deletable".
+    if (propfind.statusCode == 405) {
+      final head = await _requestRaw('HEAD', uri, timeout: _requestTimeout);
+      if (head.statusCode == 404) {
+        return false;
+      }
+      if (head.statusCode < 400) {
+        return true;
+      }
+      if (head.statusCode == 405) {
+        final get = await _requestRaw(
+          'GET',
+          uri,
+          headers: const <String, String>{'Range': 'bytes=0-0'},
+          timeout: _requestTimeout,
+        );
+        if (get.statusCode == 404) {
+          return false;
+        }
+        if (get.statusCode < 400 || get.statusCode == 416) {
+          return true;
+        }
+      }
+    }
+
+    // Can't confirm existence, but avoid silently ignoring delete errors.
+    return true;
   }
 
   Future<List<int>> _request(
@@ -264,8 +354,9 @@ class HttpWebDavApiClient implements WebDavApiClient {
     final ok = response.statusCode < 400 ||
         (allowMultiStatus && response.statusCode == 207);
     if (!ok) {
+      final safeUri = _safeUriForLogs(uri);
       throw SyncAdapterException(
-        'WebDAV error ${response.statusCode}',
+        'WebDAV error ${response.statusCode}: $method $safeUri',
         code: 'webdav_${response.statusCode}',
       );
     }

@@ -10,6 +10,7 @@ class LibraryPreferencesStore {
   static const String _syncProviderKey = 'sync_provider';
   static const String _syncOAuthConfigKey = 'sync_oauth_config';
   static const String _syncStatusKey = 'sync_status';
+  static const String _searchHistoryKey = 'search_history';
   Box<dynamic>? _box;
 
   Future<void> init() async {
@@ -61,9 +62,7 @@ class LibraryPreferencesStore {
     if (raw is String && raw.trim().isNotEmpty) {
       final decoded = jsonDecode(raw);
       if (decoded is Map) {
-        return decoded.map(
-          (key, value) => MapEntry(key.toString(), value),
-        );
+        return decoded.map((key, value) => MapEntry(key.toString(), value));
       }
     }
     return null;
@@ -109,6 +108,41 @@ class LibraryPreferencesStore {
   Future<void> clearSyncStatus() async {
     await _requireBox.delete(_syncStatusKey);
   }
+
+  Future<List<String>> loadSearchHistory() async {
+    final raw = _requireBox.get(_searchHistoryKey);
+    if (raw is List) {
+      return raw
+          .map((value) => value.toString())
+          .where((v) => v.isNotEmpty)
+          .toList();
+    }
+    if (raw is! String || raw.trim().isEmpty) {
+      return const <String>[];
+    }
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        return decoded
+            .map((value) => value.toString())
+            .where((v) => v.trim().isNotEmpty)
+            .toList();
+      }
+    } catch (_) {}
+    return const <String>[];
+  }
+
+  Future<void> saveSearchHistory(List<String> history) async {
+    final normalized = history
+        .map((value) => value.trim())
+        .where((value) => value.isNotEmpty)
+        .toList();
+    await _requireBox.put(_searchHistoryKey, jsonEncode(normalized));
+  }
+
+  Future<void> clearSearchHistory() async {
+    await _requireBox.delete(_searchHistoryKey);
+  }
 }
 
 class SyncStatusSnapshot {
@@ -142,10 +176,6 @@ class SyncStatusSnapshot {
       return null;
     }
     final ok = okRaw is bool ? okRaw : false;
-    return SyncStatusSnapshot(
-      at: at,
-      ok: ok,
-      summary: summaryRaw,
-    );
+    return SyncStatusSnapshot(at: at, ok: ok, summary: summaryRaw);
   }
 }

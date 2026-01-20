@@ -10,7 +10,7 @@
 | Локальная БД | Hive |
 | Локальное хранилище файлов | app‑managed storage (path_provider) |
 | Рендер книги | нативный Flutter (ScrollablePositionedList + SelectableRegion) |
-| Синхронизация | отсутствует (только локальный event log) |
+| Синхронизация | Stage 1 (server‑less file-based sync): единый client adapter + облачные диски/NAS (Dropbox, Yandex Disk, WebDAV/SMB). Google Drive/OneDrive — следующий этап. |
 | Backend API | отсутствует |
 | AI‑сервисы | отсутствуют |
 

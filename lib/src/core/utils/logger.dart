@@ -12,6 +12,10 @@ class Log {
   static bool _initialized = false;
   static bool _fileLoggingEnabled = true;
   static Future<void> _fileWriteChain = Future<void>.value();
+  static final RegExp _urlUserInfo = RegExp(
+    r'(https?://)([^\s/@]+:[^\s@]+)@',
+    caseSensitive: false,
+  );
   static final List<RegExp> _redactions = <RegExp>[
     RegExp(
       r'access[_-]?token\s*[:=]\s*[^\s,;]+',
@@ -39,6 +43,14 @@ class Log {
     ),
     RegExp(
       r'authorization\s*[:=]\s*basic\s+[a-z0-9+/=]+',
+      caseSensitive: false,
+    ),
+    RegExp(
+      r'\bbasic\s+[a-z0-9+/=]{20,}',
+      caseSensitive: false,
+    ),
+    RegExp(
+      r'\bbearer\s+[a-z0-9\-._~+/=]{20,}',
       caseSensitive: false,
     ),
     RegExp(
@@ -165,19 +177,28 @@ class Log {
     StackTrace? stackTrace,
   }) {
     final sanitized = _sanitize(message);
+    final sanitizedError =
+        error == null ? null : _sanitize(error.toString()).trim();
+    final sanitizedStackTrace =
+        stackTrace == null ? null : _sanitize(stackTrace.toString());
     dev.log(
       sanitized,
       name: 'CogniRead',
-      error: error,
-      stackTrace: stackTrace,
+      error: sanitizedError,
+      stackTrace:
+          sanitizedStackTrace == null
+              ? null
+              : StackTrace.fromString(sanitizedStackTrace),
     );
     final sink = _sink;
     if (sink != null && _fileLoggingEnabled) {
       final ts = DateTime.now().toIso8601String();
       final lines = <String>[
         '[$ts][$level] $sanitized',
-        if (error != null) '  error: ${_sanitize(error.toString())}',
-        if (stackTrace != null) '  stack: $stackTrace',
+        if (sanitizedError != null && sanitizedError.isNotEmpty)
+          '  error: $sanitizedError',
+        if (sanitizedStackTrace != null && sanitizedStackTrace.isNotEmpty)
+          '  stack: $sanitizedStackTrace',
       ];
       _enqueueFileWrite(lines);
     }
@@ -211,6 +232,9 @@ class Log {
 
   static String _sanitize(String message) {
     var result = message;
+    result = result.replaceAllMapped(_urlUserInfo, (match) {
+      return '${match.group(1)}[REDACTED]@';
+    });
     for (final pattern in _redactions) {
       result = result.replaceAll(pattern, '[REDACTED]');
     }

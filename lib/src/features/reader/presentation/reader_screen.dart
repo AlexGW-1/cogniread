@@ -8,25 +8,33 @@ import 'package:path_provider/path_provider.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import 'package:cogniread/src/core/types/anchor.dart';
 import 'package:cogniread/src/core/types/toc.dart';
+import 'package:cogniread/src/core/ui/mark_colors.dart';
 import 'package:cogniread/src/core/utils/logger.dart';
 import 'package:cogniread/src/features/reader/presentation/reader_controller.dart';
 import 'package:cogniread/src/features/library/data/library_store.dart';
+import 'package:cogniread/src/features/search/search_models.dart';
 
 class ReaderScreen extends StatefulWidget {
   const ReaderScreen({
     super.key,
     required this.bookId,
+    this.store,
     this.embedded = false,
     this.persistReadingPosition = true,
     this.initialNoteId,
     this.initialHighlightId,
+    this.initialAnchor,
+    this.initialSearchQuery,
   });
 
   final String bookId;
+  final LibraryStore? store;
   final bool embedded;
   final bool persistReadingPosition;
   final String? initialNoteId;
   final String? initialHighlightId;
+  final String? initialAnchor;
+  final String? initialSearchQuery;
 
   @override
   State<ReaderScreen> createState() => _ReaderScreenState();
@@ -55,6 +63,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
   int? _searchHighlightChapterIndex;
   String? _pendingInitialNoteId;
   String? _pendingInitialHighlightId;
+  String? _pendingInitialAnchor;
+  String? _pendingInitialSearchQuery;
   bool _initialJumpDone = false;
   bool _skipRestore = false;
 
@@ -63,9 +73,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
     super.initState();
     _pendingInitialNoteId = widget.initialNoteId;
     _pendingInitialHighlightId = widget.initialHighlightId;
+    _pendingInitialAnchor = widget.initialAnchor;
+    _pendingInitialSearchQuery = widget.initialSearchQuery;
     _skipRestore =
-        widget.initialNoteId != null || widget.initialHighlightId != null;
-    _controller = ReaderController();
+        widget.initialNoteId != null ||
+        widget.initialHighlightId != null ||
+        widget.initialAnchor != null;
+    _controller = ReaderController(store: widget.store);
     _controllerListener = () {
       if (!mounted) {
         return;
@@ -99,17 +113,27 @@ class _ReaderScreenState extends State<ReaderScreen> {
       _selectionText = null;
       _pendingInitialNoteId = widget.initialNoteId;
       _pendingInitialHighlightId = widget.initialHighlightId;
+      _pendingInitialAnchor = widget.initialAnchor;
+      _pendingInitialSearchQuery = widget.initialSearchQuery;
       _skipRestore =
-          widget.initialNoteId != null || widget.initialHighlightId != null;
+          widget.initialNoteId != null ||
+          widget.initialHighlightId != null ||
+          widget.initialAnchor != null;
       _controller.load(widget.bookId);
     } else if (widget.initialNoteId != oldWidget.initialNoteId ||
-        widget.initialHighlightId != oldWidget.initialHighlightId) {
+        widget.initialHighlightId != oldWidget.initialHighlightId ||
+        widget.initialAnchor != oldWidget.initialAnchor ||
+        widget.initialSearchQuery != oldWidget.initialSearchQuery) {
       _pendingInitialNoteId = widget.initialNoteId;
       _pendingInitialHighlightId = widget.initialHighlightId;
+      _pendingInitialAnchor = widget.initialAnchor;
+      _pendingInitialSearchQuery = widget.initialSearchQuery;
       _initialJumpAttempts = 0;
       _initialJumpDone = false;
       _skipRestore =
-          widget.initialNoteId != null || widget.initialHighlightId != null;
+          widget.initialNoteId != null ||
+          widget.initialHighlightId != null ||
+          widget.initialAnchor != null;
       _scheduleInitialMarkJump();
     }
   }
@@ -161,9 +185,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       return;
     }
     final index = _resolveChapterIndex(_initialPosition!);
-    if (index == null ||
-        index < 0 ||
-        index >= _controller.chapters.length) {
+    if (index == null || index < 0 || index >= _controller.chapters.length) {
       _didRestore = true;
       return;
     }
@@ -202,7 +224,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   void _scheduleInitialMarkJump() {
     if (_initialJumpDone ||
-        (_pendingInitialNoteId == null && _pendingInitialHighlightId == null) ||
+        (_pendingInitialNoteId == null &&
+            _pendingInitialHighlightId == null &&
+            _pendingInitialAnchor == null) ||
         _controller.loading ||
         _controller.chapters.isEmpty) {
       return;
@@ -220,10 +244,19 @@ class _ReaderScreenState extends State<ReaderScreen> {
       _retryInitialMarkJump();
       return;
     }
+    final textWidth = _textWidth;
+    if (textWidth == null || textWidth <= 0 || _viewportExtent <= 0) {
+      _retryInitialMarkJump();
+      return;
+    }
     final noteId = _pendingInitialNoteId;
     final highlightId = _pendingInitialHighlightId;
+    final anchorRaw = _pendingInitialAnchor;
+    final searchQuery = _pendingInitialSearchQuery;
     _pendingInitialNoteId = null;
     _pendingInitialHighlightId = null;
+    _pendingInitialAnchor = null;
+    _pendingInitialSearchQuery = null;
     var jumped = false;
     if (noteId != null) {
       final note = _findNoteById(noteId);
@@ -239,6 +272,15 @@ class _ReaderScreenState extends State<ReaderScreen> {
         jumped = true;
       }
     }
+    if (!jumped && anchorRaw != null) {
+      final anchor = Anchor.parse(anchorRaw);
+      if (anchor != null) {
+        if (searchQuery != null && noteId == null && highlightId == null) {
+          _setSearchHighlightForQueryAtAnchor(anchor, searchQuery);
+        }
+        jumped = _scrollToAnchor(anchor);
+      }
+    }
     if (!jumped) {
       _skipRestore = false;
       _scheduleRestorePosition();
@@ -248,9 +290,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   void _retryInitialMarkJump() {
     _initialJumpAttempts += 1;
-    if (_initialJumpAttempts > 5) {
+    if (_initialJumpAttempts > 20) {
       _pendingInitialNoteId = null;
       _pendingInitialHighlightId = null;
+      _pendingInitialAnchor = null;
       _initialJumpDone = true;
       return;
     }
@@ -277,6 +320,40 @@ class _ReaderScreenState extends State<ReaderScreen> {
     return null;
   }
 
+  bool _scrollToAnchor(Anchor anchor) {
+    final chapterHref = anchor.chapterHref;
+    final chapterIndex = chapterHref.startsWith('index:')
+        ? int.tryParse(chapterHref.substring('index:'.length))
+        : _controller.chapters.indexWhere(
+            (chapter) => chapter.href == chapterHref,
+          );
+    if (chapterIndex == null || chapterIndex < 0) {
+      return false;
+    }
+    final offsetWithin = _estimateAnchorScrollOffset(
+      chapterIndex,
+      anchor.offset,
+    );
+    if (offsetWithin == null || offsetWithin < 0) {
+      return false;
+    }
+    if (!_itemScrollController.isAttached) {
+      return false;
+    }
+    _itemScrollController.jumpTo(index: chapterIndex);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_itemScrollController.isAttached) {
+        return;
+      }
+      _scrollOffsetController.animateScroll(
+        offset: offsetWithin,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeInOut,
+      );
+    });
+    return true;
+  }
+
   int? _resolveChapterIndex(ReadingPosition position) {
     final chapterHref = position.chapterHref;
     if (chapterHref == null || chapterHref.isEmpty) {
@@ -285,15 +362,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (chapterHref.startsWith('index:')) {
       return int.tryParse(chapterHref.substring('index:'.length));
     }
-    final index =
-        _controller.chapters.indexWhere((chapter) => chapter.href == chapterHref);
+    final index = _controller.chapters.indexWhere(
+      (chapter) => chapter.href == chapterHref,
+    );
     return index == -1 ? null : index;
   }
 
-  void _onChapterSelectionChanged(
-    int index,
-    SelectedContentRange? range,
-  ) {
+  void _onChapterSelectionChanged(int index, SelectedContentRange? range) {
     if (index < 0 || index >= _controller.chapters.length) {
       return;
     }
@@ -311,10 +386,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       return;
     }
     _selectionChapterIndex = index;
-    _selectionRange = SelectedContentRange(
-      startOffset: start,
-      endOffset: end,
-    );
+    _selectionRange = SelectedContentRange(startOffset: start, endOffset: end);
     _selectionText = text.substring(start, end);
   }
 
@@ -357,8 +429,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (!mounted) {
       return;
     }
-    selectableRegionState.clearSelection();
-    selectableRegionState.hideToolbar();
+    _safeDismissSelectionToolbar(selectableRegionState);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
@@ -377,7 +448,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final chapterIndex = _selectionChapterIndex!;
     final range = _selectionRange!;
     final excerpt = _selectionText!.trim();
-    var selectedColor = _markOptions.first;
+    var selectedColor = markColorOptions.first;
     final controller = TextEditingController();
     final saved = await showDialog<bool>(
       context: context,
@@ -390,16 +461,14 @@ class _ReaderScreenState extends State<ReaderScreen> {
               TextField(
                 controller: controller,
                 maxLines: 4,
-                decoration: const InputDecoration(
-                  hintText: 'Введите заметку',
-                ),
+                decoration: const InputDecoration(hintText: 'Введите заметку'),
               ),
               const SizedBox(height: 16),
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  for (final option in _markOptions)
+                  for (final option in markColorOptions)
                     ChoiceChip(
                       label: Text(option.label),
                       selected: option.key == selectedColor.key,
@@ -432,9 +501,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Заметка не сохранена')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Заметка не сохранена')));
       return;
     }
     final stored = await _controller.addNote(
@@ -448,8 +517,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (!mounted) {
       return;
     }
-    selectableRegionState.clearSelection();
-    selectableRegionState.hideToolbar();
+    _safeDismissSelectionToolbar(selectableRegionState);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
@@ -457,6 +525,17 @@ class _ReaderScreenState extends State<ReaderScreen> {
         ),
       ),
     );
+  }
+
+  void _safeDismissSelectionToolbar(
+    SelectableRegionState selectableRegionState,
+  ) {
+    try {
+      selectableRegionState.hideToolbar();
+    } catch (_) {}
+    try {
+      selectableRegionState.clearSelection();
+    } catch (_) {}
   }
 
   void _showHighlights() {
@@ -495,20 +574,20 @@ class _ReaderScreenState extends State<ReaderScreen> {
                       overflow: TextOverflow.ellipsis,
                     ),
                     subtitle: Text(chapterTitle),
-                      leading: _HighlightSwatch(
-                        color: _highlightColorFor(highlight.color),
-                      ),
-                      trailing: IconButton(
-                        icon: const Icon(Icons.delete_outline),
-                        tooltip: 'Удалить выделение',
-                        onPressed: () async {
-                          final confirmed = await _confirmDeleteHighlight();
-                          if (confirmed != true) {
-                            return;
-                          }
-                          await _controller.removeHighlight(highlight.id);
-                        },
-                      ),
+                    leading: _HighlightSwatch(
+                      color: _highlightColorFor(highlight.color),
+                    ),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.delete_outline),
+                      tooltip: 'Удалить выделение',
+                      onPressed: () async {
+                        final confirmed = await _confirmDeleteHighlight();
+                        if (confirmed != true) {
+                          return;
+                        }
+                        await _controller.removeHighlight(highlight.id);
+                      },
+                    ),
                     onTap: chapterIndex == null
                         ? null
                         : () {
@@ -561,9 +640,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                       overflow: TextOverflow.ellipsis,
                     ),
                     subtitle: Text(chapterTitle),
-                    leading: _HighlightSwatch(
-                      color: _markColorFor(note.color),
-                    ),
+                    leading: _HighlightSwatch(color: _markColorFor(note.color)),
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -614,9 +691,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
             controller: controller,
             maxLines: 5,
             autofocus: true,
-            decoration: const InputDecoration(
-              hintText: 'Текст заметки',
-            ),
+            decoration: const InputDecoration(hintText: 'Текст заметки'),
           ),
           actions: [
             TextButton(
@@ -767,7 +842,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
                           )
                         : ListView.separated(
                             itemCount: entries.length,
-                            separatorBuilder: (_, _) => const Divider(height: 1),
+                            separatorBuilder: (_, _) =>
+                                const Divider(height: 1),
                             itemBuilder: (context, index) {
                               final entry = entries[index];
                               return ListTile(
@@ -779,9 +855,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                                 subtitle: Text(
                                   '${entry.typeLabel} · ${_formatDateTime(entry.createdAt)}',
                                 ),
-                                leading: _HighlightSwatch(
-                                  color: entry.color,
-                                ),
+                                leading: _HighlightSwatch(color: entry.color),
                                 onTap: () {
                                   Navigator.of(context).pop();
                                   entry.onTap();
@@ -800,8 +874,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   void _showSearch() {
-    final textController =
-        TextEditingController(text: _controller.searchQuery);
+    final textController = TextEditingController(text: _controller.searchQuery);
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -871,8 +944,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                       Expanded(
                         child: ListView.separated(
                           itemCount: results.length,
-                          separatorBuilder: (_, _) =>
-                              const Divider(height: 1),
+                          separatorBuilder: (_, _) => const Divider(height: 1),
                           itemBuilder: (context, index) {
                             final result = results[index];
                             return ListTile(
@@ -904,9 +976,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (!mounted) {
       return;
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _toggleBookmark() async {
@@ -925,8 +997,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
         content: Text(
           saved
               ? hasBookmark
-                  ? 'Закладка сохранена'
-                  : 'Закладка удалена'
+                    ? 'Закладка сохранена'
+                    : 'Закладка удалена'
               : 'Не удалось изменить закладку',
         ),
       ),
@@ -961,12 +1033,12 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   final chapterIndex = anchor == null
                       ? null
                       : anchor.chapterHref.startsWith('index:')
-                          ? int.tryParse(
-                              anchor.chapterHref.substring('index:'.length),
-                            )
-                          : _controller.chapters.indexWhere(
-                              (chapter) => chapter.href == anchor.chapterHref,
-                            );
+                      ? int.tryParse(
+                          anchor.chapterHref.substring('index:'.length),
+                        )
+                      : _controller.chapters.indexWhere(
+                          (chapter) => chapter.href == anchor.chapterHref,
+                        );
                   final chapterTitle = chapterIndex == null || chapterIndex < 0
                       ? 'Неизвестная глава'
                       : _controller.chapters[chapterIndex].title;
@@ -1011,8 +1083,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (chapterHref.startsWith('index:')) {
       return int.tryParse(chapterHref.substring('index:'.length));
     }
-    final index =
-        _controller.chapters.indexWhere((chapter) => chapter.href == chapterHref);
+    final index = _controller.chapters.indexWhere(
+      (chapter) => chapter.href == chapterHref,
+    );
     return index == -1 ? null : index;
   }
 
@@ -1025,8 +1098,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (chapterHref.startsWith('index:')) {
       return int.tryParse(chapterHref.substring('index:'.length));
     }
-    final index =
-        _controller.chapters.indexWhere((chapter) => chapter.href == chapterHref);
+    final index = _controller.chapters.indexWhere(
+      (chapter) => chapter.href == chapterHref,
+    );
     return index == -1 ? null : index;
   }
 
@@ -1091,8 +1165,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final chapterHref = anchor.chapterHref;
     final chapterIndex = chapterHref.startsWith('index:')
         ? int.tryParse(chapterHref.substring('index:'.length))
-        : _controller.chapters
-            .indexWhere((chapter) => chapter.href == chapterHref);
+        : _controller.chapters.indexWhere(
+            (chapter) => chapter.href == chapterHref,
+          );
     if (chapterIndex == null || chapterIndex < 0) {
       _showPositioningError('Не удалось открыть главу с закладкой');
       return;
@@ -1132,6 +1207,151 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final end = start + result.matchLength;
     setState(() {
       _searchHighlightChapterIndex = result.chapterIndex;
+      _searchHighlightRange = _HighlightRange(
+        start: start,
+        end: end,
+        color: const Color(0xFFFFF59D),
+      );
+    });
+    _searchHighlightTimer = Timer(const Duration(seconds: 2), () {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _searchHighlightChapterIndex = null;
+        _searchHighlightRange = null;
+      });
+    });
+  }
+
+  void _setSearchHighlightForQueryAtAnchor(Anchor anchor, String query) {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) {
+      return;
+    }
+    final chapterHref = anchor.chapterHref;
+    final chapterIndex = chapterHref.startsWith('index:')
+        ? int.tryParse(chapterHref.substring('index:'.length))
+        : _controller.chapters.indexWhere(
+            (chapter) => chapter.href == chapterHref,
+          );
+    if (chapterIndex == null ||
+        chapterIndex < 0 ||
+        chapterIndex >= _controller.chapters.length) {
+      return;
+    }
+
+    final chapter = _controller.chapters[chapterIndex];
+    final offset = anchor.offset;
+    if (offset < 0) {
+      return;
+    }
+
+    final segments = <({int start, int end, String text})>[
+      (start: 0, end: chapter.title.length, text: chapter.title),
+    ];
+    var runningOffset = chapter.title.length;
+    for (final paragraph in chapter.paragraphs) {
+      final start = runningOffset;
+      final end = start + paragraph.length;
+      segments.add((start: start, end: end, text: paragraph));
+      runningOffset = end;
+    }
+
+    final tokens = SearchIndexQuery.tokenize(
+      trimmed,
+    ).where((token) => token.isNotEmpty).toList();
+    tokens.sort((a, b) => b.length.compareTo(a.length));
+
+    int? nearestIndex(String lower, String token, int localAnchor) {
+      if (token.isEmpty || lower.isEmpty) {
+        return null;
+      }
+      final forward = lower.indexOf(token, localAnchor < 0 ? 0 : localAnchor);
+      final backward = lower.lastIndexOf(token, localAnchor);
+      if (forward == -1 && backward == -1) {
+        return null;
+      }
+      if (forward == -1) {
+        return backward;
+      }
+      if (backward == -1) {
+        return forward;
+      }
+      final forwardDist = (forward - localAnchor).abs();
+      final backwardDist = (localAnchor - backward).abs();
+      return forwardDist <= backwardDist ? forward : backward;
+    }
+
+    int? bestStart;
+    var bestLen = 0;
+    var bestDistance = 1 << 30;
+
+    // Prefer an exact (case-insensitive) match of the raw query when possible.
+    final needle = trimmed.toLowerCase();
+    for (final segment in segments) {
+      final text = segment.text;
+      if (text.isEmpty) {
+        continue;
+      }
+      final lower = text.toLowerCase();
+      final localAnchor = (offset - segment.start)
+          .clamp(0, text.length)
+          .toInt();
+      final localIndex = nearestIndex(lower, needle, localAnchor);
+      if (localIndex == null) {
+        continue;
+      }
+      final globalIndex = segment.start + localIndex;
+      final distance = (globalIndex - offset).abs();
+      if (bestStart == null || distance < bestDistance) {
+        bestStart = globalIndex;
+        bestLen = trimmed.length;
+        bestDistance = distance;
+      }
+    }
+
+    // Fallback: highlight the nearest token match.
+    if (bestStart == null) {
+      for (final segment in segments) {
+        final text = segment.text;
+        if (text.isEmpty) {
+          continue;
+        }
+        final lower = text.toLowerCase();
+        final localAnchor = (offset - segment.start)
+            .clamp(0, text.length)
+            .toInt();
+        for (final token in tokens) {
+          final localIndex = nearestIndex(
+            lower,
+            token.toLowerCase(),
+            localAnchor,
+          );
+          if (localIndex == null) {
+            continue;
+          }
+          final globalIndex = segment.start + localIndex;
+          final distance = (globalIndex - offset).abs();
+          if (bestStart == null ||
+              distance < bestDistance ||
+              (distance == bestDistance && token.length > bestLen)) {
+            bestStart = globalIndex;
+            bestLen = token.length;
+            bestDistance = distance;
+          }
+        }
+      }
+    }
+
+    final start = (bestStart ?? -1).clamp(0, runningOffset).toInt();
+    final end = (start + bestLen).clamp(start, runningOffset).toInt();
+    if (end <= start) {
+      return;
+    }
+    _searchHighlightTimer?.cancel();
+    setState(() {
+      _searchHighlightChapterIndex = chapterIndex;
       _searchHighlightRange = _HighlightRange(
         start: start,
         end: end,
@@ -1234,63 +1454,57 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (anchor == null) {
       return null;
     }
-    return _estimateAnchorScrollOffset(
-      chapterIndex,
-      anchor.offset,
-    );
+    return _estimateAnchorScrollOffset(chapterIndex, anchor.offset);
   }
 
-  double? _estimateAnchorScrollOffset(
-    int chapterIndex,
-    int offset,
-  ) {
+  double? _estimateAnchorScrollOffset(int chapterIndex, int offset) {
     final chapter = _controller.chapters[chapterIndex];
     final textWidth = _textWidth;
     if (textWidth == null || textWidth <= 0) {
       return null;
     }
     final titleStyle = Theme.of(context).textTheme.titleMedium?.copyWith(
-          fontWeight: FontWeight.w600,
-          letterSpacing: 0.2,
-        );
+      fontWeight: FontWeight.w600,
+      letterSpacing: 0.2,
+    );
     const bodyStyle = TextStyle(
       fontSize: 17,
       height: 1.65,
       fontFamily: 'Georgia',
-      fontFamilyFallback: [
-        'Times New Roman',
-        'Times',
-        'serif',
-      ],
+      fontFamilyFallback: ['Times New Roman', 'Times', 'serif'],
     );
     final titleText = chapter.title;
     if (offset < titleText.length) {
-    final caretOffset =
-        _measureCaretOffset(titleText, titleStyle, textWidth, offset);
-    return 6 + caretOffset; // top padding
+      final caretOffset = _measureCaretOffset(
+        titleText,
+        titleStyle,
+        textWidth,
+        offset,
+      );
+      return 6 + caretOffset; // top padding
     }
     var remaining = offset - titleText.length;
-    var accumulated = 6 +
+    var accumulated =
+        6 +
         _measureTextHeight(titleText, titleStyle, textWidth) +
         10; // title padding
     for (final paragraph in chapter.paragraphs) {
       if (remaining <= paragraph.length) {
-        final caretOffset =
-            _measureCaretOffset(paragraph, bodyStyle, textWidth, remaining);
+        final caretOffset = _measureCaretOffset(
+          paragraph,
+          bodyStyle,
+          textWidth,
+          remaining,
+        );
         return accumulated + caretOffset;
       }
-      accumulated +=
-          _measureTextHeight(paragraph, bodyStyle, textWidth) + 12;
+      accumulated += _measureTextHeight(paragraph, bodyStyle, textWidth) + 12;
       remaining -= paragraph.length;
     }
     return accumulated;
   }
 
-  double _measureTextHeight(
-    String text,
-    TextStyle? style,
-    double width,
-  ) {
+  double _measureTextHeight(String text, TextStyle? style, double width) {
     final painter = TextPainter(
       text: TextSpan(text: text, style: style),
       textDirection: TextDirection.ltr,
@@ -1311,10 +1525,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
       textDirection: TextDirection.ltr,
       maxLines: null,
     )..layout(maxWidth: width);
-    return painter.getOffsetForCaret(
-      TextPosition(offset: clamped),
-      Rect.zero,
-    ).dy;
+    return painter
+        .getOffsetForCaret(TextPosition(offset: clamped), Rect.zero)
+        .dy;
   }
 
   List<_HighlightRange> _highlightRangesForChapter(int chapterIndex) {
@@ -1330,14 +1543,15 @@ class _ReaderScreenState extends State<ReaderScreen> {
       }
       final index = anchor.chapterHref.startsWith('index:')
           ? int.tryParse(anchor.chapterHref.substring('index:'.length))
-          : _controller.chapters
-              .indexWhere((chapter) => chapter.href == anchor.chapterHref);
+          : _controller.chapters.indexWhere(
+              (chapter) => chapter.href == anchor.chapterHref,
+            );
       if (index != chapterIndex) {
         continue;
       }
       final start = anchor.offset;
-      final end = highlight.endOffset ??
-          (start + highlight.excerpt.trim().length);
+      final end =
+          highlight.endOffset ?? (start + highlight.excerpt.trim().length);
       if (end <= start) {
         continue;
       }
@@ -1358,12 +1572,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   Color _markColorFor(String key) {
-    return _markOptions
-        .firstWhere(
-          (option) => option.key == key,
-          orElse: () => _markOptions.first,
-        )
-        .color;
+    return markColorForKey(key);
   }
 
   Future<void> _persistReadingPosition() async {
@@ -1497,99 +1706,91 @@ class _ReaderScreenState extends State<ReaderScreen> {
           child: _controller.loading
               ? const Center(child: CircularProgressIndicator())
               : _controller.error != null
-                  ? _ReaderErrorPanel(
-                      message: _controller.error!,
-                      onRetry: () {
-                        _controller.retry();
-                      },
-                    )
-                  : _controller.chapters.isEmpty
-                      ? const Center(
-                          child: Text('Нет данных для отображения'),
-                        )
-                      : Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            _ReaderHeader(
-                              title: _controller.title ?? 'Reader',
-                              hasToc: hasToc,
-                              hasBookmark: _controller.bookmark != null,
-                              onTocTap: _showToc,
-                              onHighlightsTap: _showHighlights,
-                              onNotesTap: _showNotes,
-                              onMarksTap: _showNotesHighlights,
-                              onBookmarkToggle: _toggleBookmark,
-                              onBookmarksTap: _showBookmarks,
-                              onSearchTap: _showSearch,
-                            ),
-                            const SizedBox(height: 16),
-                            Expanded(
-                              child: LayoutBuilder(
-                                builder: (context, constraints) {
-                                  _viewportExtent = constraints.maxHeight;
-                                  _textWidth = constraints.maxWidth;
-                                  return SelectionArea(
-                                    contextMenuBuilder:
-                                        (context, selectableRegionState) {
-                                      final items = <ContextMenuButtonItem>[
-                                        if (_canHighlightSelection)
-                                          for (final option in _markOptions)
-                                            ContextMenuButtonItem(
-                                              label: 'Highlight · ${option.label}',
-                                              onPressed: () {
-                                                _addHighlightFromSelection(
-                                                  selectableRegionState,
-                                                  option.key,
-                                                );
-                                              },
-                                            ),
-                                        if (_canHighlightSelection)
-                                          ContextMenuButtonItem(
-                                            label: 'Note',
-                                            onPressed: () {
-                                              _addNoteFromSelection(
-                                                selectableRegionState,
-                                              );
-                                            },
-                                          ),
-                                        ...selectableRegionState
-                                            .contextMenuButtonItems,
-                                      ];
-                                      return AdaptiveTextSelectionToolbar
-                                          .buttonItems(
-                                        anchors: selectableRegionState
-                                            .contextMenuAnchors,
-                                        buttonItems: items,
-                                      );
-                                    },
-                                    child: ScrollablePositionedList.builder(
-                                      itemScrollController:
-                                          _itemScrollController,
-                                      itemPositionsListener:
-                                          _itemPositionsListener,
-                                      scrollOffsetController:
-                                          _scrollOffsetController,
-                                      itemCount: _controller.chapters.length,
-                                      itemBuilder: (context, index) {
-                                        final chapter =
-                                            _controller.chapters[index];
-                                        return _ChapterContent(
-                                          chapter: chapter,
-                                          chapterIndex: index,
-                                          onSelectionChanged:
-                                              _onChapterSelectionChanged,
-                                          highlightRanges:
-                                              _highlightRangesForChapter(index),
-                                          dividerColor: scheme.outlineVariant,
+              ? _ReaderErrorPanel(
+                  message: _controller.error!,
+                  onRetry: () {
+                    _controller.retry();
+                  },
+                )
+              : _controller.chapters.isEmpty
+              ? const Center(child: Text('Нет данных для отображения'))
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _ReaderHeader(
+                      title: _controller.title ?? 'Reader',
+                      hasToc: hasToc,
+                      hasBookmark: _controller.bookmark != null,
+                      onTocTap: _showToc,
+                      onHighlightsTap: _showHighlights,
+                      onNotesTap: _showNotes,
+                      onMarksTap: _showNotesHighlights,
+                      onBookmarkToggle: _toggleBookmark,
+                      onBookmarksTap: _showBookmarks,
+                      onSearchTap: _showSearch,
+                    ),
+                    const SizedBox(height: 16),
+                    Expanded(
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          _viewportExtent = constraints.maxHeight;
+                          _textWidth = constraints.maxWidth;
+                          return SelectionArea(
+                            contextMenuBuilder: (context, selectableRegionState) {
+                              final items = <ContextMenuButtonItem>[
+                                if (_canHighlightSelection)
+                                  for (final option in markColorOptions)
+                                    ContextMenuButtonItem(
+                                      label: 'Highlight · ${option.label}',
+                                      onPressed: () {
+                                        _addHighlightFromSelection(
+                                          selectableRegionState,
+                                          option.key,
                                         );
                                       },
                                     ),
-                                  );
-                                },
-                              ),
+                                if (_canHighlightSelection)
+                                  ContextMenuButtonItem(
+                                    label: 'Note',
+                                    onPressed: () {
+                                      _addNoteFromSelection(
+                                        selectableRegionState,
+                                      );
+                                    },
+                                  ),
+                                ...selectableRegionState.contextMenuButtonItems,
+                              ];
+                              return AdaptiveTextSelectionToolbar.buttonItems(
+                                anchors:
+                                    selectableRegionState.contextMenuAnchors,
+                                buttonItems: items,
+                              );
+                            },
+                            child: ScrollablePositionedList.builder(
+                              itemScrollController: _itemScrollController,
+                              itemPositionsListener: _itemPositionsListener,
+                              scrollOffsetController: _scrollOffsetController,
+                              itemCount: _controller.chapters.length,
+                              itemBuilder: (context, index) {
+                                final chapter = _controller.chapters[index];
+                                return _ChapterContent(
+                                  chapter: chapter,
+                                  chapterIndex: index,
+                                  onSelectionChanged:
+                                      _onChapterSelectionChanged,
+                                  highlightRanges: _highlightRangesForChapter(
+                                    index,
+                                  ),
+                                  dividerColor: scheme.outlineVariant,
+                                );
+                              },
                             ),
-                          ],
-                        ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
         ),
       ),
     );
@@ -1763,8 +1964,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   String _sanitizeFileName(String value) {
-    final cleaned =
-        value.replaceAll(RegExp(r'[^A-Za-z0-9._-]+'), '_').trim();
+    final cleaned = value.replaceAll(RegExp(r'[^A-Za-z0-9._-]+'), '_').trim();
     return cleaned.isEmpty ? 'toc' : cleaned;
   }
 
@@ -1800,11 +2000,7 @@ String _formatDateTime(DateTime date) {
   return '$day.$month.${date.year} $hour:$minute';
 }
 
-enum _MarkFilter {
-  all,
-  notes,
-  highlights,
-}
+enum _MarkFilter { all, notes, highlights }
 
 class _MarkEntry {
   const _MarkEntry({
@@ -1823,10 +2019,7 @@ class _MarkEntry {
 }
 
 class _ReaderErrorPanel extends StatelessWidget {
-  const _ReaderErrorPanel({
-    required this.message,
-    required this.onRetry,
-  });
+  const _ReaderErrorPanel({required this.message, required this.onRetry});
 
   final String message;
   final VoidCallback onRetry;
@@ -1845,10 +2038,7 @@ class _ReaderErrorPanel extends StatelessWidget {
               style: Theme.of(context).textTheme.bodyLarge,
             ),
             const SizedBox(height: 12),
-            FilledButton(
-              onPressed: onRetry,
-              child: const Text('Повторить'),
-            ),
+            FilledButton(onPressed: onRetry, child: const Text('Повторить')),
           ],
         ),
       ),
@@ -1896,17 +2086,26 @@ class _ChapterContentState extends State<_ChapterContent> {
     if (!_selectionNotifier.registered) {
       return;
     }
-    widget.onSelectionChanged(
-      widget.chapterIndex,
-      _selectionNotifier.selection.range,
-    );
+    // Avoid calling `selection.range` when the selection is collapsed or absent.
+    // On some Flutter desktop builds, `getSelection()` (used by `range`) can crash
+    // during selection initialization (e.g. first click after programmatic scroll).
+    if (_selectionNotifier.selection.status != SelectionStatus.uncollapsed) {
+      widget.onSelectionChanged(widget.chapterIndex, null);
+      return;
+    }
+    // Defensive: on some Flutter versions/desktop platforms, selection geometry
+    // can be in a transient invalid state and `selection.range` may throw.
+    // In that case we skip the update to avoid crashing the reader.
+    SelectedContentRange? range;
+    try {
+      range = _selectionNotifier.selection.range;
+    } catch (_) {
+      return;
+    }
+    widget.onSelectionChanged(widget.chapterIndex, range);
   }
 
-  List<TextSpan> _buildSpans(
-    String text,
-    int baseOffset,
-    TextStyle? style,
-  ) {
+  List<TextSpan> _buildSpans(String text, int baseOffset, TextStyle? style) {
     final ranges = widget.highlightRanges;
     if (ranges.isEmpty || text.isEmpty) {
       return [TextSpan(text: text, style: style)];
@@ -1917,8 +2116,9 @@ class _ChapterContentState extends State<_ChapterContent> {
       if (range.end <= baseOffset || range.start >= baseOffset + text.length) {
         continue;
       }
-      final localStart =
-          (range.start - baseOffset).clamp(0, text.length).toInt();
+      final localStart = (range.start - baseOffset)
+          .clamp(0, text.length)
+          .toInt();
       final localEnd = (range.end - baseOffset).clamp(0, text.length).toInt();
       if (localEnd <= cursor) {
         continue;
@@ -1932,9 +2132,7 @@ class _ChapterContentState extends State<_ChapterContent> {
       spans.add(
         TextSpan(
           text: text.substring(highlightStart, localEnd),
-          style: style?.copyWith(
-            backgroundColor: range.color.withAlpha(140),
-          ),
+          style: style?.copyWith(backgroundColor: range.color.withAlpha(140)),
         ),
       );
       cursor = localEnd;
@@ -1948,18 +2146,14 @@ class _ChapterContentState extends State<_ChapterContent> {
   @override
   Widget build(BuildContext context) {
     final titleStyle = Theme.of(context).textTheme.titleMedium?.copyWith(
-          fontWeight: FontWeight.w600,
-          letterSpacing: 0.2,
-        );
+      fontWeight: FontWeight.w600,
+      letterSpacing: 0.2,
+    );
     const bodyStyle = TextStyle(
       fontSize: 17,
       height: 1.65,
       fontFamily: 'Georgia',
-      fontFamilyFallback: [
-        'Times New Roman',
-        'Times',
-        'serif',
-      ],
+      fontFamilyFallback: ['Times New Roman', 'Times', 'serif'],
     );
     final titleText = widget.chapter.title;
     final titleSpans = _buildSpans(titleText, 0, titleStyle);
@@ -2000,10 +2194,7 @@ class _ChapterContentState extends State<_ChapterContent> {
               ),
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 12),
-              child: Divider(
-                height: 32,
-                color: widget.dividerColor,
-              ),
+              child: Divider(height: 32, color: widget.dividerColor),
             ),
           ],
         ),
@@ -2024,41 +2215,6 @@ class _HighlightRange {
   final Color color;
 }
 
-class _HighlightOption {
-  const _HighlightOption({
-    required this.key,
-    required this.label,
-    required this.color,
-  });
-
-  final String key;
-  final String label;
-  final Color color;
-}
-
-const List<_HighlightOption> _markOptions = [
-  _HighlightOption(
-    key: 'yellow',
-    label: 'Желтый',
-    color: Color(0xFFFFF59D),
-  ),
-  _HighlightOption(
-    key: 'green',
-    label: 'Зеленый',
-    color: Color(0xFFC8E6C9),
-  ),
-  _HighlightOption(
-    key: 'pink',
-    label: 'Розовый',
-    color: Color(0xFFF8BBD0),
-  ),
-  _HighlightOption(
-    key: 'blue',
-    label: 'Голубой',
-    color: Color(0xFFBBDEFB),
-  ),
-];
-
 class _HighlightSwatch extends StatelessWidget {
   const _HighlightSwatch({required this.color});
 
@@ -2072,9 +2228,7 @@ class _HighlightSwatch extends StatelessWidget {
       decoration: BoxDecoration(
         color: color,
         shape: BoxShape.circle,
-        border: Border.all(
-          color: Theme.of(context).colorScheme.outlineVariant,
-        ),
+        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
       ),
     );
   }
@@ -2115,9 +2269,9 @@ class _ReaderHeader extends StatelessWidget {
             title,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
+            style: Theme.of(
+              context,
+            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
           ),
         ),
         const SizedBox(width: 12),

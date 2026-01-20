@@ -1,6 +1,8 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:cogniread/src/core/types/toc.dart';
+import 'package:cogniread/src/features/library/data/free_notes_store.dart';
 import 'package:cogniread/src/features/library/data/library_store.dart';
 import 'package:cogniread/src/features/sync/data/event_log_store.dart';
 import 'package:cogniread/src/features/sync/file_sync/file_sync_engine.dart';
@@ -30,6 +32,7 @@ void main() {
   late PathProviderPlatform originalPlatform;
   late Directory supportDir;
   late LibraryStore libraryStore;
+  late FreeNotesStore freeNotesStore;
   late EventLogStore eventLogStore;
   late StorageService storageService;
 
@@ -39,11 +42,17 @@ void main() {
     PathProviderPlatform.instance =
         _TestPathProviderPlatform(supportDir.path);
     libraryStore = LibraryStore();
+    freeNotesStore = FreeNotesStore();
     eventLogStore = EventLogStore();
     storageService = _FakeStorageService(supportDir.path);
     await libraryStore.init();
+    await freeNotesStore.init();
     await eventLogStore.init();
+  });
+
+  setUp(() async {
     await libraryStore.clear();
+    await freeNotesStore.clear();
     await eventLogStore.clear();
   });
 
@@ -135,6 +144,118 @@ void main() {
     final updatedSecond = await libraryStore.getById(entry.id);
     expect(updatedSecond, isNotNull);
     expect(updatedSecond!.notes.length, 1);
+    expect(eventLogStore.listEvents().length, 1);
+    expect(second.appliedEvents, 0);
+  });
+
+  test('book deletion is propagated via books_index tombstone', () async {
+    final deletedAt = DateTime(2026, 1, 12, 10, 3).toUtc();
+    await eventLogStore.addEvent(
+      EventLogEntry(
+        id: 'evt-delete-book',
+        entityType: 'book',
+        entityId: 'hash',
+        op: 'delete',
+        payload: <String, Object?>{
+          'fingerprint': 'hash',
+          'updatedAt': deletedAt.toIso8601String(),
+        },
+        createdAt: deletedAt,
+      ),
+    );
+
+    final adapter = MockSyncAdapter();
+    adapter.seedFile(
+      'books_index.json',
+      SyncBooksIndexFile(
+        schemaVersion: 1,
+        generatedAt: DateTime(2026, 1, 12, 10, 2).toUtc(),
+        books: <SyncBookDescriptor>[
+          SyncBookDescriptor(
+            id: 'book-1',
+            title: 'Title',
+            author: 'Author',
+            fingerprint: 'hash',
+            size: 4,
+            updatedAt: DateTime(2026, 1, 12, 10, 0).toUtc(),
+            extension: '.epub',
+            deleted: false,
+          ),
+        ],
+      ).toJsonBytes(),
+    );
+    adapter.seedFile('books/hash.epub', <int>[0, 1, 2, 3]);
+
+    final engine = FileSyncEngine(
+      adapter: adapter,
+      libraryStore: libraryStore,
+      eventLogStore: eventLogStore,
+      deviceId: 'device-local',
+      storageService: storageService,
+    );
+
+    await engine.sync();
+
+    expect(await libraryStore.loadAll(), isEmpty);
+    expect(await adapter.getFile('books/hash.epub'), isNull);
+
+    final updatedIndex = await adapter.getFile('books_index.json');
+    expect(updatedIndex, isNotNull);
+    final decoded =
+        jsonDecode(String.fromCharCodes(updatedIndex!.bytes)) as Map<String, dynamic>;
+    final books = decoded['books'] as List<dynamic>;
+    expect(books, isNotEmpty);
+    final first = books.first as Map<String, dynamic>;
+    expect(first['fingerprint'], equals('hash'));
+    expect(first['deleted'], isTrue);
+  });
+
+  test('sync applies free_note events and remains idempotent', () async {
+    final note = FreeNote(
+      id: 'fn-1',
+      text: 'Free note',
+      color: 'blue',
+      createdAt: DateTime(2026, 1, 12, 10),
+      updatedAt: DateTime(2026, 1, 12, 10, 1),
+    );
+    final remoteEvent = EventLogEntry(
+      id: 'evt-remote-free-1',
+      entityType: 'free_note',
+      entityId: note.id,
+      op: 'add',
+      payload: note.toMap(),
+      createdAt: DateTime(2026, 1, 12, 10, 1),
+    );
+    final eventLogFile = SyncEventLogFile(
+      schemaVersion: 1,
+      deviceId: 'device-remote',
+      generatedAt: DateTime(2026, 1, 12, 10, 2),
+      cursor: remoteEvent.id,
+      events: <EventLogEntry>[remoteEvent],
+    );
+
+    final adapter = MockSyncAdapter();
+    adapter.seedFile('event_log.json', eventLogFile.toJsonBytes());
+
+    final engine = FileSyncEngine(
+      adapter: adapter,
+      libraryStore: libraryStore,
+      freeNotesStore: freeNotesStore,
+      eventLogStore: eventLogStore,
+      deviceId: 'device-local',
+      storageService: storageService,
+    );
+
+    final first = await engine.sync();
+    final stored = await freeNotesStore.getById(note.id);
+    expect(stored, isNotNull);
+    expect(stored!.text, 'Free note');
+    expect(eventLogStore.listEvents().length, 1);
+    expect(first.appliedEvents, 1);
+
+    final second = await engine.sync();
+    final storedSecond = await freeNotesStore.getById(note.id);
+    expect(storedSecond, isNotNull);
     expect(eventLogStore.listEvents().length, 1);
     expect(second.appliedEvents, 0);
   });
