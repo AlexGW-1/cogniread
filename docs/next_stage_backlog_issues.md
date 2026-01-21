@@ -470,6 +470,7 @@
 ---
 
 # EPIC 3 — Search (M3)
+**Status:** Done (Global Search v2 + FTS5 реализованы, см. `docs/search_global_v2.md`)
 
 ## Issue 20 — In-book search engine v1 (скан по главам)
 **Labels:** `epic:search` `type:feature` `prio:P0` `size:S`  
@@ -548,24 +549,25 @@
 - Есть решение “делаем/не делаем в этом этапе” с аргументами и следующими шагами.
 
 ### Spike results
-**Decision:** не внедряем FTS в этом этапе.  
-**Почему:** сейчас глобальный поиск ограничен библиотекой/заметками/выделениями, а FTS добавит новую БД (SQLite) поверх Hive, усложнит миграции и увеличит поверхность багов. Для M3 ценность не окупает стоимость.
+**Decision (updated):** FTS5 внедрён в Global Search v2.  
+**Почему:** приоритеты изменились — нужен полнотекст по книгам + быстрый UX; индекс вынесен в SQLite, rebuild идёт в фоне (isolate), есть UI прогресс/отмена и диагностика.
 
-**Оценка интеграции:**
+**Оценка интеграции (факт):**
 - Скорость: FTS5 даст быстрый полнотекст по главам, но стоимость первичного индекса ощутима на больших книгах.
 - Объём: индекс ~20-40% от текста (примерно), на десятках книг может быть десятки МБ.
 - Сложность: нужна параллельная схема хранения и синхронизация с текущим Hive (либо миграция на SQLite).
 
-**Схема (черновик):**
-- Таблица `fts_chapters` (FTS5): `book_id`, `chapter_id`, `title`, `content`.
-- Таблица `fts_marks` (FTS5): `book_id`, `mark_id`, `type`, `content`.
-- Таблица `chapters_meta`: `chapter_id`, `href`, `offset_map` (для переходов).
+**Схема (реализация):**
+- Таблица `fts_books` (FTS5): `book_id`, `book_title`, `book_author`, `chapter_title`, `content`, `anchor`, `chapter_href`, `chapter_index`, `paragraph_index`.
+- Таблица `fts_marks` (FTS5): `book_id`, `mark_id`, `mark_type`, `anchor`, `content`.
+- Таблица `search_meta`: `schema_version`, `last_rebuild_at`, `last_rebuild_ms`, `books_rows`, `marks_rows`, `last_error`.
+- Таблица `search_books_state`: `book_id`, `fingerprint`, `indexed_at`.
 
-**План миграции (если решим делать позже):**
-1) Добавить фоновую индексацию при открытии книги + батч по всей библиотеке.
-2) Хранить `fts_version` и `indexed_at` на книгу.
-3) При обновлениях заметок/выделений — инкрементально обновлять `fts_marks`.
-4) Параллельно оставить Hive как источник правды, FTS — как индекс.
+**Реализация (факт):**
+1) Фоновая индексация книг вынесена в isolate, показан прогресс/отмена.
+2) `search_books_state` хранит `fingerprint` и `indexed_at` для reconcile.
+3) Обновления notes/highlights идут через `fts_marks`, индекс синхронизируется инкрементально.
+4) Hive остаётся source of truth, FTS5 — вторичный индекс.
 
 ---
 
