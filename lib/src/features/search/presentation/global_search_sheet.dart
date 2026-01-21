@@ -6,6 +6,399 @@ import 'package:flutter/material.dart';
 typedef BookTitleResolver = String Function(String bookId);
 typedef BookAuthorResolver = String? Function(String bookId);
 
+class GlobalSearchScreen extends StatefulWidget {
+  const GlobalSearchScreen({
+    super.key,
+    required this.onOpen,
+    required this.resolveBookTitle,
+    required this.resolveBookAuthor,
+    this.searchIndex,
+    this.initialQuery = '',
+    this.onSaveQuery,
+    this.recentQueries = const <String>[],
+    this.onClearRecentQueries,
+    this.onRemoveRecentQuery,
+  });
+
+  final void Function(
+    String bookId, {
+    String? initialNoteId,
+    String? initialHighlightId,
+    String? initialAnchor,
+    String? initialSearchQuery,
+  })
+  onOpen;
+
+  final BookTitleResolver resolveBookTitle;
+  final BookAuthorResolver resolveBookAuthor;
+  final SearchIndexService? searchIndex;
+  final String initialQuery;
+  final ValueChanged<String>? onSaveQuery;
+  final List<String> recentQueries;
+  final VoidCallback? onClearRecentQueries;
+  final ValueChanged<String>? onRemoveRecentQuery;
+
+  @override
+  State<GlobalSearchScreen> createState() => _GlobalSearchScreenState();
+}
+
+class _GlobalSearchScreenState extends State<GlobalSearchScreen>
+    with SingleTickerProviderStateMixin {
+  late final GlobalSearchController _controller;
+  late final TextEditingController _textController;
+  late final TabController _tabController;
+  late List<String> _recentQueries;
+
+  void _setQuery(String query) {
+    final value = query.trim();
+    if (value.isEmpty) {
+      return;
+    }
+    _textController.value = TextEditingValue(
+      text: value,
+      selection: TextSelection.collapsed(offset: value.length),
+    );
+    _controller.setQuery(value);
+  }
+
+  void _removeRecentQuery(String query) {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) {
+      return;
+    }
+    setState(() {
+      _recentQueries = _recentQueries.where((q) => q != trimmed).toList();
+    });
+    widget.onRemoveRecentQuery?.call(trimmed);
+  }
+
+  void _clearRecentQueries() {
+    if (_recentQueries.isEmpty) {
+      return;
+    }
+    setState(() {
+      _recentQueries = <String>[];
+    });
+    widget.onClearRecentQueries?.call();
+  }
+
+  void _commitQuery() {
+    final query = _textController.text.trim();
+    if (query.isEmpty) {
+      return;
+    }
+    setState(() {
+      _recentQueries = <String>[
+        query,
+        ..._recentQueries.where((item) => item != query),
+      ];
+      if (_recentQueries.length > 50) {
+        _recentQueries = _recentQueries.sublist(0, 50);
+      }
+    });
+    widget.onSaveQuery?.call(query);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = GlobalSearchController(searchIndex: widget.searchIndex);
+    _textController = TextEditingController(text: widget.initialQuery);
+    _tabController = TabController(length: 3, vsync: this);
+    _recentQueries = List<String>.from(widget.recentQueries);
+    _tabController.addListener(() {
+      if (_tabController.indexIsChanging) {
+        return;
+      }
+      _controller.setTab(_tabForIndex(_tabController.index));
+    });
+    _controller.init();
+    if (widget.initialQuery.trim().isNotEmpty) {
+      _controller.setQuery(widget.initialQuery);
+    }
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    _textController.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  GlobalSearchTab _tabForIndex(int index) {
+    switch (index) {
+      case 1:
+        return GlobalSearchTab.notes;
+      case 2:
+        return GlobalSearchTab.quotes;
+      default:
+        return GlobalSearchTab.books;
+    }
+  }
+
+  String _rebuildLabel(SearchIndexBooksRebuildProgress? progress) {
+    if (progress == null) {
+      return 'Подготовка…';
+    }
+    if (progress.stage == 'marks') {
+      return 'Индексируем заметки и цитаты…';
+    }
+    final title = progress.currentTitle?.trim();
+    final total = progress.totalBooks;
+    final processed = progress.processedBooks;
+    final base = total > 0 ? 'Книги: $processed/$total' : 'Книги: $processed';
+    if (title == null || title.isEmpty) {
+      return base;
+    }
+    return '$base · $title';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return WillPopScope(
+      onWillPop: () async {
+        _commitQuery();
+        return true;
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Поиск'),
+        ),
+        body: SafeArea(
+          child: AnimatedBuilder(
+            animation: _controller,
+            builder: (context, _) {
+              final query = _controller.query.trim();
+              final searching = _controller.searching;
+              final rebuilding = _controller.rebuilding;
+              final rebuildProgress = _controller.rebuildProgress;
+              final cancelingRebuild = _controller.cancelingRebuild;
+              final error = _controller.error ?? _controller.status?.lastError;
+              final tooShort =
+                  query.isNotEmpty &&
+                  query.length < GlobalSearchController.minQueryLength;
+              return Padding(
+                padding: EdgeInsets.only(
+                  left: 16,
+                  right: 16,
+                  top: 12,
+                  bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      key: const ValueKey('global-search-v2-field'),
+                      controller: _textController,
+                      onChanged: _controller.setQuery,
+                      onSubmitted: (_) => _commitQuery(),
+                      autofocus: true,
+                      decoration: const InputDecoration(
+                        hintText: 'Книги, заметки, цитаты',
+                        prefixIcon: Icon(Icons.manage_search),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TabBar(
+                      controller: _tabController,
+                      tabs: const [
+                        Tab(text: 'Books'),
+                        Tab(text: 'Notes'),
+                        Tab(text: 'Quotes'),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    if (searching) const LinearProgressIndicator(),
+                    if (rebuilding) ...[
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: scheme.surfaceContainerHighest,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                const Expanded(
+                                  child: Text(
+                                    'Индексирование',
+                                    style: TextStyle(fontWeight: FontWeight.w600),
+                                  ),
+                                ),
+                                TextButton(
+                                  onPressed: (cancelingRebuild ||
+                                          rebuildProgress?.stage == 'marks')
+                                      ? null
+                                      : _controller.cancelRebuild,
+                                  child: Text(
+                                    cancelingRebuild ? 'Отмена…' : 'Отменить',
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            LinearProgressIndicator(
+                              value: rebuildProgress?.fraction,
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              _rebuildLabel(rebuildProgress),
+                              style: Theme.of(context).textTheme.bodySmall,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                    if (error != null && error.trim().isNotEmpty) ...[
+                      const SizedBox(height: 10),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: scheme.errorContainer,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Поиск недоступен',
+                              style: TextStyle(
+                                color: scheme.onErrorContainer,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              error,
+                              style: TextStyle(color: scheme.onErrorContainer),
+                              maxLines: 3,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 10),
+                            FilledButton.icon(
+                              onPressed:
+                                  rebuilding ? null : _controller.rebuildIndex,
+                              icon: const Icon(Icons.restart_alt),
+                              label: const Text('Перестроить индекс'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 12),
+                    Expanded(
+                      child: query.isEmpty
+                          ? _EmptyQueryState(
+                              recentQueries: _recentQueries,
+                              onPickQuery: _setQuery,
+                              onClear: _clearRecentQueries,
+                              onRemove: _removeRecentQuery,
+                            )
+                          : tooShort
+                              ? const Center(
+                                  child: Text('Введите минимум 2 символа.'),
+                                )
+                              : TabBarView(
+                                  controller: _tabController,
+                                  children: [
+                                    _BooksResultsList(
+                                      items: _controller.bookResults,
+                                      searchQuery: query,
+                                      onOpen:
+                                          (
+                                            bookId, {
+                                            String? initialNoteId,
+                                            String? initialHighlightId,
+                                            String? initialAnchor,
+                                            String? initialSearchQuery,
+                                          }) {
+                                            _commitQuery();
+                                            widget.onOpen(
+                                              bookId,
+                                              initialNoteId: initialNoteId,
+                                              initialHighlightId:
+                                                  initialHighlightId,
+                                              initialAnchor: initialAnchor,
+                                              initialSearchQuery:
+                                                  initialSearchQuery,
+                                            );
+                                          },
+                                    ),
+                                    _MarksResultsList(
+                                      items: _controller.noteResults,
+                                      label: 'Заметка',
+                                      resolveBookTitle: widget.resolveBookTitle,
+                                      resolveBookAuthor:
+                                          widget.resolveBookAuthor,
+                                      onOpen:
+                                          (
+                                            bookId, {
+                                            String? initialNoteId,
+                                            String? initialHighlightId,
+                                            String? initialAnchor,
+                                            String? initialSearchQuery,
+                                          }) {
+                                            _commitQuery();
+                                            widget.onOpen(
+                                              bookId,
+                                              initialNoteId: initialNoteId,
+                                              initialHighlightId:
+                                                  initialHighlightId,
+                                              initialAnchor: initialAnchor,
+                                              initialSearchQuery:
+                                                  initialSearchQuery,
+                                            );
+                                          },
+                                    ),
+                                    _MarksResultsList(
+                                      items: _controller.quoteResults,
+                                      label: 'Цитата',
+                                      resolveBookTitle: widget.resolveBookTitle,
+                                      resolveBookAuthor:
+                                          widget.resolveBookAuthor,
+                                      onOpen:
+                                          (
+                                            bookId, {
+                                            String? initialNoteId,
+                                            String? initialHighlightId,
+                                            String? initialAnchor,
+                                            String? initialSearchQuery,
+                                          }) {
+                                            _commitQuery();
+                                            widget.onOpen(
+                                              bookId,
+                                              initialNoteId: initialNoteId,
+                                              initialHighlightId:
+                                                  initialHighlightId,
+                                              initialAnchor: initialAnchor,
+                                              initialSearchQuery:
+                                                  initialSearchQuery,
+                                            );
+                                          },
+                                    ),
+                                  ],
+                                ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class GlobalSearchSheet extends StatefulWidget {
   const GlobalSearchSheet({
     super.key,
@@ -326,6 +719,7 @@ class _GlobalSearchSheetState extends State<GlobalSearchSheet>
                             _BooksResultsList(
                               items: _controller.bookResults,
                               searchQuery: query,
+                              onClose: () => Navigator.of(context).pop(),
                               onOpen:
                                   (
                                     bookId, {
@@ -349,6 +743,7 @@ class _GlobalSearchSheetState extends State<GlobalSearchSheet>
                               label: 'Заметка',
                               resolveBookTitle: widget.resolveBookTitle,
                               resolveBookAuthor: widget.resolveBookAuthor,
+                              onClose: () => Navigator.of(context).pop(),
                               onOpen:
                                   (
                                     bookId, {
@@ -372,6 +767,7 @@ class _GlobalSearchSheetState extends State<GlobalSearchSheet>
                               label: 'Цитата',
                               resolveBookTitle: widget.resolveBookTitle,
                               resolveBookAuthor: widget.resolveBookAuthor,
+                              onClose: () => Navigator.of(context).pop(),
                               onOpen:
                                   (
                                     bookId, {
@@ -407,10 +803,12 @@ class _BooksResultsList extends StatelessWidget {
     required this.items,
     required this.searchQuery,
     required this.onOpen,
+    this.onClose,
   });
 
   final List<BookTextHit> items;
   final String searchQuery;
+  final VoidCallback? onClose;
   final void Function(
     String bookId, {
     String? initialNoteId,
@@ -479,7 +877,7 @@ class _BooksResultsList extends StatelessWidget {
                 ),
           trailing: const Icon(Icons.chevron_right),
           onTap: () {
-            Navigator.of(context).pop();
+            onClose?.call();
             onOpen(
               item.bookId,
               initialAnchor: item.anchor,
@@ -499,12 +897,14 @@ class _MarksResultsList extends StatelessWidget {
     required this.resolveBookTitle,
     required this.resolveBookAuthor,
     required this.onOpen,
+    this.onClose,
   });
 
   final List<SearchHit> items;
   final String label;
   final BookTitleResolver resolveBookTitle;
   final BookAuthorResolver resolveBookAuthor;
+  final VoidCallback? onClose;
   final void Function(
     String bookId, {
     String? initialNoteId,
@@ -567,7 +967,7 @@ class _MarksResultsList extends StatelessWidget {
           minVerticalPadding: 8,
           trailing: const Icon(Icons.chevron_right),
           onTap: () {
-            Navigator.of(context).pop();
+            onClose?.call();
             onOpen(
               item.bookId,
               initialNoteId: item.type == SearchHitType.note

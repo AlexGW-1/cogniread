@@ -234,39 +234,39 @@ class _LibraryScreenState extends State<LibraryScreen> {
       for (final book in _controller.books)
         book.id: (title: book.title, author: book.author),
     };
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) {
-        return GlobalSearchSheet(
-          initialQuery: _globalSearchController.text,
-          searchIndex: _controller.searchIndex,
-          resolveBookTitle: (bookId) => meta[bookId]?.title ?? 'Книга',
-          resolveBookAuthor: (bookId) => meta[bookId]?.author,
-          recentQueries: _controller.searchHistory,
-          onClearRecentQueries: _controller.clearSearchHistory,
-          onRemoveRecentQuery: _controller.removeSearchHistoryQuery,
-          onSaveQuery: (query) {
-            unawaited(_controller.addSearchHistoryQuery(query));
-          },
-          onOpen:
-              (
-                bookId, {
-                String? initialNoteId,
-                String? initialHighlightId,
-                String? initialAnchor,
-                String? initialSearchQuery,
-              }) async {
-                await _open(
-                  bookId,
-                  initialNoteId: initialNoteId,
-                  initialHighlightId: initialHighlightId,
-                  initialAnchor: initialAnchor,
-                  initialSearchQuery: initialSearchQuery,
-                );
-              },
-        );
-      },
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (context) {
+          return GlobalSearchScreen(
+            initialQuery: _globalSearchController.text,
+            searchIndex: _controller.searchIndex,
+            resolveBookTitle: (bookId) => meta[bookId]?.title ?? 'Книга',
+            resolveBookAuthor: (bookId) => meta[bookId]?.author,
+            recentQueries: _controller.searchHistory,
+            onClearRecentQueries: _controller.clearSearchHistory,
+            onRemoveRecentQuery: _controller.removeSearchHistoryQuery,
+            onSaveQuery: (query) {
+              unawaited(_controller.addSearchHistoryQuery(query));
+            },
+            onOpen:
+                (
+                  bookId, {
+                  String? initialNoteId,
+                  String? initialHighlightId,
+                  String? initialAnchor,
+                  String? initialSearchQuery,
+                }) async {
+                  await _open(
+                    bookId,
+                    initialNoteId: initialNoteId,
+                    initialHighlightId: initialHighlightId,
+                    initialAnchor: initialAnchor,
+                    initialSearchQuery: initialSearchQuery,
+                  );
+                },
+          );
+        },
+      ),
     );
   }
 
