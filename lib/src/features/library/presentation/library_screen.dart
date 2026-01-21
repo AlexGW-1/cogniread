@@ -49,6 +49,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   String? _pendingAnchor;
   String? _pendingSearchQuery;
   int _sectionIndex = 0;
+  int _globalSearchToken = 0;
 
   @override
   void initState() {
@@ -230,44 +231,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
     if (initialQuery != null) {
       _globalSearchController.text = initialQuery;
     }
-    final meta = <String, ({String title, String? author})>{
-      for (final book in _controller.books)
-        book.id: (title: book.title, author: book.author),
-    };
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (context) {
-          return GlobalSearchScreen(
-            initialQuery: _globalSearchController.text,
-            searchIndex: _controller.searchIndex,
-            resolveBookTitle: (bookId) => meta[bookId]?.title ?? 'Книга',
-            resolveBookAuthor: (bookId) => meta[bookId]?.author,
-            recentQueries: _controller.searchHistory,
-            onClearRecentQueries: _controller.clearSearchHistory,
-            onRemoveRecentQuery: _controller.removeSearchHistoryQuery,
-            onSaveQuery: (query) {
-              unawaited(_controller.addSearchHistoryQuery(query));
-            },
-            onOpen:
-                (
-                  bookId, {
-                  String? initialNoteId,
-                  String? initialHighlightId,
-                  String? initialAnchor,
-                  String? initialSearchQuery,
-                }) async {
-                  await _open(
-                    bookId,
-                    initialNoteId: initialNoteId,
-                    initialHighlightId: initialHighlightId,
-                    initialAnchor: initialAnchor,
-                    initialSearchQuery: initialSearchQuery,
-                  );
-                },
-          );
-        },
-      ),
-    );
+    setState(() {
+      _sectionIndex = 1;
+      _globalSearchToken += 1;
+    });
   }
 
   Future<void> _toggleViewMode() async {
@@ -320,39 +287,43 @@ class _LibraryScreenState extends State<LibraryScreen> {
     final filtered = _controller.filteredBooks;
     final viewMode = _controller.viewMode;
     return Scaffold(
-      appBar: AppBar(
-        title: Text(_sectionTitle(_sectionIndex)),
-        actions: [
-          if (_sectionIndex == 0) ...[
-            IconButton(
-              tooltip: 'Очистить библиотеку',
-              onPressed: _controller.books.isEmpty ? null : _clearLibrary,
-              icon: const Icon(Icons.delete_outline),
+      appBar: _sectionIndex == 1
+          ? null
+          : AppBar(
+              title: Text(_sectionTitle(_sectionIndex)),
+              actions: [
+                if (_sectionIndex == 0) ...[
+                  IconButton(
+                    tooltip: 'Очистить библиотеку',
+                    onPressed: _controller.books.isEmpty ? null : _clearLibrary,
+                    icon: const Icon(Icons.delete_outline),
+                  ),
+                  IconButton(
+                    tooltip:
+                        viewMode == LibraryViewMode.list ? 'Плитка' : 'Список',
+                    onPressed:
+                        _controller.books.isEmpty ? null : _toggleViewMode,
+                    icon: Icon(
+                      viewMode == LibraryViewMode.list
+                          ? Icons.grid_view_outlined
+                          : Icons.view_list_outlined,
+                    ),
+                  ),
+                ],
+                IconButton(
+                  tooltip: 'Глобальный поиск',
+                  onPressed: _controller.books.isEmpty ? null : _showGlobalSearch,
+                  icon: const Icon(Icons.manage_search),
+                ),
+                if (_sectionIndex == 0)
+                  IconButton(
+                    tooltip: _showSearch ? 'Скрыть поиск' : 'Поиск',
+                    onPressed: _controller.books.isEmpty ? null : _toggleSearch,
+                    key: const ValueKey('library-search-toggle'),
+                    icon: Icon(_showSearch ? Icons.close : Icons.search),
+                  ),
+              ],
             ),
-            IconButton(
-              tooltip: viewMode == LibraryViewMode.list ? 'Плитка' : 'Список',
-              onPressed: _controller.books.isEmpty ? null : _toggleViewMode,
-              icon: Icon(
-                viewMode == LibraryViewMode.list
-                    ? Icons.grid_view_outlined
-                    : Icons.view_list_outlined,
-              ),
-            ),
-          ],
-          IconButton(
-            tooltip: 'Глобальный поиск',
-            onPressed: _controller.books.isEmpty ? null : _showGlobalSearch,
-            icon: const Icon(Icons.manage_search),
-          ),
-          if (_sectionIndex == 0)
-            IconButton(
-              tooltip: _showSearch ? 'Скрыть поиск' : 'Поиск',
-              onPressed: _controller.books.isEmpty ? null : _toggleSearch,
-              key: const ValueKey('library-search-toggle'),
-              icon: Icon(_showSearch ? Icons.close : Icons.search),
-            ),
-        ],
-      ),
       body: _buildMobileSection(
         scheme: scheme,
         filtered: filtered,
@@ -413,25 +384,39 @@ class _LibraryScreenState extends State<LibraryScreen> {
       );
     }
     if (_sectionIndex == 1) {
-      return SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: _SearchHistoryPanel(
-            history: _controller.searchHistory,
-            filterController: _historyFilterController,
-            onOpenSearch: _controller.books.isEmpty ? null : _showGlobalSearch,
-            onOpenQuery: (query) {
-              unawaited(_controller.addSearchHistoryQuery(query));
-              _showGlobalSearch(initialQuery: query);
+      final meta = <String, ({String title, String? author})>{
+        for (final book in _controller.books)
+          book.id: (title: book.title, author: book.author),
+      };
+      return GlobalSearchScreen(
+        key: ValueKey('global-search-tab-$_globalSearchToken'),
+        embedded: false,
+        initialQuery: _globalSearchController.text,
+        searchIndex: _controller.searchIndex,
+        resolveBookTitle: (bookId) => meta[bookId]?.title ?? 'Книга',
+        resolveBookAuthor: (bookId) => meta[bookId]?.author,
+        recentQueries: _controller.searchHistory,
+        onClearRecentQueries: _controller.clearSearchHistory,
+        onRemoveRecentQuery: _controller.removeSearchHistoryQuery,
+        onSaveQuery: (query) {
+          unawaited(_controller.addSearchHistoryQuery(query));
+        },
+        onOpen:
+            (
+              bookId, {
+              String? initialNoteId,
+              String? initialHighlightId,
+              String? initialAnchor,
+              String? initialSearchQuery,
+            }) async {
+              await _open(
+                bookId,
+                initialNoteId: initialNoteId,
+                initialHighlightId: initialHighlightId,
+                initialAnchor: initialAnchor,
+                initialSearchQuery: initialSearchQuery,
+              );
             },
-            onDeleteQuery: (query) {
-              unawaited(_controller.removeSearchHistoryQuery(query));
-            },
-            onClear: () {
-              unawaited(_controller.clearSearchHistory());
-            },
-          ),
-        ),
       );
     }
     if (_sectionIndex == 2) {
@@ -662,20 +647,39 @@ class _LibraryScreenState extends State<LibraryScreen> {
       return _SettingsPanel(controller: _controller);
     }
     if (_sectionIndex == 1) {
-      return _SearchHistoryPanel(
-        history: _controller.searchHistory,
-        filterController: _historyFilterController,
-        onOpenSearch: _controller.books.isEmpty ? null : _showGlobalSearch,
-        onOpenQuery: (query) {
+      final meta = <String, ({String title, String? author})>{
+        for (final book in _controller.books)
+          book.id: (title: book.title, author: book.author),
+      };
+      return GlobalSearchScreen(
+        key: ValueKey('global-search-tab-$_globalSearchToken'),
+        embedded: true,
+        initialQuery: _globalSearchController.text,
+        searchIndex: _controller.searchIndex,
+        resolveBookTitle: (bookId) => meta[bookId]?.title ?? 'Книга',
+        resolveBookAuthor: (bookId) => meta[bookId]?.author,
+        recentQueries: _controller.searchHistory,
+        onClearRecentQueries: _controller.clearSearchHistory,
+        onRemoveRecentQuery: _controller.removeSearchHistoryQuery,
+        onSaveQuery: (query) {
           unawaited(_controller.addSearchHistoryQuery(query));
-          _showGlobalSearch(initialQuery: query);
         },
-        onDeleteQuery: (query) {
-          unawaited(_controller.removeSearchHistoryQuery(query));
-        },
-        onClear: () {
-          unawaited(_controller.clearSearchHistory());
-        },
+        onOpen:
+            (
+              bookId, {
+              String? initialNoteId,
+              String? initialHighlightId,
+              String? initialAnchor,
+              String? initialSearchQuery,
+            }) async {
+              await _open(
+                bookId,
+                initialNoteId: initialNoteId,
+                initialHighlightId: initialHighlightId,
+                initialAnchor: initialAnchor,
+                initialSearchQuery: initialSearchQuery,
+              );
+            },
       );
     }
     if (_sectionIndex == 2) {

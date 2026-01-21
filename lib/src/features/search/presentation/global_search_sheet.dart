@@ -14,6 +14,7 @@ class GlobalSearchScreen extends StatefulWidget {
     required this.resolveBookAuthor,
     this.searchIndex,
     this.initialQuery = '',
+    this.embedded = false,
     this.onSaveQuery,
     this.recentQueries = const <String>[],
     this.onClearRecentQueries,
@@ -33,6 +34,7 @@ class GlobalSearchScreen extends StatefulWidget {
   final BookAuthorResolver resolveBookAuthor;
   final SearchIndexService? searchIndex;
   final String initialQuery;
+  final bool embedded;
   final ValueChanged<String>? onSaveQuery;
   final List<String> recentQueries;
   final VoidCallback? onClearRecentQueries;
@@ -120,6 +122,7 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
 
   @override
   void dispose() {
+    _commitQuery();
     _tabController.dispose();
     _textController.dispose();
     _controller.dispose();
@@ -157,6 +160,231 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final content = SafeArea(
+      child: AnimatedBuilder(
+        animation: _controller,
+        builder: (context, _) {
+          final query = _controller.query.trim();
+          final searching = _controller.searching;
+          final rebuilding = _controller.rebuilding;
+          final rebuildProgress = _controller.rebuildProgress;
+          final cancelingRebuild = _controller.cancelingRebuild;
+          final error = _controller.error ?? _controller.status?.lastError;
+          final tooShort =
+              query.isNotEmpty &&
+              query.length < GlobalSearchController.minQueryLength;
+          return Padding(
+            padding: EdgeInsets.only(
+              left: 16,
+              right: 16,
+              top: 12,
+              bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  key: const ValueKey('global-search-v2-field'),
+                  controller: _textController,
+                  onChanged: _controller.setQuery,
+                  onSubmitted: (_) => _commitQuery(),
+                  autofocus: true,
+                  decoration: const InputDecoration(
+                    hintText: 'Книги, заметки, цитаты',
+                    prefixIcon: Icon(Icons.manage_search),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TabBar(
+                  controller: _tabController,
+                  tabs: const [
+                    Tab(text: 'Books'),
+                    Tab(text: 'Notes'),
+                    Tab(text: 'Quotes'),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                if (searching) const LinearProgressIndicator(),
+                if (rebuilding) ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: scheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Expanded(
+                              child: Text(
+                                'Индексирование',
+                                style: TextStyle(fontWeight: FontWeight.w600),
+                              ),
+                            ),
+                            TextButton(
+                              onPressed: (cancelingRebuild ||
+                                      rebuildProgress?.stage == 'marks')
+                                  ? null
+                                  : _controller.cancelRebuild,
+                              child: Text(
+                                cancelingRebuild ? 'Отмена…' : 'Отменить',
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        LinearProgressIndicator(
+                          value: rebuildProgress?.fraction,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          _rebuildLabel(rebuildProgress),
+                          style: Theme.of(context).textTheme.bodySmall,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+                if (error != null && error.trim().isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: scheme.errorContainer,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Поиск недоступен',
+                          style: TextStyle(
+                            color: scheme.onErrorContainer,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          error,
+                          style: TextStyle(color: scheme.onErrorContainer),
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 10),
+                        FilledButton.icon(
+                          onPressed:
+                              rebuilding ? null : _controller.rebuildIndex,
+                          icon: const Icon(Icons.restart_alt),
+                          label: const Text('Перестроить индекс'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                Expanded(
+                  child: query.isEmpty
+                      ? _EmptyQueryState(
+                          recentQueries: _recentQueries,
+                          onPickQuery: _setQuery,
+                          onClear: _clearRecentQueries,
+                          onRemove: _removeRecentQuery,
+                        )
+                      : tooShort
+                          ? const Center(
+                              child: Text('Введите минимум 2 символа.'),
+                            )
+                          : TabBarView(
+                              controller: _tabController,
+                              children: [
+                                _BooksResultsList(
+                                  items: _controller.bookResults,
+                                  searchQuery: query,
+                                  onOpen:
+                                      (
+                                        bookId, {
+                                        String? initialNoteId,
+                                        String? initialHighlightId,
+                                        String? initialAnchor,
+                                        String? initialSearchQuery,
+                                      }) {
+                                        _commitQuery();
+                                        widget.onOpen(
+                                          bookId,
+                                          initialNoteId: initialNoteId,
+                                          initialHighlightId: initialHighlightId,
+                                          initialAnchor: initialAnchor,
+                                          initialSearchQuery: initialSearchQuery,
+                                        );
+                                      },
+                                ),
+                                _MarksResultsList(
+                                  items: _controller.noteResults,
+                                  label: 'Заметка',
+                                  resolveBookTitle: widget.resolveBookTitle,
+                                  resolveBookAuthor: widget.resolveBookAuthor,
+                                  onOpen:
+                                      (
+                                        bookId, {
+                                        String? initialNoteId,
+                                        String? initialHighlightId,
+                                        String? initialAnchor,
+                                        String? initialSearchQuery,
+                                      }) {
+                                        _commitQuery();
+                                        widget.onOpen(
+                                          bookId,
+                                          initialNoteId: initialNoteId,
+                                          initialHighlightId: initialHighlightId,
+                                          initialAnchor: initialAnchor,
+                                          initialSearchQuery: initialSearchQuery,
+                                        );
+                                      },
+                                ),
+                                _MarksResultsList(
+                                  items: _controller.quoteResults,
+                                  label: 'Цитата',
+                                  resolveBookTitle: widget.resolveBookTitle,
+                                  resolveBookAuthor: widget.resolveBookAuthor,
+                                  onOpen:
+                                      (
+                                        bookId, {
+                                        String? initialNoteId,
+                                        String? initialHighlightId,
+                                        String? initialAnchor,
+                                        String? initialSearchQuery,
+                                      }) {
+                                        _commitQuery();
+                                        widget.onOpen(
+                                          bookId,
+                                          initialNoteId: initialNoteId,
+                                          initialHighlightId: initialHighlightId,
+                                          initialAnchor: initialAnchor,
+                                          initialSearchQuery: initialSearchQuery,
+                                        );
+                                      },
+                                ),
+                              ],
+                            ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+
+    if (widget.embedded) {
+      return content;
+    }
+
     return WillPopScope(
       onWillPop: () async {
         _commitQuery();
@@ -166,234 +394,7 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
         appBar: AppBar(
           title: const Text('Поиск'),
         ),
-        body: SafeArea(
-          child: AnimatedBuilder(
-            animation: _controller,
-            builder: (context, _) {
-              final query = _controller.query.trim();
-              final searching = _controller.searching;
-              final rebuilding = _controller.rebuilding;
-              final rebuildProgress = _controller.rebuildProgress;
-              final cancelingRebuild = _controller.cancelingRebuild;
-              final error = _controller.error ?? _controller.status?.lastError;
-              final tooShort =
-                  query.isNotEmpty &&
-                  query.length < GlobalSearchController.minQueryLength;
-              return Padding(
-                padding: EdgeInsets.only(
-                  left: 16,
-                  right: 16,
-                  top: 12,
-                  bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    TextField(
-                      key: const ValueKey('global-search-v2-field'),
-                      controller: _textController,
-                      onChanged: _controller.setQuery,
-                      onSubmitted: (_) => _commitQuery(),
-                      autofocus: true,
-                      decoration: const InputDecoration(
-                        hintText: 'Книги, заметки, цитаты',
-                        prefixIcon: Icon(Icons.manage_search),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    TabBar(
-                      controller: _tabController,
-                      tabs: const [
-                        Tab(text: 'Books'),
-                        Tab(text: 'Notes'),
-                        Tab(text: 'Quotes'),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    if (searching) const LinearProgressIndicator(),
-                    if (rebuilding) ...[
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: scheme.surfaceContainerHighest,
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                const Expanded(
-                                  child: Text(
-                                    'Индексирование',
-                                    style: TextStyle(fontWeight: FontWeight.w600),
-                                  ),
-                                ),
-                                TextButton(
-                                  onPressed: (cancelingRebuild ||
-                                          rebuildProgress?.stage == 'marks')
-                                      ? null
-                                      : _controller.cancelRebuild,
-                                  child: Text(
-                                    cancelingRebuild ? 'Отмена…' : 'Отменить',
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            LinearProgressIndicator(
-                              value: rebuildProgress?.fraction,
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              _rebuildLabel(rebuildProgress),
-                              style: Theme.of(context).textTheme.bodySmall,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                    ],
-                    if (error != null && error.trim().isNotEmpty) ...[
-                      const SizedBox(height: 10),
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: scheme.errorContainer,
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Поиск недоступен',
-                              style: TextStyle(
-                                color: scheme.onErrorContainer,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            Text(
-                              error,
-                              style: TextStyle(color: scheme.onErrorContainer),
-                              maxLines: 3,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            const SizedBox(height: 10),
-                            FilledButton.icon(
-                              onPressed:
-                                  rebuilding ? null : _controller.rebuildIndex,
-                              icon: const Icon(Icons.restart_alt),
-                              label: const Text('Перестроить индекс'),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 12),
-                    Expanded(
-                      child: query.isEmpty
-                          ? _EmptyQueryState(
-                              recentQueries: _recentQueries,
-                              onPickQuery: _setQuery,
-                              onClear: _clearRecentQueries,
-                              onRemove: _removeRecentQuery,
-                            )
-                          : tooShort
-                              ? const Center(
-                                  child: Text('Введите минимум 2 символа.'),
-                                )
-                              : TabBarView(
-                                  controller: _tabController,
-                                  children: [
-                                    _BooksResultsList(
-                                      items: _controller.bookResults,
-                                      searchQuery: query,
-                                      onOpen:
-                                          (
-                                            bookId, {
-                                            String? initialNoteId,
-                                            String? initialHighlightId,
-                                            String? initialAnchor,
-                                            String? initialSearchQuery,
-                                          }) {
-                                            _commitQuery();
-                                            widget.onOpen(
-                                              bookId,
-                                              initialNoteId: initialNoteId,
-                                              initialHighlightId:
-                                                  initialHighlightId,
-                                              initialAnchor: initialAnchor,
-                                              initialSearchQuery:
-                                                  initialSearchQuery,
-                                            );
-                                          },
-                                    ),
-                                    _MarksResultsList(
-                                      items: _controller.noteResults,
-                                      label: 'Заметка',
-                                      resolveBookTitle: widget.resolveBookTitle,
-                                      resolveBookAuthor:
-                                          widget.resolveBookAuthor,
-                                      onOpen:
-                                          (
-                                            bookId, {
-                                            String? initialNoteId,
-                                            String? initialHighlightId,
-                                            String? initialAnchor,
-                                            String? initialSearchQuery,
-                                          }) {
-                                            _commitQuery();
-                                            widget.onOpen(
-                                              bookId,
-                                              initialNoteId: initialNoteId,
-                                              initialHighlightId:
-                                                  initialHighlightId,
-                                              initialAnchor: initialAnchor,
-                                              initialSearchQuery:
-                                                  initialSearchQuery,
-                                            );
-                                          },
-                                    ),
-                                    _MarksResultsList(
-                                      items: _controller.quoteResults,
-                                      label: 'Цитата',
-                                      resolveBookTitle: widget.resolveBookTitle,
-                                      resolveBookAuthor:
-                                          widget.resolveBookAuthor,
-                                      onOpen:
-                                          (
-                                            bookId, {
-                                            String? initialNoteId,
-                                            String? initialHighlightId,
-                                            String? initialAnchor,
-                                            String? initialSearchQuery,
-                                          }) {
-                                            _commitQuery();
-                                            widget.onOpen(
-                                              bookId,
-                                              initialNoteId: initialNoteId,
-                                              initialHighlightId:
-                                                  initialHighlightId,
-                                              initialAnchor: initialAnchor,
-                                              initialSearchQuery:
-                                                  initialSearchQuery,
-                                            );
-                                          },
-                                    ),
-                                  ],
-                                ),
-                    ),
-                  ],
-                ),
-              );
-            },
-          ),
-        ),
+        body: content,
       ),
     );
   }

@@ -171,7 +171,7 @@
   - **Books** (по тексту книг),
   - **Notes**,
   - **Quotes** (highlights).
-- Текущий роутинг: экран `GlobalSearchScreen` открывается из `LibraryScreen` (push route) до появления AppShell/нижней навигации.
+- Навигация: `GlobalSearchScreen` доступен как вкладка “Поиск” (BottomNav/NavigationRail).
 
 ### 9.2 Состояния
 
