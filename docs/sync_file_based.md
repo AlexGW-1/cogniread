@@ -1,14 +1,16 @@
-# File-based Sync (Draft v0.1)
+# File-based Sync (v1, implemented)
 
 Цель: server‑less синхронизация через облачные диски/NAS.
 
+Статус: **реализовано** (Stage 1).
+
 ---
 ## Поддерживаемые каналы
-- Google Drive
 - Dropbox
-- Microsoft OneDrive
 - Яндекс.Диск
 - NAS: Synology Drive, WebDAV, SMB (опционально)
+
+Отложено: Google Drive, OneDrive (см. `docs/deferred_features.md`).
 
 ---
 ## Принцип
@@ -17,10 +19,11 @@
 - Устройство хранит `deviceId` и `lastSyncAt`.
 
 ---
-## Формат файлов (черновик)
+## Формат файлов (v1)
 - `event_log.json` — массив событий (DTO v1).
 - `state.json` — materialized state (reading positions).
 - `meta.json` — версия схемы, последний `updatedAt`.
+- `books_index.json` — индекс книг для сверки и загрузки.
 
 ### event_log.json (v1)
 ```json
@@ -70,6 +73,27 @@
   "lastUploadAt": "2026-01-12T12:00:00.000Z",
   "lastDownloadAt": "2026-01-12T12:00:00.000Z",
   "eventCount": 120
+}
+```
+
+### books_index.json (v1)
+```json
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-01-12T12:00:00.000Z",
+  "books": [
+    {
+      "id": "book-1",
+      "title": "Book title",
+      "author": "Author",
+      "fingerprint": "sha256",
+      "size": 123456,
+      "updatedAt": "2026-01-12T11:58:00.000Z",
+      "extension": ".epub",
+      "path": "remote/path/book-1.epub",
+      "deleted": false
+    }
+  ]
 }
 ```
 

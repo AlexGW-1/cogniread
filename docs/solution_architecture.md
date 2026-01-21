@@ -9,10 +9,10 @@ Solution Architecture
 
 # 2. Current vs Target
 
-## Current (MVP0–MVP3)
+## Current (MVP0–MVP2 + Stage 1)
 - Flutter‑клиент с нативным рендером текста и локальным хранилищем (Hive + app‑managed storage).
 - Локальные сущности: библиотека, заметки, выделения, закладки, позиция чтения.
-- Stage 1 синхронизация: server‑less file-based sync через облачные диски/NAS (единый client adapter; Dropbox, Yandex Disk, WebDAV/SMB; Google Drive/OneDrive — следующий этап).
+- Stage 1 синхронизация: server‑less file-based sync через облачные диски/NAS (единый client adapter; Dropbox, Yandex Disk, WebDAV/SMB; Google Drive/OneDrive — отложены).
 - Backend/AI/Graph отсутствуют в кодовой базе.
 
 ## Target (Solution Architecture)

@@ -1,11 +1,11 @@
-# Release plan — Stage 1 (file-based sync) — Pre‑Resolved (2026‑01‑19)
+# Release plan — Stage 1 (file-based sync) — Done (2026‑01‑19)
 
-Цель: довести server-less file-based sync до “пользовательского качества” без добавления новых провайдеров.
+Цель: довести server-less file-based sync до “пользовательского качества” для базовых провайдеров.
 
-Статус: **предварительно выполнено**. Возврат к доработкам — после добавления Google Drive + OneDrive (Stage 1.1).
+Статус: **выполнено** для Dropbox, Яндекс.Диска и WebDAV/SMB. Google Drive/OneDrive — отложены.
 
 ## Scope
-- Провайдеры: Dropbox, Yandex Disk, WebDAV/SMB (как fallback для NAS).
+- Провайдеры: Dropbox, Yandex Disk, WebDAV/SMB (fallback для NAS).
 - Протокол: `event_log.json`, `state.json`, `meta.json`, `books_index.json`.
 - Merge: LWW по `updatedAt` (см. `docs/conflict_policy.md`).
 

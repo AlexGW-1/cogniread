@@ -1,9 +1,9 @@
 # Scope for CogniRead (MVP0/MVP1/MVP2 → Stages)
 
-Источники: docs/final_tech_stack.docx, docs/solution_architecture_doc.docx, docs/architecture_diagrams.docx.
+Источники: `docs/final_tech_stack.md`, `docs/solution_architecture.md`, `docs/architecture_diagrams.md`.
 
 ## Статус (актуально)
-MVP0–MVP2 в репозитории уже существенно расширены: реализованы импорт/чтение, заметки/выделения/закладки, поиск и Stage 1 (server‑less file-based sync). Этот файл оставляем как “исторический” baseline и дополняем текущими этапами ниже.
+MVP0–MVP2 в репозитории завершены: реализованы импорт/чтение, заметки/выделения/закладки, поиск, глобальный поиск и Stage 1 (server‑less file-based sync). Stage 1.1 (Google Drive + OneDrive) отложен. Этот файл оставляем как “исторический” baseline; актуальный план — `docs/plan_next_stages.md`.
 
 ## MVP0 (локальный клиент)
 
@@ -59,7 +59,7 @@ MVP0–MVP2 в репозитории уже существенно расшир
 - Цель: “пользовательское качество” синка без собственного backend.
 - Документы: `docs/release_plan_stage1.md`, `docs/test_plan_stage1_sync.md`, `docs/sync_file_based.md`.
 
-### Stage 1.1 — Добавление провайдеров (план)
+### Stage 1.1 — Добавление провайдеров (отложено)
 - Google Drive + OneDrive: OAuth-конфиг/UX подключения и прогон acceptance criteria.
 
 ### Stage 2 — Backend sync-gateway (future)
