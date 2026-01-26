@@ -180,6 +180,9 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final media = MediaQuery.of(context);
+    final isLandscape = media.orientation == Orientation.landscape;
+    final gap = isLandscape ? 8.0 : 12.0;
     final content = SafeArea(
       child: AnimatedBuilder(
         animation: _controller,
@@ -195,10 +198,10 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
               query.length < GlobalSearchController.minQueryLength;
           return Padding(
             padding: EdgeInsets.only(
-              left: 16,
-              right: 16,
-              top: 12,
-              bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
+              left: isLandscape ? 12 : 16,
+              right: isLandscape ? 12 : 16,
+              top: isLandscape ? 8 : 12,
+              bottom: (isLandscape ? 8 : 16) + media.viewInsets.bottom,
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -209,21 +212,40 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
                   onChanged: _controller.setQuery,
                   onSubmitted: (_) => _commitQuery(),
                   autofocus: true,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     hintText: 'Книги, заметки, цитаты',
                     prefixIcon: Icon(Icons.manage_search),
+                    isDense: isLandscape,
+                    contentPadding: isLandscape
+                        ? const EdgeInsets.symmetric(
+                            vertical: 10,
+                            horizontal: 12,
+                          )
+                        : null,
                   ),
                 ),
-                const SizedBox(height: 12),
+                SizedBox(height: gap),
                 TabBar(
                   controller: _tabController,
+                  isScrollable: isLandscape,
+                  labelStyle: Theme.of(context).textTheme.labelMedium?.copyWith(
+                        fontSize: isLandscape ? 12 : null,
+                        fontWeight: FontWeight.w600,
+                      ),
+                  unselectedLabelStyle:
+                      Theme.of(context).textTheme.labelMedium?.copyWith(
+                            fontSize: isLandscape ? 12 : null,
+                          ),
+                  labelPadding: EdgeInsets.symmetric(
+                    horizontal: isLandscape ? 12 : 16,
+                  ),
                   tabs: const [
                     Tab(text: 'Books'),
                     Tab(text: 'Notes'),
                     Tab(text: 'Quotes'),
                   ],
                 ),
-                const SizedBox(height: 12),
+                SizedBox(height: gap),
                 if (searching) const LinearProgressIndicator(),
                 if (rebuilding) ...[
                   Container(
@@ -270,10 +292,10 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
                       ],
                     ),
                   ),
-                  const SizedBox(height: 12),
+                  SizedBox(height: gap),
                 ],
                 if (error != null && error.trim().isNotEmpty) ...[
-                  const SizedBox(height: 10),
+                  SizedBox(height: isLandscape ? 8 : 10),
                   Container(
                     width: double.infinity,
                     padding: const EdgeInsets.all(12),
@@ -310,7 +332,7 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
                     ),
                   ),
                 ],
-                const SizedBox(height: 12),
+                SizedBox(height: gap),
                 Expanded(
                   child: query.isEmpty
                       ? _EmptyQueryState(
@@ -415,7 +437,10 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
         return true;
       },
       child: Scaffold(
-        appBar: AppBar(title: const Text('Поиск')),
+        appBar: AppBar(
+          title: const Text('Поиск'),
+          toolbarHeight: isLandscape ? 48 : null,
+        ),
         body: content,
       ),
     );

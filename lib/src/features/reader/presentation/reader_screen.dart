@@ -454,6 +454,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setState) => AlertDialog(
+          scrollable: true,
           title: const Text('Новая заметка'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
@@ -464,22 +465,25 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 decoration: const InputDecoration(hintText: 'Введите заметку'),
               ),
               const SizedBox(height: 16),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final option in markColorOptions)
-                    ChoiceChip(
-                      label: Text(option.label),
-                      selected: option.key == selectedColor.key,
-                      avatar: _HighlightSwatch(color: option.color),
-                      onSelected: (_) {
-                        setState(() {
-                          selectedColor = option;
-                        });
-                      },
-                    ),
-                ],
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final option in markColorOptions)
+                      ChoiceChip(
+                        label: Text(option.label),
+                        selected: option.key == selectedColor.key,
+                        avatar: _HighlightSwatch(color: option.color),
+                        onSelected: (_) {
+                          setState(() {
+                            selectedColor = option;
+                          });
+                        },
+                      ),
+                  ],
+                ),
               ),
             ],
           ),
@@ -1685,6 +1689,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final scheme = Theme.of(context).colorScheme;
     final hasToc = _controller.chapters.length > 1;
     final readerSurface = scheme.surface.withAlpha(242);
+    final showInlineHeader = widget.embedded;
     final content = Center(
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 820),
@@ -1717,19 +1722,21 @@ class _ReaderScreenState extends State<ReaderScreen> {
               : Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _ReaderHeader(
-                      title: _controller.title ?? 'Reader',
-                      hasToc: hasToc,
-                      hasBookmark: _controller.bookmark != null,
-                      onTocTap: _showToc,
-                      onHighlightsTap: _showHighlights,
-                      onNotesTap: _showNotes,
-                      onMarksTap: _showNotesHighlights,
-                      onBookmarkToggle: _toggleBookmark,
-                      onBookmarksTap: _showBookmarks,
-                      onSearchTap: _showSearch,
-                    ),
-                    const SizedBox(height: 16),
+                    if (showInlineHeader) ...[
+                      _ReaderHeader(
+                        title: _controller.title ?? 'Reader',
+                        hasToc: hasToc,
+                        hasBookmark: _controller.bookmark != null,
+                        onTocTap: _showToc,
+                        onHighlightsTap: _showHighlights,
+                        onNotesTap: _showNotes,
+                        onMarksTap: _showNotesHighlights,
+                        onBookmarkToggle: _toggleBookmark,
+                        onBookmarksTap: _showBookmarks,
+                        onSearchTap: _showSearch,
+                      ),
+                      const SizedBox(height: 16),
+                    ],
                     Expanded(
                       child: LayoutBuilder(
                         builder: (context, constraints) {
@@ -1813,96 +1820,105 @@ class _ReaderScreenState extends State<ReaderScreen> {
   void _showToc() {
     showModalBottomSheet<void>(
       context: context,
+      isScrollControlled: true,
       builder: (context) {
         return AnimatedBuilder(
           animation: _controller,
           builder: (context, _) {
             final hasGenerated = _controller.hasGeneratedToc;
             final mode = _controller.tocMode;
+            final media = MediaQuery.of(context);
+            final isLandscape =
+                media.orientation == Orientation.landscape;
+            final height =
+                media.size.height * (isLandscape ? 0.92 : 0.85);
             return SafeArea(
-              child: Column(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    child: Row(
-                      children: [
-                        const Expanded(
-                          child: Text(
-                            'Оглавление',
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                        TextButton(
-                          onPressed: _exportToc,
-                          child: const Text('Экспорт'),
-                        ),
-                      ],
-                    ),
-                  ),
-                  if (hasGenerated)
+              child: SizedBox(
+                height: height,
+                child: Column(
+                  children: [
                     Padding(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 16,
-                        vertical: 8,
+                        vertical: 12,
                       ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                      child: Row(
                         children: [
-                          SegmentedButton<TocMode>(
-                            segments: const [
-                              ButtonSegment(
-                                value: TocMode.official,
-                                label: Text('Официальное'),
+                          const Expanded(
+                            child: Text(
+                              'Оглавление',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
                               ),
-                              ButtonSegment(
-                                value: TocMode.generated,
-                                label: Text('Сгенерированное'),
-                              ),
-                            ],
-                            selected: {mode},
-                            onSelectionChanged: (selection) {
-                              _controller.setTocMode(selection.first);
-                            },
+                            ),
                           ),
-                          const SizedBox(height: 6),
-                          const Text(
-                            'Режим может быть убран в будущем.',
-                            style: TextStyle(fontSize: 12),
+                          TextButton(
+                            onPressed: _exportToc,
+                            child: const Text('Экспорт'),
                           ),
                         ],
                       ),
                     ),
-                  const Divider(height: 1),
-                  Expanded(
-                    child: ListView.separated(
-                      itemCount: _controller.chapters.length,
-                      separatorBuilder: (_, _) => const Divider(height: 1),
-                      itemBuilder: (context, index) {
-                        final chapter = _controller.chapters[index];
-                        final indent = 16.0 + (chapter.level * 18.0);
-                        return ListTile(
-                          contentPadding: EdgeInsets.only(
-                            left: indent,
-                            right: 16,
-                            top: 4,
-                            bottom: 4,
-                          ),
-                          title: Text(chapter.title),
-                          onTap: () {
-                            Navigator.of(context).pop();
-                            _scrollToChapter(index);
-                          },
-                        );
-                      },
+                    if (hasGenerated)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 8,
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            SegmentedButton<TocMode>(
+                              segments: const [
+                                ButtonSegment(
+                                  value: TocMode.official,
+                                  label: Text('Официальное'),
+                                ),
+                                ButtonSegment(
+                                  value: TocMode.generated,
+                                  label: Text('Сгенерированное'),
+                                ),
+                              ],
+                              selected: {mode},
+                              onSelectionChanged: (selection) {
+                                _controller.setTocMode(selection.first);
+                              },
+                            ),
+                            const SizedBox(height: 6),
+                            const Text(
+                              'Режим может быть убран в будущем.',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                          ],
+                        ),
+                      ),
+                    const Divider(height: 1),
+                    Expanded(
+                      child: ListView.separated(
+                        itemCount: _controller.chapters.length,
+                        separatorBuilder: (_, _) => const Divider(height: 1),
+                        itemBuilder: (context, index) {
+                          final chapter = _controller.chapters[index];
+                          final indent = 16.0 + (chapter.level * 18.0);
+                          return ListTile(
+                            contentPadding: EdgeInsets.only(
+                              left: indent,
+                              right: 16,
+                              top: 4,
+                              bottom: 4,
+                            ),
+                            title: Text(chapter.title),
+                            onTap: () {
+                              Navigator.of(context).pop();
+                              _scrollToChapter(index);
+                            },
+                          );
+                        },
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             );
           },
@@ -2262,61 +2278,112 @@ class _ReaderHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Row(
-      children: [
-        Expanded(
-          child: Text(
-            title,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: Theme.of(
-              context,
-            ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
+    Widget buildActionsRow({required bool compact}) {
+      final iconSize = compact ? 20.0 : 24.0;
+      final padding =
+          compact ? const EdgeInsets.symmetric(horizontal: 4) : EdgeInsets.zero;
+      final density = compact ? VisualDensity.compact : VisualDensity.standard;
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            tooltip: 'Оглавление',
+            onPressed: hasToc ? onTocTap : null,
+            key: const ValueKey('reader-toc-button-inline'),
+            icon: Icon(Icons.list, color: scheme.primary),
+            iconSize: iconSize,
+            padding: padding,
+            visualDensity: density,
           ),
-        ),
-        const SizedBox(width: 12),
-        IconButton(
-          tooltip: 'Оглавление',
-          onPressed: hasToc ? onTocTap : null,
-          key: const ValueKey('reader-toc-button-inline'),
-          icon: Icon(Icons.list, color: scheme.primary),
-        ),
-        IconButton(
-          tooltip: 'Поиск',
-          onPressed: onSearchTap,
-          icon: Icon(Icons.search, color: scheme.primary),
-        ),
-        IconButton(
-          tooltip: hasBookmark ? 'Удалить закладку' : 'Добавить закладку',
-          onPressed: onBookmarkToggle,
-          icon: Icon(
-            hasBookmark
-                ? Icons.bookmark_remove_outlined
-                : Icons.bookmark_add_outlined,
-            color: scheme.primary,
+          IconButton(
+            tooltip: 'Поиск',
+            onPressed: onSearchTap,
+            icon: Icon(Icons.search, color: scheme.primary),
+            iconSize: iconSize,
+            padding: padding,
+            visualDensity: density,
           ),
-        ),
-        IconButton(
-          tooltip: 'Закладки',
-          onPressed: onBookmarksTap,
-          icon: Icon(Icons.bookmarks_outlined, color: scheme.primary),
-        ),
-        IconButton(
-          tooltip: 'Выделения',
-          onPressed: onHighlightsTap,
-          icon: Icon(Icons.highlight_outlined, color: scheme.primary),
-        ),
-        IconButton(
-          tooltip: 'Заметки',
-          onPressed: onNotesTap,
-          icon: Icon(Icons.sticky_note_2_outlined, color: scheme.primary),
-        ),
-        IconButton(
-          tooltip: 'Заметки и выделения',
-          onPressed: onMarksTap,
-          icon: Icon(Icons.view_list_outlined, color: scheme.primary),
-        ),
-      ],
+          IconButton(
+            tooltip: hasBookmark ? 'Удалить закладку' : 'Добавить закладку',
+            onPressed: onBookmarkToggle,
+            icon: Icon(
+              hasBookmark
+                  ? Icons.bookmark_remove_outlined
+                  : Icons.bookmark_add_outlined,
+              color: scheme.primary,
+            ),
+            iconSize: iconSize,
+            padding: padding,
+            visualDensity: density,
+          ),
+          IconButton(
+            tooltip: 'Закладки',
+            onPressed: onBookmarksTap,
+            icon: Icon(Icons.bookmarks_outlined, color: scheme.primary),
+            iconSize: iconSize,
+            padding: padding,
+            visualDensity: density,
+          ),
+          IconButton(
+            tooltip: 'Выделения',
+            onPressed: onHighlightsTap,
+            icon: Icon(Icons.highlight_outlined, color: scheme.primary),
+            iconSize: iconSize,
+            padding: padding,
+            visualDensity: density,
+          ),
+          IconButton(
+            tooltip: 'Заметки',
+            onPressed: onNotesTap,
+            icon: Icon(Icons.sticky_note_2_outlined, color: scheme.primary),
+            iconSize: iconSize,
+            padding: padding,
+            visualDensity: density,
+          ),
+          IconButton(
+            tooltip: 'Заметки и выделения',
+            onPressed: onMarksTap,
+            icon: Icon(Icons.view_list_outlined, color: scheme.primary),
+            iconSize: iconSize,
+            padding: padding,
+            visualDensity: density,
+          ),
+        ],
+      );
+    }
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isCompact = constraints.maxWidth < 720;
+        final titleWidget = Text(
+          title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(
+            context,
+          ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
+        );
+        if (isCompact) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              titleWidget,
+              const SizedBox(height: 8),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: buildActionsRow(compact: true),
+              ),
+            ],
+          );
+        }
+        return Row(
+          children: [
+            Expanded(child: titleWidget),
+            const SizedBox(width: 12),
+            buildActionsRow(compact: false),
+          ],
+        );
+      },
     );
   }
 }

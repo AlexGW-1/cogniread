@@ -314,11 +314,16 @@ class _LibraryScreenState extends State<LibraryScreen> {
     final scheme = Theme.of(context).colorScheme;
     final filtered = _controller.filteredBooks;
     final viewMode = _controller.viewMode;
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
     return Scaffold(
       appBar: _sectionIndex == 1
           ? null
           : AppBar(
               title: Text(_sectionTitle(_sectionIndex)),
+              toolbarHeight: isLandscape ? 48 : null,
+              actionsIconTheme:
+                  isLandscape ? const IconThemeData(size: 20) : null,
               actions: [
                 if (_sectionIndex == 0) ...[
                   IconButton(
@@ -362,6 +367,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
         viewMode: viewMode,
       ),
       bottomNavigationBar: NavigationBar(
+        height: isLandscape ? 56 : null,
+        labelBehavior: isLandscape
+            ? NavigationDestinationLabelBehavior.alwaysHide
+            : NavigationDestinationLabelBehavior.alwaysShow,
         selectedIndex: _sectionIndex,
         onDestinationSelected: _selectMobileSection,
         destinations: const [
@@ -491,6 +500,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
     required List<LibraryBookItem> filtered,
     required LibraryViewMode viewMode,
   }) {
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
     if (_controller.loading) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -509,7 +520,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
               FilledButton(
                 key: const ValueKey('import-epub-button'),
                 onPressed: _importEpub,
-                child: const Text('Импортировать EPUB'),
+                child: const Text('Импортировать eBook'),
               ),
             ],
           ),
@@ -520,7 +531,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
       children: [
         if (_showSearch)
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+            padding: EdgeInsets.fromLTRB(16, isLandscape ? 8 : 12, 16, 8),
             child: TextField(
               key: const ValueKey('library-search-field'),
               controller: _searchController,
@@ -530,6 +541,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 prefixIcon: const Icon(Icons.search),
                 filled: true,
                 fillColor: scheme.surfaceContainerHighest.withAlpha(128),
+                isDense: isLandscape,
+                contentPadding: isLandscape
+                    ? const EdgeInsets.symmetric(vertical: 10, horizontal: 12)
+                    : null,
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(14),
                   borderSide: BorderSide(color: scheme.outlineVariant),
@@ -568,14 +583,20 @@ class _LibraryScreenState extends State<LibraryScreen> {
               : LayoutBuilder(
                   builder: (context, constraints) {
                     final width = constraints.maxWidth;
-                    final crossAxisCount = width >= 600 ? 4 : 3;
+                    final crossAxisCount = isLandscape
+                        ? (width >= 900
+                              ? 6
+                              : width >= 700
+                              ? 5
+                              : 4)
+                        : (width >= 600 ? 4 : 3);
                     return GridView.builder(
-                      padding: const EdgeInsets.all(12),
+                      padding: EdgeInsets.all(isLandscape ? 6 : 12),
                       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                         crossAxisCount: crossAxisCount,
-                        mainAxisSpacing: 12,
-                        crossAxisSpacing: 12,
-                        childAspectRatio: 0.68,
+                        mainAxisSpacing: isLandscape ? 8 : 12,
+                        crossAxisSpacing: isLandscape ? 8 : 12,
+                        childAspectRatio: isLandscape ? 0.82 : 0.68,
                       ),
                       itemCount: filtered.length,
                       itemBuilder: (context, i) {
@@ -1133,16 +1154,18 @@ class _SettingsPanel extends StatelessWidget {
                       spacing: 8,
                       runSpacing: 8,
                       children: [
-                        OutlinedButton.icon(
-                          onPressed: controller.copyLogPath,
-                          icon: const Icon(Icons.copy),
-                          label: const Text('Копировать путь'),
-                        ),
-                        OutlinedButton.icon(
-                          onPressed: controller.openLogFolder,
-                          icon: const Icon(Icons.folder_open),
-                          label: const Text('Открыть папку'),
-                        ),
+                        if (!Platform.isIOS)
+                          OutlinedButton.icon(
+                            onPressed: controller.copyLogPath,
+                            icon: const Icon(Icons.copy),
+                            label: const Text('Копировать путь'),
+                          ),
+                        if (!Platform.isIOS)
+                          OutlinedButton.icon(
+                            onPressed: controller.openLogFolder,
+                            icon: const Icon(Icons.folder_open),
+                            label: const Text('Открыть папку'),
+                          ),
                         OutlinedButton.icon(
                           onPressed: controller.exportLog,
                           icon: const Icon(Icons.upload_file),
@@ -2026,17 +2049,87 @@ class _NotesPanelState extends State<_NotesPanel> {
   }
 
   Widget _buildHeader() {
-    return Row(
-      children: [
-        Expanded(
-          child: Text(
-            'Заметки',
-            style: Theme.of(context).textTheme.headlineSmall,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ),
-        SegmentedButton<_NotesGroupMode>(
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 520;
+        final iconSize = compact ? 20.0 : 24.0;
+        final padding = compact
+            ? const EdgeInsets.symmetric(horizontal: 4)
+            : EdgeInsets.zero;
+        final density =
+            compact ? VisualDensity.compact : VisualDensity.standard;
+
+        List<Widget> buildActions() {
+          final actions = <Widget>[
+            IconButton(
+              tooltip: 'Новая заметка',
+              onPressed: () => _showFreeNoteEditor(context, widget.controller),
+              icon: const Icon(Icons.add),
+              iconSize: iconSize,
+              padding: padding,
+              visualDensity: density,
+            ),
+          ];
+          if (_selectionMode) {
+            actions.addAll([
+              IconButton(
+                tooltip: 'Экспорт',
+                onPressed: _exportSelected,
+                icon: const Icon(Icons.archive_outlined),
+                iconSize: iconSize,
+                padding: padding,
+                visualDensity: density,
+              ),
+              IconButton(
+                tooltip: 'Удалить',
+                onPressed: _confirmDeleteSelected,
+                icon: const Icon(Icons.delete_outline),
+                iconSize: iconSize,
+                padding: padding,
+                visualDensity: density,
+              ),
+              IconButton(
+                tooltip: 'Снять выбор',
+                onPressed: () {
+                  setState(_selected.clear);
+                },
+                icon: const Icon(Icons.close),
+                iconSize: iconSize,
+                padding: padding,
+                visualDensity: density,
+              ),
+            ]);
+          } else {
+            actions.add(
+              IconButton(
+                tooltip: 'Выбрать',
+                onPressed: _filteredItems.isEmpty
+                    ? null
+                    : () {
+                        setState(() {
+                          _selected
+                            ..clear()
+                            ..add(_filteredItems.first.key);
+                        });
+                      },
+                icon: const Icon(Icons.checklist_outlined),
+                iconSize: iconSize,
+                padding: padding,
+                visualDensity: density,
+              ),
+            );
+          }
+          return actions;
+        }
+
+        final title = Text(
+          'Заметки',
+          style: Theme.of(context).textTheme.headlineSmall,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        );
+
+        final segmented = SegmentedButton<_NotesGroupMode>(
           segments: const [
             ButtonSegment(
               value: _NotesGroupMode.feed,
@@ -2055,46 +2148,41 @@ class _NotesPanelState extends State<_NotesPanel> {
               _groupMode = value.first;
             });
           },
-        ),
-        const SizedBox(width: 12),
-        IconButton(
-          tooltip: 'Новая заметка',
-          onPressed: () => _showFreeNoteEditor(context, widget.controller),
-          icon: const Icon(Icons.add),
-        ),
-        if (_selectionMode) ...[
-          IconButton(
-            tooltip: 'Экспорт',
-            onPressed: _exportSelected,
-            icon: const Icon(Icons.archive_outlined),
-          ),
-          IconButton(
-            tooltip: 'Удалить',
-            onPressed: _confirmDeleteSelected,
-            icon: const Icon(Icons.delete_outline),
-          ),
-          IconButton(
-            tooltip: 'Снять выбор',
-            onPressed: () {
-              setState(_selected.clear);
-            },
-            icon: const Icon(Icons.close),
-          ),
-        ] else
-          IconButton(
-            tooltip: 'Выбрать',
-            onPressed: _filteredItems.isEmpty
-                ? null
-                : () {
-                    setState(() {
-                      _selected
-                        ..clear()
-                        ..add(_filteredItems.first.key);
-                    });
-                  },
-            icon: const Icon(Icons.checklist_outlined),
-          ),
-      ],
+        );
+
+        if (!compact) {
+          return Row(
+            children: [
+              Expanded(child: title),
+              segmented,
+              const SizedBox(width: 12),
+              ...buildActions(),
+            ],
+          );
+        }
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(child: title),
+              ],
+            ),
+            const SizedBox(height: 8),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: segmented,
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: buildActions(),
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -2122,12 +2210,14 @@ class _NotesPanelState extends State<_NotesPanel> {
     );
   }
 
-  Widget _buildList(List<NotesItem> items) {
+  Widget _buildList(List<NotesItem> items, {bool allowScroll = true}) {
     if (items.isEmpty) {
       return const Center(child: Text('Пока нет заметок и выделений.'));
     }
     if (_groupMode == _NotesGroupMode.feed) {
       return ListView.separated(
+        shrinkWrap: !allowScroll,
+        physics: allowScroll ? null : const NeverScrollableScrollPhysics(),
         itemCount: items.length,
         separatorBuilder: (_, _) => const Divider(height: 1),
         itemBuilder: (context, index) {
@@ -2199,58 +2289,98 @@ class _NotesPanelState extends State<_NotesPanel> {
         widgets.add(const Divider(height: 1));
       }
     }
-    return ListView(children: widgets);
+    return ListView(
+      shrinkWrap: !allowScroll,
+      physics: allowScroll ? null : const NeverScrollableScrollPhysics(),
+      children: widgets,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: scheme.surface.withAlpha(230),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: scheme.outlineVariant),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withAlpha(20),
-            blurRadius: 20,
-            offset: const Offset(0, 10),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _buildHeader(),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _searchController,
-            decoration: InputDecoration(
-              hintText: 'Поиск по заметкам и выделениям',
-              prefixIcon: const Icon(Icons.search),
-              filled: true,
-              fillColor: scheme.surfaceContainerHighest.withAlpha(128),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(14),
-                borderSide: BorderSide(color: scheme.outlineVariant),
-              ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isCompactHeight = constraints.maxHeight < 520;
+        final searchField = TextField(
+          controller: _searchController,
+          decoration: InputDecoration(
+            hintText: 'Поиск по заметкам и выделениям',
+            prefixIcon: const Icon(Icons.search),
+            filled: true,
+            fillColor: scheme.surfaceContainerHighest.withAlpha(128),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: BorderSide(color: scheme.outlineVariant),
             ),
-            onChanged: (_) => setState(() {}),
           ),
-          const SizedBox(height: 12),
-          _buildColorFilters(),
-          const SizedBox(height: 12),
-          const Divider(height: 1),
-          Expanded(
-            child: _loading
-                ? const Center(child: CircularProgressIndicator())
-                : _loadError != null
-                ? Center(child: Text('Не удалось загрузить: $_loadError'))
-                : _buildList(_filteredItems),
+          onChanged: (_) => setState(() {}),
+        );
+
+        Widget buildContent({required bool allowScroll}) {
+          if (_loading) {
+            return const Padding(
+              padding: EdgeInsets.symmetric(vertical: 24),
+              child: Center(child: CircularProgressIndicator()),
+            );
+          }
+          if (_loadError != null) {
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 24),
+              child: Center(child: Text('Не удалось загрузить: $_loadError')),
+            );
+          }
+          return _buildList(_filteredItems, allowScroll: allowScroll);
+        }
+
+        final panel = Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: scheme.surface.withAlpha(230),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: scheme.outlineVariant),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withAlpha(20),
+                blurRadius: 20,
+                offset: const Offset(0, 10),
+              ),
+            ],
           ),
-        ],
-      ),
+          child: isCompactHeight
+              ? SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildHeader(),
+                      const SizedBox(height: 12),
+                      searchField,
+                      const SizedBox(height: 12),
+                      _buildColorFilters(),
+                      const SizedBox(height: 12),
+                      const Divider(height: 1),
+                      const SizedBox(height: 12),
+                      buildContent(allowScroll: false),
+                    ],
+                  ),
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildHeader(),
+                    const SizedBox(height: 12),
+                    searchField,
+                    const SizedBox(height: 12),
+                    _buildColorFilters(),
+                    const SizedBox(height: 12),
+                    const Divider(height: 1),
+                    Expanded(child: buildContent(allowScroll: true)),
+                  ],
+                ),
+        );
+
+        return panel;
+      },
     );
   }
 }
@@ -2269,6 +2399,7 @@ Future<void> _showFreeNoteEditor(
     context: context,
     builder: (context) => StatefulBuilder(
       builder: (context, setState) => AlertDialog(
+        scrollable: true,
         title: Text(existing == null ? 'Новая заметка' : 'Редактировать'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -2279,22 +2410,25 @@ Future<void> _showFreeNoteEditor(
               decoration: const InputDecoration(hintText: 'Введите заметку'),
             ),
             const SizedBox(height: 16),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final option in markColorOptions)
-                  ChoiceChip(
-                    label: Text(option.label),
-                    selected: option.key == selectedColor.key,
-                    avatar: _MarkSwatch(color: option.color),
-                    onSelected: (_) {
-                      setState(() {
-                        selectedColor = option;
-                      });
-                    },
-                  ),
-              ],
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final option in markColorOptions)
+                    ChoiceChip(
+                      label: Text(option.label),
+                      selected: option.key == selectedColor.key,
+                      avatar: _MarkSwatch(color: option.color),
+                      onSelected: (_) {
+                        setState(() {
+                          selectedColor = option;
+                        });
+                      },
+                    ),
+                ],
+              ),
             ),
           ],
         ),
@@ -2526,66 +2660,110 @@ class _LibraryPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: scheme.surface.withAlpha(230),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: scheme.outlineVariant),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withAlpha(20),
-            blurRadius: 20,
-            offset: const Offset(0, 10),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  'Library',
-                  maxLines: 1,
-                  softWrap: false,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 420;
+        final iconSize = compact ? 20.0 : 24.0;
+        final padding = compact
+            ? const EdgeInsets.symmetric(horizontal: 4)
+            : EdgeInsets.zero;
+        final density =
+            compact ? VisualDensity.compact : VisualDensity.standard;
+
+        List<Widget> buildActions({required bool compactMode}) {
+          final actions = <Widget>[
+            if (compactMode)
+              IconButton(
+                tooltip: 'Очистить',
+                onPressed: onClearLibrary,
+                icon: const Icon(Icons.delete_outline),
+                iconSize: iconSize,
+                padding: padding,
+                visualDensity: density,
+              )
+            else
               TextButton.icon(
                 onPressed: onClearLibrary,
                 icon: const Icon(Icons.delete_outline),
                 label: const Text('Очистить'),
               ),
-              const SizedBox(width: 8),
-              IconButton(
-                tooltip: viewMode == LibraryViewMode.list ? 'Плитка' : 'Список',
-                onPressed: onToggleViewMode,
-                icon: Icon(
-                  viewMode == LibraryViewMode.list
-                      ? Icons.grid_view_outlined
-                      : Icons.view_list_outlined,
-                ),
+            if (!compactMode) const SizedBox(width: 8),
+            IconButton(
+              tooltip: viewMode == LibraryViewMode.list ? 'Плитка' : 'Список',
+              onPressed: onToggleViewMode,
+              icon: Icon(
+                viewMode == LibraryViewMode.list
+                    ? Icons.grid_view_outlined
+                    : Icons.view_list_outlined,
               ),
-              const SizedBox(width: 4),
-              IconButton(
-                tooltip: 'Глобальный поиск',
-                onPressed: onGlobalSearch,
-                icon: const Icon(Icons.manage_search),
-              ),
-              const SizedBox(width: 4),
-              IconButton(
-                tooltip: showSearch ? 'Скрыть поиск' : 'Поиск',
-                onPressed: onToggleSearch,
-                key: const ValueKey('library-search-toggle'),
-                icon: Icon(showSearch ? Icons.close : Icons.search),
+              iconSize: iconSize,
+              padding: padding,
+              visualDensity: density,
+            ),
+            IconButton(
+              tooltip: 'Глобальный поиск',
+              onPressed: onGlobalSearch,
+              icon: const Icon(Icons.manage_search),
+              iconSize: iconSize,
+              padding: padding,
+              visualDensity: density,
+            ),
+            IconButton(
+              tooltip: showSearch ? 'Скрыть поиск' : 'Поиск',
+              onPressed: onToggleSearch,
+              key: const ValueKey('library-search-toggle'),
+              icon: Icon(showSearch ? Icons.close : Icons.search),
+              iconSize: iconSize,
+              padding: padding,
+              visualDensity: density,
+            ),
+          ];
+          return actions;
+        }
+
+        return Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: scheme.surface.withAlpha(230),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: scheme.outlineVariant),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withAlpha(20),
+                blurRadius: 20,
+                offset: const Offset(0, 10),
               ),
             ],
           ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (!compact)
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Library',
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context)
+                            .textTheme
+                            .headlineSmall
+                            ?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                      ),
+                    ),
+                    ...buildActions(compactMode: false),
+                  ],
+                )
+              else
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: buildActions(compactMode: true),
+                ),
           const SizedBox(height: 16),
           if (showSearch) ...[
             TextField(
@@ -2661,7 +2839,9 @@ class _LibraryPanel extends StatelessWidget {
                   ),
           ),
         ],
-      ),
+          ),
+        );
+      },
     );
   }
 }
@@ -3176,7 +3356,7 @@ class _LibraryEmpty extends StatelessWidget {
             FilledButton.icon(
               onPressed: onImport,
               icon: const Icon(Icons.add),
-              label: const Text('Импортировать EPUB'),
+              label: const Text('Импортировать eBook'),
             ),
           ],
         ),
