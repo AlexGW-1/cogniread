@@ -1,7 +1,4 @@
-enum SearchHitType {
-  note,
-  highlight,
-}
+enum SearchHitType { note, highlight }
 
 class SearchHit {
   const SearchHit({
@@ -10,6 +7,7 @@ class SearchHit {
     required this.markId,
     required this.snippet,
     this.anchor,
+    this.isFreeNote = false,
   });
 
   final SearchHitType type;
@@ -17,6 +15,7 @@ class SearchHit {
   final String markId;
   final String snippet;
   final String? anchor;
+  final bool isFreeNote;
 }
 
 class BookTextHit {

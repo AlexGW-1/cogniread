@@ -1,8 +1,8 @@
-import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
 
 import 'package:cogniread/src/core/types/anchor.dart';
+import 'package:cogniread/src/core/utils/logger.dart';
 import 'package:cogniread/src/features/search/indexing/search_index_books_text_extractor.dart';
 import 'package:sqlite3/sqlite3.dart';
 
@@ -11,6 +11,7 @@ const _typeProgress = 'progress';
 const _typeDone = 'done';
 const _typeCanceled = 'canceled';
 const _typeError = 'error';
+const _typeBookError = 'book_error';
 
 void rebuildSearchBooksIndexIsolate(Map<String, Object?> args) {
   final sendPort = args['sendPort'] as SendPort?;
@@ -34,8 +35,8 @@ void rebuildSearchBooksIndexIsolate(Map<String, Object?> args) {
   final schemaVersion = args['schemaVersion'] as int? ?? 1;
   final booksRaw = (args['books'] as List?) ?? const <Object?>[];
   final books = booksRaw
-      .whereType<Map>()
-      .map((item) => Map<String, Object?>.from(item as Map))
+      .whereType<Map<String, Object?>>()
+      .map((item) => Map<String, Object?>.from(item))
       .toList(growable: false);
 
   Database? db;
@@ -61,6 +62,27 @@ void rebuildSearchBooksIndexIsolate(Map<String, Object?> args) {
     });
   }
 
+  void reportBookError({
+    required String bookId,
+    required String title,
+    required int bookIndex,
+    required Object error,
+  }) {
+    final displayTitle = title.trim().isEmpty ? bookId : title;
+    final message = 'Пропустили книгу "$displayTitle": ${error.toString()}';
+    Log.d('Search index rebuild skipped book $bookId: $error');
+    sendPort.send(<String, Object?>{
+      'type': _typeBookError,
+      'processedBooks': bookIndex,
+      'totalBooks': books.length,
+      'stage': 'book-error',
+      'currentTitle': title,
+      'message': message,
+      'elapsedMs': watch.elapsedMilliseconds,
+      'insertedRows': insertedRows,
+    });
+  }
+
   void cleanupTemp() {
     try {
       File(outputPath).deleteSync();
@@ -79,11 +101,7 @@ void rebuildSearchBooksIndexIsolate(Map<String, Object?> args) {
     _ensureSchema(db, schemaVersion: schemaVersion);
 
     final totalBooks = books.length;
-    reportProgress(
-      processedBooks: 0,
-      totalBooks: totalBooks,
-      stage: 'init',
-    );
+    reportProgress(processedBooks: 0, totalBooks: totalBooks, stage: 'init');
 
     db.execute('BEGIN');
     try {
@@ -95,6 +113,7 @@ void rebuildSearchBooksIndexIsolate(Map<String, Object?> args) {
         ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       );
       try {
+        booksLoop:
         for (var bookIndex = 0; bookIndex < totalBooks; bookIndex += 1) {
           if (canceled) {
             throw const _Canceled();
@@ -115,53 +134,75 @@ void rebuildSearchBooksIndexIsolate(Map<String, Object?> args) {
             currentBookIndex: bookIndex,
           );
 
-          final chapters = SearchIndexBookTextExtractor.extractFromFile(
-            localPath,
-            tocMode: tocMode,
-            hasStoredToc: hasStoredToc,
-          );
+          var bookInsertedRows = 0;
+          try {
+            final chapters = SearchIndexBookTextExtractor.extractFromFile(
+              localPath,
+              tocMode: tocMode,
+              hasStoredToc: hasStoredToc,
+            );
 
-          for (var chapterIndex = 0;
+            for (
+              var chapterIndex = 0;
               chapterIndex < chapters.length;
-              chapterIndex += 1) {
-            if (canceled) {
-              throw const _Canceled();
-            }
-            final chapter = chapters[chapterIndex];
-            final chapterTitle = chapter.title;
-            final paragraphs = chapter.paragraphs;
-            var offset = chapterTitle.length;
-            for (var paragraphIndex = 0;
-                paragraphIndex < paragraphs.length;
-                paragraphIndex += 1) {
+              chapterIndex += 1
+            ) {
               if (canceled) {
                 throw const _Canceled();
               }
-              final paragraph = paragraphs[paragraphIndex];
-              if (paragraph.trim().isEmpty) {
+              final chapter = chapters[chapterIndex];
+              final chapterTitle = chapter.title;
+              final paragraphs = chapter.paragraphs;
+              var offset = chapterTitle.length;
+              for (
+                var paragraphIndex = 0;
+                paragraphIndex < paragraphs.length;
+                paragraphIndex += 1
+              ) {
+                if (canceled) {
+                  throw const _Canceled();
+                }
+                final paragraph = paragraphs[paragraphIndex];
+                if (paragraph.trim().isEmpty) {
+                  offset += paragraph.length;
+                  continue;
+                }
+                final chapterHref = chapter.href;
+                final anchor = Anchor(
+                  chapterHref: chapterHref,
+                  offset: offset,
+                ).toString();
+                stmt.execute(<Object?>[
+                  bookId,
+                  title,
+                  author,
+                  chapterTitle,
+                  paragraph,
+                  anchor,
+                  chapterHref,
+                  chapterIndex,
+                  paragraphIndex,
+                ]);
+                bookInsertedRows += 1;
                 offset += paragraph.length;
-                continue;
               }
-              final chapterHref = 'index:$chapterIndex';
-              final anchor = Anchor(
-                chapterHref: chapterHref,
-                offset: offset,
-              ).toString();
-              stmt.execute(<Object?>[
-                bookId,
-                title,
-                author,
-                chapterTitle,
-                paragraph,
-                anchor,
-                chapterHref,
-                chapterIndex,
-                paragraphIndex,
-              ]);
-              insertedRows += 1;
-              offset += paragraph.length;
             }
+          } catch (error) {
+            reportBookError(
+              bookId: bookId,
+              title: title,
+              bookIndex: bookIndex,
+              error: error,
+            );
+            try {
+              db.execute('DELETE FROM fts_books WHERE book_id = ?', <Object?>[
+                bookId,
+              ]);
+            } catch (_) {}
+            continue booksLoop;
           }
+
+          insertedRows += bookInsertedRows;
 
           if (bookIndex % 2 == 0) {
             reportProgress(

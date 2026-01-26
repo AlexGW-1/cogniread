@@ -184,7 +184,10 @@ class LibraryController extends ChangeNotifier {
        _fallbackSyncAdapter = syncAdapter,
        _syncAdapter = syncAdapter,
        _stubImport = stubImport {
-    _searchIndex = SearchIndexService(store: _store);
+    _searchIndex = SearchIndexService(
+      store: _store,
+      freeNotesStore: _freeNotesStore,
+    );
   }
 
   final StorageService _storageService;
@@ -590,6 +593,22 @@ class LibraryController extends ChangeNotifier {
       Log.d('Failed to load notes items: $error');
       rethrow;
     }
+  }
+
+  Future<NotesItem?> loadFreeNoteItem(String id) async {
+    await _freeNotesStore.init();
+    final note = await _freeNotesStore.getById(id);
+    if (note == null) {
+      return null;
+    }
+    return NotesItem(
+      type: NotesItemType.freeNote,
+      id: note.id,
+      text: note.text,
+      color: note.color,
+      createdAt: note.createdAt,
+      updatedAt: note.updatedAt,
+    );
   }
 
   Future<void> addFreeNote({

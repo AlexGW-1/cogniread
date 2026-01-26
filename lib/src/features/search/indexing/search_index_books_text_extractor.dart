@@ -9,10 +9,12 @@ class SearchIndexExtractedChapter {
   const SearchIndexExtractedChapter({
     required this.title,
     required this.paragraphs,
+    required this.href,
   });
 
   final String title;
   final List<String> paragraphs;
+  final String href;
 }
 
 class SearchIndexBookTextExtractor {
@@ -70,10 +72,12 @@ List<SearchIndexExtractedChapter> _buildChapters(List<_ChapterSource> sources) {
       derivedTitle,
       source.preferTocTitle,
     );
+    final href = source.href ?? 'index:$i';
     chapters.add(
       SearchIndexExtractedChapter(
         title: title,
         paragraphs: _splitParagraphs(cleanedText),
+        href: href,
       ),
     );
   }
@@ -182,10 +186,7 @@ class _TocCandidate {
 }
 
 class _GeneratedToc {
-  const _GeneratedToc({
-    required this.entries,
-    required this.source,
-  });
+  const _GeneratedToc({required this.entries, required this.source});
 
   final List<_TocEntry> entries;
   final _TocSource source;
@@ -215,8 +216,9 @@ _TocMode _resolveTocMode(
   if (!hasStoredToc) {
     return tocResult.defaultMode;
   }
-  final effective =
-      tocMode == 'generated' ? _TocMode.generated : _TocMode.official;
+  final effective = tocMode == 'generated'
+      ? _TocMode.generated
+      : _TocMode.official;
   if (effective == _TocMode.generated &&
       tocResult.generatedEntries.isEmpty &&
       tocResult.officialEntries.isNotEmpty) {
@@ -388,7 +390,9 @@ bool _shouldSkipSpineItem(String href, int textLength) {
     return false;
   }
   final lower = href.toLowerCase();
-  return lower.contains('toc') || lower.contains('nav') || lower.contains('cover');
+  return lower.contains('toc') ||
+      lower.contains('nav') ||
+      lower.contains('cover');
 }
 
 ArchiveFile? _archiveFileByName(Archive archive, String name) {
@@ -506,27 +510,20 @@ List<_TocEntry> _tocEntriesFromHeadings(
     if (decoded.isEmpty) {
       continue;
     }
-    final title = _extractChapterTitle(decoded, p.basenameWithoutExtension(href));
+    final title = _extractChapterTitle(
+      decoded,
+      p.basenameWithoutExtension(href),
+    );
     if (title.trim().isEmpty) {
       continue;
     }
-    entries.add(
-      _TocEntry(
-        title: title,
-        href: href,
-        level: 0,
-        fragment: null,
-      ),
-    );
+    entries.add(_TocEntry(title: title, href: href, level: 0, fragment: null));
   }
   return entries;
 }
 
 class _ParsedHtml {
-  const _ParsedHtml({
-    required this.fullText,
-    required this.fragments,
-  });
+  const _ParsedHtml({required this.fullText, required this.fragments});
 
   final String fullText;
   final Map<String, String> fragments;
@@ -556,21 +553,17 @@ List<_ChapterSource> _chaptersFromTocEntries(
     if (decoded.isEmpty) {
       continue;
     }
-    final parsed = cache.putIfAbsent(
-      entry.href,
-      () {
-        final fragments = _extractFragmentTexts(decoded, entries, entry.href);
-        return _ParsedHtml(
-          fullText: _toPlainText(decoded),
-          fragments: fragments,
-        );
-      },
-    );
+    final parsed = cache.putIfAbsent(entry.href, () {
+      final fragments = _extractFragmentTexts(decoded, entries, entry.href);
+      return _ParsedHtml(fullText: _toPlainText(decoded), fragments: fragments);
+    });
 
     String text;
     if (entry.fragment != null) {
       final fragmentText = parsed.fragments[entry.fragment!];
-      text = fragmentText?.trim().isNotEmpty == true ? fragmentText! : parsed.fullText;
+      text = fragmentText?.trim().isNotEmpty == true
+          ? fragmentText!
+          : parsed.fullText;
     } else {
       text = parsed.fullText;
     }
@@ -678,8 +671,8 @@ _TocParseResult _buildTocResult(Archive archive) {
   final defaultMode = officialEntries.isEmpty
       ? _TocMode.generated
       : tocCandidate.quality.preferGenerated && generatedEntries.isNotEmpty
-          ? _TocMode.generated
-          : _TocMode.official;
+      ? _TocMode.generated
+      : _TocMode.official;
   return _TocParseResult(
     officialEntries: officialEntries,
     generatedEntries: generatedEntries,
@@ -747,10 +740,12 @@ _TocCandidate _buildEpubTocCandidate(Archive archive) {
       }
     }
 
-    final navEntries =
-        navPath == null ? const <_TocEntry>[] : _tocEntriesFromNav(archive, navPath);
-    final ncxEntries =
-        ncxPath == null ? const <_TocEntry>[] : _tocEntriesFromNcx(archive, ncxPath);
+    final navEntries = navPath == null
+        ? const <_TocEntry>[]
+        : _tocEntriesFromNav(archive, navPath);
+    final ncxEntries = ncxPath == null
+        ? const <_TocEntry>[]
+        : _tocEntriesFromNcx(archive, ncxPath);
     final normalizedNav = _normalizeTocEntries(navEntries);
     final normalizedNcx = _normalizeTocEntries(ncxEntries);
     final navQuality = _evaluateTocQuality(normalizedNav);
@@ -796,7 +791,8 @@ List<_TocEntry> _tocEntriesFromNav(Archive archive, String navPath) {
     final navDir = p.posix.dirname(navPath);
     XmlElement? tocNav;
     for (final nav in doc.findAllElements('nav')) {
-      final type = nav.getAttribute('type') ?? nav.getAttribute('epub:type') ?? '';
+      final type =
+          nav.getAttribute('type') ?? nav.getAttribute('epub:type') ?? '';
       if (type.contains('toc')) {
         tocNav = nav;
         break;
@@ -809,7 +805,8 @@ List<_TocEntry> _tocEntriesFromNav(Archive archive, String navPath) {
 
     void walkOl(XmlElement ol, int depth) {
       for (final li in ol.findElements('li')) {
-        final link = li.findElements('a').firstOrNull ??
+        final link =
+            li.findElements('a').firstOrNull ??
             li.descendants.whereType<XmlElement>().firstWhereOrNull(
               (node) => node.name.local == 'a',
             );
@@ -862,8 +859,12 @@ List<_TocEntry> _tocEntriesFromNcx(Archive archive, String ncxPath) {
 
     void walk(XmlElement node, int depth) {
       if (node.name.local == 'navPoint') {
-        final label = node.findAllElements('text').firstOrNull?.innerText.trim() ?? '';
-        final src = node.findAllElements('content').firstOrNull?.getAttribute('src');
+        final label =
+            node.findAllElements('text').firstOrNull?.innerText.trim() ?? '';
+        final src = node
+            .findAllElements('content')
+            .firstOrNull
+            ?.getAttribute('src');
         if (label.isNotEmpty && src != null && src.trim().isNotEmpty) {
           final target = _resolveTocTarget(ncxDir, src);
           if (target.path.isNotEmpty) {
@@ -1083,6 +1084,7 @@ String _toPlainText(String html) {
           }
         }
       }
+
       walk(document);
       return buffer
           .toString()
@@ -1100,13 +1102,19 @@ bool _looksLikeXml(String html) {
   if (lower.contains('<!doctype') || lower.contains('<html')) {
     return false;
   }
-  return lower.contains('<?xml') || lower.contains('<body') || lower.contains('<html');
+  return lower.contains('<?xml') ||
+      lower.contains('<body') ||
+      lower.contains('<html');
 }
 
 String _stripHtmlToText(String html) {
   var text = html;
   text = text.replaceAll(
-    RegExp(r'<(script|style)[^>]*>.*?</\\1>', dotAll: true, caseSensitive: false),
+    RegExp(
+      r'<(script|style)[^>]*>.*?</\\1>',
+      dotAll: true,
+      caseSensitive: false,
+    ),
     '',
   );
   text = text.replaceAll(RegExp(r'<br\\s*/?>', caseSensitive: false), '\\n');

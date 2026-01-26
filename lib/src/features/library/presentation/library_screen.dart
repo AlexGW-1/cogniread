@@ -50,6 +50,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   String? _pendingSearchQuery;
   int _sectionIndex = 0;
   int _globalSearchToken = 0;
+  int? _returnSectionIndex;
 
   @override
   void initState() {
@@ -109,6 +110,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
     String? initialHighlightId,
     String? initialAnchor,
     String? initialSearchQuery,
+    int? targetSectionIndex,
+    int? returnSectionIndex,
   }) async {
     final book = await _controller.prepareOpen(id);
     if (book == null) {
@@ -121,12 +124,15 @@ class _LibraryScreenState extends State<LibraryScreen> {
     final isDesktop = MediaQuery.of(context).size.width >= 1000;
     if (isDesktop) {
       setState(() {
-        _sectionIndex = 0;
+        _sectionIndex = targetSectionIndex ?? 0;
         _selectedBookId = book.id;
         _pendingNoteId = initialNoteId;
         _pendingHighlightId = initialHighlightId;
         _pendingAnchor = initialAnchor;
         _pendingSearchQuery = initialSearchQuery;
+        _returnSectionIndex = targetSectionIndex == 2
+            ? returnSectionIndex
+            : null;
       });
       return;
     }
@@ -140,6 +146,28 @@ class _LibraryScreenState extends State<LibraryScreen> {
           initialSearchQuery: initialSearchQuery,
         ),
       ),
+    );
+  }
+
+  Future<void> _openFreeNote(String noteId) async {
+    final item = await _controller.loadFreeNoteItem(noteId);
+    if (item == null) {
+      return;
+    }
+    await _showFreeNoteEditor(context, _controller, existing: item);
+  }
+
+  Future<void> _openFromNotes(
+    String bookId, {
+    String? initialNoteId,
+    String? initialHighlightId,
+  }) async {
+    await _open(
+      bookId,
+      initialNoteId: initialNoteId,
+      initialHighlightId: initialHighlightId,
+      targetSectionIndex: 2,
+      returnSectionIndex: 3,
     );
   }
 
@@ -299,10 +327,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     icon: const Icon(Icons.delete_outline),
                   ),
                   IconButton(
-                    tooltip:
-                        viewMode == LibraryViewMode.list ? 'Плитка' : 'Список',
-                    onPressed:
-                        _controller.books.isEmpty ? null : _toggleViewMode,
+                    tooltip: viewMode == LibraryViewMode.list
+                        ? 'Плитка'
+                        : 'Список',
+                    onPressed: _controller.books.isEmpty
+                        ? null
+                        : _toggleViewMode,
                     icon: Icon(
                       viewMode == LibraryViewMode.list
                           ? Icons.grid_view_outlined
@@ -312,7 +342,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 ],
                 IconButton(
                   tooltip: 'Глобальный поиск',
-                  onPressed: _controller.books.isEmpty ? null : _showGlobalSearch,
+                  onPressed: _controller.books.isEmpty
+                      ? null
+                      : _showGlobalSearch,
                   icon: const Icon(Icons.manage_search),
                 ),
                 if (_sectionIndex == 0)
@@ -417,6 +449,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 initialSearchQuery: initialSearchQuery,
               );
             },
+        onOpenFreeNote: _openFreeNote,
       );
     }
     if (_sectionIndex == 2) {
@@ -437,10 +470,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
           child: _NotesPanel(
             controller: _controller,
             onOpenNote: (bookId, noteId) {
-              _open(bookId, initialNoteId: noteId);
+              _openFromNotes(bookId, initialNoteId: noteId);
             },
             onOpenHighlight: (bookId, highlightId) {
-              _open(bookId, initialHighlightId: highlightId);
+              _openFromNotes(bookId, initialHighlightId: highlightId);
             },
           ),
         ),
@@ -586,6 +619,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 onDestinationSelected: (index) {
                   setState(() {
                     _sectionIndex = index;
+                    _returnSectionIndex = null;
                   });
                 },
                 labelType: NavigationRailLabelType.all,
@@ -680,6 +714,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 initialSearchQuery: initialSearchQuery,
               );
             },
+        onOpenFreeNote: _openFreeNote,
       );
     }
     if (_sectionIndex == 2) {
@@ -688,22 +723,44 @@ class _LibraryScreenState extends State<LibraryScreen> {
           selected != null && _controller.books.any((b) => b.id == selected)
           ? selected
           : _lastOpenedBookId;
-      return _ReaderPanel(
-        bookId: bookId,
-        initialNoteId: _pendingNoteId,
-        initialHighlightId: _pendingHighlightId,
-        initialAnchor: _pendingAnchor,
-        initialSearchQuery: _pendingSearchQuery,
+      final backIndex = _returnSectionIndex;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (backIndex != null)
+            TextButton.icon(
+              onPressed: () {
+                setState(() {
+                  _sectionIndex = backIndex;
+                  _returnSectionIndex = null;
+                });
+              },
+              icon: const Icon(Icons.arrow_back),
+              label: Text(
+                backIndex == 3 ? 'Назад к заметкам' : 'Назад',
+              ),
+            ),
+          if (backIndex != null) const SizedBox(height: 12),
+          Expanded(
+            child: _ReaderPanel(
+              bookId: bookId,
+              initialNoteId: _pendingNoteId,
+              initialHighlightId: _pendingHighlightId,
+              initialAnchor: _pendingAnchor,
+              initialSearchQuery: _pendingSearchQuery,
+            ),
+          ),
+        ],
       );
     }
     if (_sectionIndex == 3) {
       return _NotesPanel(
         controller: _controller,
         onOpenNote: (bookId, noteId) {
-          _open(bookId, initialNoteId: noteId);
+          _openFromNotes(bookId, initialNoteId: noteId);
         },
         onOpenHighlight: (bookId, highlightId) {
-          _open(bookId, initialHighlightId: highlightId);
+          _openFromNotes(bookId, initialHighlightId: highlightId);
         },
       );
     }
@@ -1573,12 +1630,10 @@ class _SearchHistoryPanel extends StatefulWidget {
     required this.onOpenQuery,
     required this.onDeleteQuery,
     required this.onClear,
-    this.onOpenSearch,
   });
 
   final List<String> history;
   final TextEditingController filterController;
-  final VoidCallback? onOpenSearch;
   final ValueChanged<String> onOpenQuery;
   final ValueChanged<String> onDeleteQuery;
   final VoidCallback onClear;
@@ -1627,8 +1682,6 @@ class _SearchHistoryPanelState extends State<_SearchHistoryPanel> {
               .where((value) => value.toLowerCase().contains(needle))
               .toList();
     final hasQuery = needle.isNotEmpty;
-    final openSearch = widget.onOpenSearch;
-
     return Container(
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
@@ -1658,14 +1711,6 @@ class _SearchHistoryPanelState extends State<_SearchHistoryPanel> {
                   ),
                 ),
               ),
-              if (openSearch != null) ...[
-                FilledButton.icon(
-                  onPressed: openSearch,
-                  icon: const Icon(Icons.manage_search),
-                  label: const Text('Открыть поиск'),
-                ),
-                const SizedBox(width: 8),
-              ],
               OutlinedButton.icon(
                 onPressed: history.isEmpty ? null : widget.onClear,
                 icon: const Icon(Icons.delete_sweep_outlined),
@@ -1821,21 +1866,24 @@ class _NotesPanelState extends State<_NotesPanel> {
 
   List<NotesItem> get _filteredItems {
     final query = _searchController.text.trim().toLowerCase();
-    return _items.where((item) {
-      if (_selectedColors.isNotEmpty && !_selectedColors.contains(item.color)) {
-        return false;
-      }
-      if (query.isEmpty) {
-        return true;
-      }
-      final haystack = <String>[
-        item.text,
-        item.excerpt,
-        item.bookTitle ?? '',
-        item.bookAuthor ?? '',
-      ].join('\n').toLowerCase();
-      return haystack.contains(query);
-    }).toList(growable: false);
+    return _items
+        .where((item) {
+          if (_selectedColors.isNotEmpty &&
+              !_selectedColors.contains(item.color)) {
+            return false;
+          }
+          if (query.isEmpty) {
+            return true;
+          }
+          final haystack = <String>[
+            item.text,
+            item.excerpt,
+            item.bookTitle ?? '',
+            item.bookAuthor ?? '',
+          ].join('\n').toLowerCase();
+          return haystack.contains(query);
+        })
+        .toList(growable: false);
   }
 
   Future<void> _confirmDeleteSelected() async {
@@ -1894,7 +1942,7 @@ class _NotesPanelState extends State<_NotesPanel> {
 
   Future<void> _openItem(NotesItem item) async {
     if (item.type == NotesItemType.freeNote) {
-      await _editFreeNote(existing: item);
+      await _showFreeNoteEditor(context, widget.controller, existing: item);
       return;
     }
     final bookId = item.bookId;
@@ -1910,7 +1958,7 @@ class _NotesPanelState extends State<_NotesPanel> {
 
   Future<void> _previewItem(NotesItem item) async {
     if (item.type == NotesItemType.freeNote) {
-      await _editFreeNote(existing: item);
+      await _showFreeNoteEditor(context, widget.controller, existing: item);
       return;
     }
     final bookId = item.bookId;
@@ -1919,8 +1967,7 @@ class _NotesPanelState extends State<_NotesPanel> {
     }
     final title = item.bookTitle ?? 'Книга';
     final author = item.bookAuthor;
-    final typeLabel =
-        item.type == NotesItemType.note ? 'Заметка' : 'Выделение';
+    final typeLabel = item.type == NotesItemType.note ? 'Заметка' : 'Выделение';
     final color = item.color;
     final noteText = item.type == NotesItemType.note ? item.text.trim() : '';
     final excerpt = item.excerpt.trim();
@@ -1936,7 +1983,8 @@ class _NotesPanelState extends State<_NotesPanel> {
               children: [
                 Text(
                   <String>[
-                    if (author != null && author.trim().isNotEmpty) author.trim(),
+                    if (author != null && author.trim().isNotEmpty)
+                      author.trim(),
                     if (color.trim().isNotEmpty) 'color=$color',
                   ].join(' · '),
                   style: Theme.of(context).textTheme.bodySmall,
@@ -1977,78 +2025,6 @@ class _NotesPanelState extends State<_NotesPanel> {
     );
   }
 
-  Future<void> _editFreeNote({NotesItem? existing}) async {
-    final controller = TextEditingController(text: existing?.text ?? '');
-    var selectedColor = markColorOptions.firstWhere(
-      (option) => option.key == (existing?.color ?? 'yellow'),
-      orElse: () => markColorOptions.first,
-    );
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
-          title: Text(existing == null ? 'Новая заметка' : 'Редактировать'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: controller,
-                maxLines: 6,
-                decoration: const InputDecoration(
-                  hintText: 'Введите заметку',
-                ),
-              ),
-              const SizedBox(height: 16),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final option in markColorOptions)
-                    ChoiceChip(
-                      label: Text(option.label),
-                      selected: option.key == selectedColor.key,
-                      avatar: _MarkSwatch(color: option.color),
-                      onSelected: (_) {
-                        setState(() {
-                          selectedColor = option;
-                        });
-                      },
-                    ),
-                ],
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Отмена'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('Сохранить'),
-            ),
-          ],
-        ),
-      ),
-    );
-    final text = controller.text;
-    if (saved != true) {
-      return;
-    }
-    if (existing == null) {
-      await widget.controller.addFreeNote(
-        text: text,
-        color: selectedColor.key,
-      );
-      return;
-    }
-    await widget.controller.updateFreeNote(
-      id: existing.id,
-      text: text,
-      color: selectedColor.key,
-    );
-  }
-
   Widget _buildHeader() {
     return Row(
       children: [
@@ -2083,7 +2059,7 @@ class _NotesPanelState extends State<_NotesPanel> {
         const SizedBox(width: 12),
         IconButton(
           tooltip: 'Новая заметка',
-          onPressed: () => _editFreeNote(),
+          onPressed: () => _showFreeNoteEditor(context, widget.controller),
           icon: const Icon(Icons.add),
         ),
         if (_selectionMode) ...[
@@ -2279,6 +2255,78 @@ class _NotesPanelState extends State<_NotesPanel> {
   }
 }
 
+Future<void> _showFreeNoteEditor(
+  BuildContext context,
+  LibraryController controller, {
+  NotesItem? existing,
+}) async {
+  final textController = TextEditingController(text: existing?.text ?? '');
+  var selectedColor = markColorOptions.firstWhere(
+    (option) => option.key == (existing?.color ?? 'yellow'),
+    orElse: () => markColorOptions.first,
+  );
+  final saved = await showDialog<bool>(
+    context: context,
+    builder: (context) => StatefulBuilder(
+      builder: (context, setState) => AlertDialog(
+        title: Text(existing == null ? 'Новая заметка' : 'Редактировать'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: textController,
+              maxLines: 6,
+              decoration: const InputDecoration(hintText: 'Введите заметку'),
+            ),
+            const SizedBox(height: 16),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final option in markColorOptions)
+                  ChoiceChip(
+                    label: Text(option.label),
+                    selected: option.key == selectedColor.key,
+                    avatar: _MarkSwatch(color: option.color),
+                    onSelected: (_) {
+                      setState(() {
+                        selectedColor = option;
+                      });
+                    },
+                  ),
+              ],
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Сохранить'),
+          ),
+        ],
+      ),
+    ),
+  );
+  final text = textController.text.trim();
+  textController.dispose();
+  if (saved != true || text.isEmpty) {
+    return;
+  }
+  if (existing == null) {
+    await controller.addFreeNote(text: text, color: selectedColor.key);
+    return;
+  }
+  await controller.updateFreeNote(
+    id: existing.id,
+    text: text,
+    color: selectedColor.key,
+  );
+}
+
 class _MarkSwatch extends StatelessWidget {
   const _MarkSwatch({required this.color});
 
@@ -2336,10 +2384,10 @@ class _NotesTile extends StatelessWidget {
   }
 
   String get _subtitle {
-    final date = item.updatedAt
-        .toLocal()
-        .toIso8601String()
-        .replaceFirst('T', ' ');
+    final date = item.updatedAt.toLocal().toIso8601String().replaceFirst(
+      'T',
+      ' ',
+    );
     final typeLabel = switch (item.type) {
       NotesItemType.note => 'Заметка',
       NotesItemType.highlight => 'Выделение',
@@ -2348,11 +2396,7 @@ class _NotesTile extends StatelessWidget {
     final book = item.type == NotesItemType.freeNote
         ? null
         : (item.bookTitle ?? 'Без названия');
-    final parts = <String>[
-      typeLabel,
-      if (book != null) book,
-      date,
-    ];
+    final parts = <String>[typeLabel, if (book != null) book, date];
     final excerpt = item.type == NotesItemType.note ? item.excerpt.trim() : '';
     final subtitle = parts.join(' · ');
     return excerpt.isEmpty ? subtitle : '$subtitle\n$excerpt';
@@ -2361,37 +2405,25 @@ class _NotesTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final swatchColor = markColorForKey(item.color);
-    final typeLabel =
-        switch (item.type) {
-          NotesItemType.note => 'Заметка',
-          NotesItemType.highlight => 'Выделение',
-          NotesItemType.freeNote => 'Без книги',
-        };
+    final typeLabel = switch (item.type) {
+      NotesItemType.note => 'Заметка',
+      NotesItemType.highlight => 'Выделение',
+      NotesItemType.freeNote => 'Без книги',
+    };
     return ListTile(
       title: Row(
         children: [
           _TypeBadge(label: typeLabel),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(
-              _title,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
+            child: Text(_title, maxLines: 2, overflow: TextOverflow.ellipsis),
           ),
         ],
       ),
-      subtitle: Text(
-        _subtitle,
-        maxLines: 3,
-        overflow: TextOverflow.ellipsis,
-      ),
+      subtitle: Text(_subtitle, maxLines: 3, overflow: TextOverflow.ellipsis),
       leading: _MarkSwatch(color: swatchColor),
       trailing: selectionMode
-          ? Checkbox(
-              value: selected,
-              onChanged: (_) => onSelectToggle(),
-            )
+          ? Checkbox(value: selected, onChanged: (_) => onSelectToggle())
           : onPreview == null
           ? null
           : IconButton(
@@ -2421,10 +2453,7 @@ class _TypeBadge extends StatelessWidget {
         borderRadius: BorderRadius.circular(999),
         border: Border.all(color: scheme.outlineVariant),
       ),
-      child: Text(
-        label,
-        style: Theme.of(context).textTheme.labelSmall,
-      ),
+      child: Text(label, style: Theme.of(context).textTheme.labelSmall),
     );
   }
 }

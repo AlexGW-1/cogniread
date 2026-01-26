@@ -4,6 +4,7 @@ import 'dart:isolate';
 
 import 'package:cogniread/src/core/utils/logger.dart';
 import 'package:cogniread/src/core/types/anchor.dart';
+import 'package:cogniread/src/features/library/data/free_notes_store.dart';
 import 'package:cogniread/src/features/library/data/library_store.dart';
 import 'package:cogniread/src/features/search/book_text_extractor.dart';
 import 'package:cogniread/src/features/search/indexing/search_index_books_rebuild_isolate.dart';
@@ -20,6 +21,7 @@ class SearchIndexBooksRebuildProgress {
     required this.insertedRows,
     required this.elapsedMs,
     this.currentTitle,
+    this.message,
   });
 
   final int processedBooks;
@@ -28,6 +30,7 @@ class SearchIndexBooksRebuildProgress {
   final int insertedRows;
   final int elapsedMs;
   final String? currentTitle;
+  final String? message;
 
   double? get fraction {
     if (totalBooks <= 0) {
@@ -55,6 +58,7 @@ class SearchIndexBooksRebuildHandle {
 class SearchIndexService {
   factory SearchIndexService({
     LibraryStore? store,
+    FreeNotesStore? freeNotesStore,
     String fileName = 'search_index.sqlite',
     Database? database,
     BookTextExtractor? bookTextExtractor,
@@ -62,6 +66,7 @@ class SearchIndexService {
     final effectiveStore = store ?? LibraryStore();
     return SearchIndexService._(
       store: effectiveStore,
+      freeNotesStore: freeNotesStore,
       bookTextExtractor:
           bookTextExtractor ?? ReaderBookTextExtractor(store: effectiveStore),
       fileName: fileName,
@@ -71,22 +76,29 @@ class SearchIndexService {
 
   SearchIndexService._({
     required LibraryStore store,
+    FreeNotesStore? freeNotesStore,
     required BookTextExtractor bookTextExtractor,
     required String fileName,
     required Database? database,
-  })  : _store = store,
-        _bookTextExtractor = bookTextExtractor,
-        _fileName = fileName,
-        _database = database;
+  }) : _store = store,
+       _freeNotesStore = freeNotesStore,
+       _bookTextExtractor = bookTextExtractor,
+       _fileName = fileName,
+       _database = database;
 
   static const int schemaVersion = 1;
   static const bool _isFlutterTest = bool.fromEnvironment('FLUTTER_TEST');
 
+  static const String freeNotesBookId = 'free-notes';
+
   final LibraryStore _store;
+  final FreeNotesStore? _freeNotesStore;
   final BookTextExtractor _bookTextExtractor;
   final String _fileName;
   String? _dbPath;
   Database? _database;
+  bool _supportsSnippet = false;
+  bool _supportsBm25 = false;
 
   Database get _db {
     final db = _database;
@@ -129,10 +141,9 @@ class SearchIndexService {
     final targetName = (fileName == null || fileName.trim().isEmpty)
         ? 'search_index_snapshot.sqlite'
         : fileName.trim();
-    final dir =
-        _dbPath == null
-            ? await getApplicationSupportDirectory()
-            : Directory(p.dirname(_dbPath!));
+    final dir = _dbPath == null
+        ? await getApplicationSupportDirectory()
+        : Directory(p.dirname(_dbPath!));
     await dir.create(recursive: true);
     final path = p.join(dir.path, targetName);
 
@@ -157,19 +168,21 @@ class SearchIndexService {
     await init();
     late final Row row;
     try {
-      row =
-          _db.select(
+      row = _db
+          .select(
             'SELECT schema_version, last_rebuild_at, last_rebuild_ms, marks_rows, books_rows, last_error '
             'FROM search_meta WHERE id = 1',
-          ).first;
+          )
+          .first;
     } catch (error) {
       Log.d('Search index status read failed: $error');
       await _recreateIndexFile();
-      row =
-          _db.select(
+      row = _db
+          .select(
             'SELECT schema_version, last_rebuild_at, last_rebuild_ms, marks_rows, books_rows, last_error '
             'FROM search_meta WHERE id = 1',
-          ).first;
+          )
+          .first;
     }
     final version = row['schema_version'] as int;
     final rebuildRaw = row['last_rebuild_at'] as String?;
@@ -197,6 +210,7 @@ class SearchIndexService {
     try {
       await _store.init();
       final entries = await _store.loadAll();
+      final freeNotes = await _loadFreeNotes();
       var inserted = 0;
       _db.execute('BEGIN');
       try {
@@ -236,6 +250,20 @@ class SearchIndexService {
               ]);
             }
           }
+          for (final note in freeNotes) {
+            final content = note.text.trim();
+            if (content.isEmpty) {
+              continue;
+            }
+            inserted += 1;
+            stmt.execute(<Object?>[
+              freeNotesBookId,
+              note.id,
+              'note',
+              null,
+              content,
+            ]);
+          }
         } finally {
           stmt.dispose();
         }
@@ -244,11 +272,7 @@ class SearchIndexService {
           'UPDATE search_meta '
           'SET last_rebuild_at = ?, last_rebuild_ms = ?, marks_rows = ?, last_error = NULL '
           'WHERE id = 1',
-          <Object?>[
-            now.toIso8601String(),
-            watch.elapsedMilliseconds,
-            inserted,
-          ],
+          <Object?>[now.toIso8601String(), watch.elapsedMilliseconds, inserted],
         );
         _db.execute('COMMIT');
       } catch (_) {
@@ -296,16 +320,20 @@ class SearchIndexService {
             processed += 1;
             final chapters = await _bookTextExtractor.extract(entry);
             var bookParagraphs = 0;
-            for (var chapterIndex = 0;
-                chapterIndex < chapters.length;
-                chapterIndex += 1) {
+            for (
+              var chapterIndex = 0;
+              chapterIndex < chapters.length;
+              chapterIndex += 1
+            ) {
               final chapter = chapters[chapterIndex];
               final chapterTitle = chapter.title;
               final paragraphs = chapter.paragraphs;
               var offset = chapterTitle.length;
-              for (var paragraphIndex = 0;
-                  paragraphIndex < paragraphs.length;
-                  paragraphIndex += 1) {
+              for (
+                var paragraphIndex = 0;
+                paragraphIndex < paragraphs.length;
+                paragraphIndex += 1
+              ) {
                 if (maxParagraphsPerBook > 0 &&
                     bookParagraphs >= maxParagraphsPerBook) {
                   break;
@@ -344,11 +372,7 @@ class SearchIndexService {
           'UPDATE search_meta '
           'SET last_rebuild_at = ?, last_rebuild_ms = ?, books_rows = ?, last_error = NULL '
           'WHERE id = 1',
-          <Object?>[
-            now.toIso8601String(),
-            watch.elapsedMilliseconds,
-            inserted,
-          ],
+          <Object?>[now.toIso8601String(), watch.elapsedMilliseconds, inserted],
         );
         _db.execute('COMMIT');
       } catch (_) {
@@ -399,7 +423,8 @@ class SearchIndexService {
     final receive = ReceivePort();
     SendPort? controlPort;
     var cancelRequested = false;
-    final progress = StreamController<SearchIndexBooksRebuildProgress>.broadcast();
+    final progress =
+        StreamController<SearchIndexBooksRebuildProgress>.broadcast();
     final done = Completer<void>();
     Isolate? isolate;
 
@@ -457,6 +482,20 @@ class SearchIndexService {
               insertedRows: (map['insertedRows'] as int?) ?? 0,
               elapsedMs: (map['elapsedMs'] as int?) ?? 0,
               currentTitle: map['currentTitle'] as String?,
+              message: map['message'] as String?,
+            ),
+          );
+          break;
+        case 'book_error':
+          progress.add(
+            SearchIndexBooksRebuildProgress(
+              processedBooks: (map['processedBooks'] as int?) ?? 0,
+              totalBooks: (map['totalBooks'] as int?) ?? 0,
+              stage: (map['stage'] as String?) ?? 'book-error',
+              insertedRows: (map['insertedRows'] as int?) ?? 0,
+              elapsedMs: (map['elapsedMs'] as int?) ?? 0,
+              currentTitle: map['currentTitle'] as String?,
+              message: map['message'] as String?,
             ),
           );
           break;
@@ -490,7 +529,9 @@ class SearchIndexService {
           }
           break;
         case 'error':
-          completeWithError(StateError(map['error']?.toString() ?? 'Rebuild failed'));
+          completeWithError(
+            StateError(map['error']?.toString() ?? 'Rebuild failed'),
+          );
           break;
       }
     });
@@ -624,8 +665,12 @@ class SearchIndexService {
     try {
       _db.execute('BEGIN');
       try {
-        _db.execute('DELETE FROM fts_books WHERE book_id = ?', <Object?>[bookId]);
-        _db.execute('DELETE FROM fts_marks WHERE book_id = ?', <Object?>[bookId]);
+        _db.execute('DELETE FROM fts_books WHERE book_id = ?', <Object?>[
+          bookId,
+        ]);
+        _db.execute('DELETE FROM fts_marks WHERE book_id = ?', <Object?>[
+          bookId,
+        ]);
         _db.execute(
           'DELETE FROM search_books_state WHERE book_id = ?',
           <Object?>[bookId],
@@ -652,19 +697,24 @@ class SearchIndexService {
       };
 
       final indexed = <String, String>{};
-      final rows = _db.select('SELECT book_id, fingerprint FROM search_books_state');
+      final rows = _db.select(
+        'SELECT book_id, fingerprint FROM search_books_state',
+      );
       for (final row in rows) {
         indexed[row['book_id'] as String] = row['fingerprint'] as String;
       }
 
-      final toDelete = indexed.keys.where((id) => !current.containsKey(id)).toList();
+      final toDelete = indexed.keys
+          .where((id) => !current.containsKey(id))
+          .toList();
       for (final id in toDelete) {
         await deleteBook(id);
       }
 
       for (final entry in entries) {
         final existingFingerprint = indexed[entry.id];
-        final changed = existingFingerprint == null ||
+        final changed =
+            existingFingerprint == null ||
             existingFingerprint != entry.fingerprint;
         await _indexBookEntry(
           entry,
@@ -701,75 +751,48 @@ class SearchIndexService {
       return const <SearchHit>[];
     }
     try {
-      late final ResultSet rows;
-      final where =
-          onlyType == null
-              ? 'fts_marks MATCH ?'
-              : "fts_marks MATCH ? AND mark_type = '${_markTypeToDb(onlyType)}'";
-      const orderBy =
-          'ORDER BY rank ASC, mark_type ASC, book_id ASC, mark_id ASC';
-      try {
-        rows = _db.select(
-          'SELECT '
-          '  book_id, mark_id, mark_type, anchor, '
-          "  snippet(fts_marks, 4, '[', ']', '…', 10) AS snippet, "
-          '  bm25(fts_marks, 0.0, 0.0, 0.0, 0.0, 1.0) AS rank '
-          'FROM fts_marks '
-          'WHERE $where '
-          '$orderBy '
-          'LIMIT ?',
-          <Object?>[matchExpr, limit],
-        );
-      } on SqliteException catch (error) {
-        final message = error.message.toLowerCase();
-        if (!message.contains('no such function: snippet') &&
-            !message.contains('no such function: bm25')) {
-          rethrow;
-        }
-        try {
-          rows = _db.select(
-            'SELECT '
-            '  book_id, mark_id, mark_type, anchor, content, '
-            '  bm25(fts_marks, 0.0, 0.0, 0.0, 0.0, 1.0) AS rank '
-            'FROM fts_marks '
-            'WHERE $where '
-            '$orderBy '
-            'LIMIT ?',
-            <Object?>[matchExpr, limit],
-          );
-        } on SqliteException catch (error) {
-          final message = error.message.toLowerCase();
-          if (!message.contains('no such function: bm25')) {
-            rethrow;
-          }
-          rows = _db.select(
-            'SELECT book_id, mark_id, mark_type, anchor, content '
-            'FROM fts_marks '
-            'WHERE $where '
-            'ORDER BY mark_type ASC, book_id ASC, mark_id ASC '
-            'LIMIT ?',
-            <Object?>[matchExpr, limit],
-          );
-        }
-      }
+      final where = onlyType == null
+          ? 'fts_marks MATCH ?'
+          : "fts_marks MATCH ? AND mark_type = '${_markTypeToDb(onlyType)}'";
+      final snippetClause = _ftsSnippetClause('fts_marks');
+      final rankClause = _supportsBm25 ? _marksBm25Clause : null;
+      final columns = <String>[
+        'book_id',
+        'mark_id',
+        'mark_type',
+        'anchor',
+        snippetClause,
+        if (rankClause != null) rankClause,
+      ];
+      final orderBy = _supportsBm25
+          ? 'ORDER BY rank ASC, mark_type ASC, book_id ASC, mark_id ASC'
+          : 'ORDER BY mark_type ASC, book_id ASC, mark_id ASC';
+      final rows = _db.select(
+        'SELECT ${columns.join(', ')} '
+        'FROM fts_marks '
+        'WHERE $where '
+        '$orderBy '
+        'LIMIT ?',
+        <Object?>[matchExpr, limit],
+      );
       return rows
           .map((row) {
             final typeRaw = (row['mark_type'] as String?) ?? '';
             final type = typeRaw == 'note'
                 ? SearchHitType.note
                 : SearchHitType.highlight;
-            final rawSnippet = (row['snippet'] as String?) ??
-                (row['content'] as String?) ??
-                '';
+            final bookId = row['book_id'] as String;
+            final rawSnippet = (row['snippet'] as String?) ?? '';
             final snippet = rawSnippet.trim().isEmpty
                 ? _fallbackSnippet(rawSnippet)
                 : rawSnippet;
             return SearchHit(
               type: type,
-              bookId: row['book_id'] as String,
+              bookId: bookId,
               markId: row['mark_id'] as String,
               anchor: row['anchor'] as String?,
               snippet: snippet,
+              isFreeNote: bookId == freeNotesBookId,
             );
           })
           .toList(growable: false);
@@ -785,7 +808,10 @@ class SearchIndexService {
     }
   }
 
-  Future<List<BookTextHit>> searchBooksText(String query, {int limit = 50}) async {
+  Future<List<BookTextHit>> searchBooksText(
+    String query, {
+    int limit = 50,
+  }) async {
     await init();
     final parsed = SearchIndexQuery.parse(query);
     if (parsed.isEmpty) {
@@ -796,68 +822,34 @@ class SearchIndexService {
       return const <BookTextHit>[];
     }
     try {
-      late final ResultSet rows;
-      try {
-        rows = _db.select(
-          'SELECT '
-          '  book_id, book_title, book_author, chapter_title, '
-          "  snippet(fts_books, 4, '[', ']', '…', 10) AS snippet, "
-          '  bm25('
-          '    fts_books, '
-          '    0.0, 10.0, 3.0, 5.0, 1.0, 0.0, 0.0, 0.0, 0.0'
-          '  ) AS rank, '
-          '  anchor, chapter_href, chapter_index, paragraph_index '
-          'FROM fts_books '
-          'WHERE fts_books MATCH ? '
-          'ORDER BY rank ASC, book_id ASC, chapter_index ASC, paragraph_index ASC '
-          'LIMIT ?',
-          <Object?>[matchExpr, limit],
-        );
-      } on SqliteException catch (error) {
-        final message = error.message.toLowerCase();
-        if (!message.contains('no such function: snippet') &&
-            !message.contains('no such function: bm25')) {
-          rethrow;
-        }
-        try {
-          rows = _db.select(
-            'SELECT '
-            '  book_id, book_title, book_author, chapter_title, '
-            '  content, '
-            '  bm25('
-            '    fts_books, '
-            '    0.0, 10.0, 3.0, 5.0, 1.0, 0.0, 0.0, 0.0, 0.0'
-            '  ) AS rank, '
-            '  anchor, chapter_href, chapter_index, paragraph_index '
-            'FROM fts_books '
-            'WHERE fts_books MATCH ? '
-            'ORDER BY rank ASC, book_id ASC, chapter_index ASC, paragraph_index ASC '
-            'LIMIT ?',
-            <Object?>[matchExpr, limit],
-          );
-        } on SqliteException catch (error) {
-          final message = error.message.toLowerCase();
-          if (!message.contains('no such function: bm25')) {
-            rethrow;
-          }
-          rows = _db.select(
-            'SELECT '
-            '  book_id, book_title, book_author, chapter_title, '
-            "  snippet(fts_books, 4, '[', ']', '…', 10) AS snippet, "
-            '  anchor, chapter_href, chapter_index, paragraph_index '
-            'FROM fts_books '
-            'WHERE fts_books MATCH ? '
-            'ORDER BY book_id ASC, chapter_index ASC, paragraph_index ASC '
-            'LIMIT ?',
-            <Object?>[matchExpr, limit],
-          );
-        }
-      }
+      final snippetClause = _ftsSnippetClause('fts_books');
+      final rankClause = _supportsBm25 ? _booksBm25Clause : null;
+      final columns = <String>[
+        'book_id',
+        'book_title',
+        'book_author',
+        'chapter_title',
+        snippetClause,
+        'anchor',
+        'chapter_href',
+        'chapter_index',
+        'paragraph_index',
+        if (rankClause != null) rankClause,
+      ];
+      final orderBy = _supportsBm25
+          ? 'ORDER BY rank ASC, book_id ASC, chapter_index ASC, paragraph_index ASC'
+          : 'ORDER BY book_id ASC, chapter_index ASC, paragraph_index ASC';
+      final rows = _db.select(
+        'SELECT ${columns.join(', ')} '
+        'FROM fts_books '
+        'WHERE fts_books MATCH ? '
+        '$orderBy '
+        'LIMIT ?',
+        <Object?>[matchExpr, limit],
+      );
       return rows
           .map((row) {
-            final rawSnippet = (row['snippet'] as String?) ??
-                (row['content'] as String?) ??
-                '';
+            final rawSnippet = (row['snippet'] as String?) ?? '';
             final snippet = rawSnippet.trim().isEmpty
                 ? _fallbackSnippet(rawSnippet)
                 : rawSnippet;
@@ -897,6 +889,28 @@ class SearchIndexService {
     ].where((value) => value.isNotEmpty).toList();
     return parts.join('\n');
   }
+
+  Future<List<FreeNote>> _loadFreeNotes() async {
+    final store = _freeNotesStore;
+    if (store == null) {
+      return const <FreeNote>[];
+    }
+    await store.init();
+    return await store.loadAll();
+  }
+
+  String _ftsSnippetClause(String table) {
+    if (_supportsSnippet) {
+      return "snippet($table, 4, '[', ']', '…', 10) AS snippet";
+    }
+    return 'content AS snippet';
+  }
+
+  String get _marksBm25Clause =>
+      'bm25(fts_marks, 0.0, 0.0, 0.0, 0.0, 1.0) AS rank';
+
+  String get _booksBm25Clause =>
+      'bm25(fts_books, 0.0, 10.0, 3.0, 5.0, 1.0, 0.0, 0.0, 0.0, 0.0) AS rank';
 
   static String _fallbackSnippet(String input) {
     final trimmed = input.trim();
@@ -977,6 +991,7 @@ class SearchIndexService {
       '  indexed_at TEXT NULL'
       ')',
     );
+    _probeFtsCapabilities();
   }
 
   void _ensureMetaColumn(String name, String type) {
@@ -987,10 +1002,48 @@ class SearchIndexService {
       _db.execute('ALTER TABLE search_meta ADD COLUMN $name $type NULL');
     } catch (error) {
       final message = error.toString().toLowerCase();
-      if (message.contains('duplicate column') || message.contains('already exists')) {
+      if (message.contains('duplicate column') ||
+          message.contains('already exists')) {
         return;
       }
       rethrow;
+    }
+  }
+
+  void _probeFtsCapabilities() {
+    try {
+      _supportsSnippet = _probeSnippet('fts_books');
+    } catch (_) {
+      _supportsSnippet = false;
+    }
+    try {
+      _supportsBm25 = _probeBm25('fts_books');
+    } catch (_) {
+      _supportsBm25 = false;
+    }
+  }
+
+  bool _probeSnippet(String table) {
+    try {
+      _db.select(
+        "SELECT snippet($table, 4, '[', ']', '…', 10) AS snippet "
+        'FROM $table LIMIT 0',
+      );
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  bool _probeBm25(String table) {
+    try {
+      _db.select(
+        'SELECT bm25($table, 0.0, 10.0, 3.0, 5.0, 1.0, 0.0, 0.0, 0.0, 0.0) AS rank '
+        'FROM $table LIMIT 0',
+      );
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -1078,10 +1131,9 @@ class SearchIndexService {
     _db.execute('BEGIN');
     try {
       if (reindexText) {
-        _db.execute(
-          'DELETE FROM fts_books WHERE book_id = ?',
-          <Object?>[entry.id],
-        );
+        _db.execute('DELETE FROM fts_books WHERE book_id = ?', <Object?>[
+          entry.id,
+        ]);
         final chapters = await _bookTextExtractor.extract(entry);
         final stmt = _db.prepare(
           'INSERT INTO fts_books('
@@ -1090,16 +1142,20 @@ class SearchIndexService {
           ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
         );
         try {
-          for (var chapterIndex = 0;
-              chapterIndex < chapters.length;
-              chapterIndex += 1) {
+          for (
+            var chapterIndex = 0;
+            chapterIndex < chapters.length;
+            chapterIndex += 1
+          ) {
             final chapter = chapters[chapterIndex];
             final chapterTitle = chapter.title;
             final paragraphs = chapter.paragraphs;
             var offset = chapterTitle.length;
-            for (var paragraphIndex = 0;
-                paragraphIndex < paragraphs.length;
-                paragraphIndex += 1) {
+            for (
+              var paragraphIndex = 0;
+              paragraphIndex < paragraphs.length;
+              paragraphIndex += 1
+            ) {
               final paragraph = paragraphs[paragraphIndex];
               if (paragraph.trim().isEmpty) {
                 offset += paragraph.length;
@@ -1134,10 +1190,9 @@ class SearchIndexService {
       }
 
       if (reindexMarks) {
-        _db.execute(
-          'DELETE FROM fts_marks WHERE book_id = ?',
-          <Object?>[entry.id],
-        );
+        _db.execute('DELETE FROM fts_marks WHERE book_id = ?', <Object?>[
+          entry.id,
+        ]);
         final stmt = _db.prepare(
           'INSERT INTO fts_marks(book_id, mark_id, mark_type, anchor, content) '
           'VALUES (?, ?, ?, ?, ?)',
@@ -1184,8 +1239,10 @@ class SearchIndexService {
   }
 
   void _refreshRowCounts() {
-    final marks = _db.select('SELECT COUNT(*) AS c FROM fts_marks').first['c'] as int;
-    final books = _db.select('SELECT COUNT(*) AS c FROM fts_books').first['c'] as int;
+    final marks =
+        _db.select('SELECT COUNT(*) AS c FROM fts_marks').first['c'] as int;
+    final books =
+        _db.select('SELECT COUNT(*) AS c FROM fts_books').first['c'] as int;
     _db.execute(
       'UPDATE search_meta SET marks_rows = ?, books_rows = ? WHERE id = 1',
       <Object?>[marks, books],

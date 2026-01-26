@@ -19,6 +19,7 @@ class GlobalSearchScreen extends StatefulWidget {
     this.recentQueries = const <String>[],
     this.onClearRecentQueries,
     this.onRemoveRecentQuery,
+    this.onOpenFreeNote,
   });
 
   final void Function(
@@ -39,6 +40,7 @@ class GlobalSearchScreen extends StatefulWidget {
   final List<String> recentQueries;
   final VoidCallback? onClearRecentQueries;
   final ValueChanged<String>? onRemoveRecentQuery;
+  final ValueChanged<String>? onOpenFreeNote;
 
   @override
   State<GlobalSearchScreen> createState() => _GlobalSearchScreenState();
@@ -84,21 +86,35 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
     widget.onClearRecentQueries?.call();
   }
 
-  void _commitQuery() {
+  void _commitQuery({bool updateState = true, bool deferCallback = false}) {
     final query = _textController.text.trim();
     if (query.isEmpty) {
       return;
     }
-    setState(() {
-      _recentQueries = <String>[
-        query,
-        ..._recentQueries.where((item) => item != query),
-      ];
-      if (_recentQueries.length > 50) {
-        _recentQueries = _recentQueries.sublist(0, 50);
+    var updated = <String>[
+      query,
+      ..._recentQueries.where((item) => item != query),
+    ];
+    if (updated.length > 50) {
+      updated = updated.sublist(0, 50);
+    }
+    if (updateState && mounted) {
+      setState(() {
+        _recentQueries = updated;
+      });
+    } else {
+      _recentQueries = updated;
+    }
+    if (deferCallback) {
+      final callback = widget.onSaveQuery;
+      if (callback != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          callback(query);
+        });
       }
-    });
-    widget.onSaveQuery?.call(query);
+    } else {
+      widget.onSaveQuery?.call(query);
+    }
   }
 
   @override
@@ -122,7 +138,7 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
 
   @override
   void dispose() {
-    _commitQuery();
+    _commitQuery(updateState: false, deferCallback: true);
     _tabController.dispose();
     _textController.dispose();
     _controller.dispose();
@@ -148,9 +164,13 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
       return 'Индексируем заметки и цитаты…';
     }
     final title = progress.currentTitle?.trim();
+    final message = progress.message?.trim();
     final total = progress.totalBooks;
     final processed = progress.processedBooks;
     final base = total > 0 ? 'Книги: $processed/$total' : 'Книги: $processed';
+    if (message != null && message.isNotEmpty) {
+      return '$base · $message';
+    }
     if (title == null || title.isEmpty) {
       return base;
     }
@@ -225,7 +245,8 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
                               ),
                             ),
                             TextButton(
-                              onPressed: (cancelingRebuild ||
+                              onPressed:
+                                  (cancelingRebuild ||
                                       rebuildProgress?.stage == 'marks')
                                   ? null
                                   : _controller.cancelRebuild,
@@ -279,8 +300,9 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
                         ),
                         const SizedBox(height: 10),
                         FilledButton.icon(
-                          onPressed:
-                              rebuilding ? null : _controller.rebuildIndex,
+                          onPressed: rebuilding
+                              ? null
+                              : _controller.rebuildIndex,
                           icon: const Icon(Icons.restart_alt),
                           label: const Text('Перестроить индекс'),
                         ),
@@ -298,81 +320,83 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
                           onRemove: _removeRecentQuery,
                         )
                       : tooShort
-                          ? const Center(
-                              child: Text('Введите минимум 2 символа.'),
-                            )
-                          : TabBarView(
-                              controller: _tabController,
-                              children: [
-                                _BooksResultsList(
-                                  items: _controller.bookResults,
-                                  searchQuery: query,
-                                  onOpen:
-                                      (
-                                        bookId, {
-                                        String? initialNoteId,
-                                        String? initialHighlightId,
-                                        String? initialAnchor,
-                                        String? initialSearchQuery,
-                                      }) {
-                                        _commitQuery();
-                                        widget.onOpen(
-                                          bookId,
-                                          initialNoteId: initialNoteId,
-                                          initialHighlightId: initialHighlightId,
-                                          initialAnchor: initialAnchor,
-                                          initialSearchQuery: initialSearchQuery,
-                                        );
-                                      },
-                                ),
-                                _MarksResultsList(
-                                  items: _controller.noteResults,
-                                  label: 'Заметка',
-                                  resolveBookTitle: widget.resolveBookTitle,
-                                  resolveBookAuthor: widget.resolveBookAuthor,
-                                  onOpen:
-                                      (
-                                        bookId, {
-                                        String? initialNoteId,
-                                        String? initialHighlightId,
-                                        String? initialAnchor,
-                                        String? initialSearchQuery,
-                                      }) {
-                                        _commitQuery();
-                                        widget.onOpen(
-                                          bookId,
-                                          initialNoteId: initialNoteId,
-                                          initialHighlightId: initialHighlightId,
-                                          initialAnchor: initialAnchor,
-                                          initialSearchQuery: initialSearchQuery,
-                                        );
-                                      },
-                                ),
-                                _MarksResultsList(
-                                  items: _controller.quoteResults,
-                                  label: 'Цитата',
-                                  resolveBookTitle: widget.resolveBookTitle,
-                                  resolveBookAuthor: widget.resolveBookAuthor,
-                                  onOpen:
-                                      (
-                                        bookId, {
-                                        String? initialNoteId,
-                                        String? initialHighlightId,
-                                        String? initialAnchor,
-                                        String? initialSearchQuery,
-                                      }) {
-                                        _commitQuery();
-                                        widget.onOpen(
-                                          bookId,
-                                          initialNoteId: initialNoteId,
-                                          initialHighlightId: initialHighlightId,
-                                          initialAnchor: initialAnchor,
-                                          initialSearchQuery: initialSearchQuery,
-                                        );
-                                      },
-                                ),
-                              ],
+                      ? const Center(child: Text('Введите минимум 2 символа.'))
+                      : TabBarView(
+                          controller: _tabController,
+                          children: [
+                            _BooksResultsList(
+                              items: _controller.bookResults,
+                              searchQuery: query,
+                              onOpen:
+                                  (
+                                    bookId, {
+                                    String? initialNoteId,
+                                    String? initialHighlightId,
+                                    String? initialAnchor,
+                                    String? initialSearchQuery,
+                                  }) {
+                                    _commitQuery();
+                                    widget.onOpen(
+                                      bookId,
+                                      initialNoteId: initialNoteId,
+                                      initialHighlightId: initialHighlightId,
+                                      initialAnchor: initialAnchor,
+                                      initialSearchQuery: initialSearchQuery,
+                                    );
+                                  },
                             ),
+                            _MarksResultsList(
+                              items: _controller.noteResults,
+                              label: 'Заметка',
+                              resolveBookTitle: widget.resolveBookTitle,
+                              resolveBookAuthor: widget.resolveBookAuthor,
+                              onOpen:
+                                  (
+                                    bookId, {
+                                    String? initialNoteId,
+                                    String? initialHighlightId,
+                                    String? initialAnchor,
+                                    String? initialSearchQuery,
+                                  }) {
+                                    _commitQuery();
+                                    widget.onOpen(
+                                      bookId,
+                                      initialNoteId: initialNoteId,
+                                      initialHighlightId: initialHighlightId,
+                                      initialAnchor: initialAnchor,
+                                      initialSearchQuery: initialSearchQuery,
+                                    );
+                                  },
+                              onOpenFreeNote: widget.onOpenFreeNote,
+                              searchQuery: query,
+                            ),
+                            _MarksResultsList(
+                              items: _controller.quoteResults,
+                              label: 'Цитата',
+                              resolveBookTitle: widget.resolveBookTitle,
+                              resolveBookAuthor: widget.resolveBookAuthor,
+                              onOpen:
+                                  (
+                                    bookId, {
+                                    String? initialNoteId,
+                                    String? initialHighlightId,
+                                    String? initialAnchor,
+                                    String? initialSearchQuery,
+                                  }) {
+                                    _commitQuery();
+                                    widget.onOpen(
+                                      bookId,
+                                      initialNoteId: initialNoteId,
+                                      initialHighlightId: initialHighlightId,
+                                      initialAnchor: initialAnchor,
+                                      initialSearchQuery: initialSearchQuery,
+                                    );
+                                  },
+                              onOpenFreeNote: widget.onOpenFreeNote,
+                              searchQuery: query,
+                            ),
+                          ],
+                        ),
                 ),
               ],
             ),
@@ -391,9 +415,7 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
         return true;
       },
       child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Поиск'),
-        ),
+        appBar: AppBar(title: const Text('Поиск')),
         body: content,
       ),
     );
@@ -412,6 +434,7 @@ class GlobalSearchSheet extends StatefulWidget {
     this.recentQueries = const <String>[],
     this.onClearRecentQueries,
     this.onRemoveRecentQuery,
+    this.onOpenFreeNote,
   });
 
   final void Function(
@@ -431,6 +454,7 @@ class GlobalSearchSheet extends StatefulWidget {
   final List<String> recentQueries;
   final VoidCallback? onClearRecentQueries;
   final ValueChanged<String>? onRemoveRecentQuery;
+  final ValueChanged<String>? onOpenFreeNote;
 
   @override
   State<GlobalSearchSheet> createState() => _GlobalSearchSheetState();
@@ -476,21 +500,35 @@ class _GlobalSearchSheetState extends State<GlobalSearchSheet>
     widget.onClearRecentQueries?.call();
   }
 
-  void _commitQuery() {
+  void _commitQuery({bool updateState = true, bool deferCallback = false}) {
     final query = _textController.text.trim();
     if (query.isEmpty) {
       return;
     }
-    setState(() {
-      _recentQueries = <String>[
-        query,
-        ..._recentQueries.where((item) => item != query),
-      ];
-      if (_recentQueries.length > 50) {
-        _recentQueries = _recentQueries.sublist(0, 50);
+    var updated = <String>[
+      query,
+      ..._recentQueries.where((item) => item != query),
+    ];
+    if (updated.length > 50) {
+      updated = updated.sublist(0, 50);
+    }
+    if (updateState && mounted) {
+      setState(() {
+        _recentQueries = updated;
+      });
+    } else {
+      _recentQueries = updated;
+    }
+    if (deferCallback) {
+      final callback = widget.onSaveQuery;
+      if (callback != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          callback(query);
+        });
       }
-    });
-    widget.onSaveQuery?.call(query);
+    } else {
+      widget.onSaveQuery?.call(query);
+    }
   }
 
   @override
@@ -514,6 +552,7 @@ class _GlobalSearchSheetState extends State<GlobalSearchSheet>
 
   @override
   void dispose() {
+    _commitQuery(updateState: false, deferCallback: true);
     _tabController.dispose();
     _textController.dispose();
     _controller.dispose();
@@ -539,9 +578,13 @@ class _GlobalSearchSheetState extends State<GlobalSearchSheet>
       return 'Индексируем заметки и цитаты…';
     }
     final title = progress.currentTitle?.trim();
+    final message = progress.message?.trim();
     final total = progress.totalBooks;
     final processed = progress.processedBooks;
     final base = total > 0 ? 'Книги: $processed/$total' : 'Книги: $processed';
+    if (message != null && message.isNotEmpty) {
+      return '$base · $message';
+    }
     if (title == null || title.isEmpty) {
       return base;
     }
@@ -637,7 +680,8 @@ class _GlobalSearchSheetState extends State<GlobalSearchSheet>
                               ),
                             ),
                             TextButton(
-                              onPressed: (cancelingRebuild ||
+                              onPressed:
+                                  (cancelingRebuild ||
                                       rebuildProgress?.stage == 'marks')
                                   ? null
                                   : _controller.cancelRebuild,
@@ -711,10 +755,8 @@ class _GlobalSearchSheetState extends State<GlobalSearchSheet>
                           onRemove: _removeRecentQuery,
                         )
                       : tooShort
-                          ? const Center(
-                              child: Text('Введите минимум 2 символа.'),
-                            )
-                          : TabBarView(
+                      ? const Center(child: Text('Введите минимум 2 символа.'))
+                      : TabBarView(
                           controller: _tabController,
                           children: [
                             _BooksResultsList(
@@ -762,6 +804,8 @@ class _GlobalSearchSheetState extends State<GlobalSearchSheet>
                                       initialSearchQuery: initialSearchQuery,
                                     );
                                   },
+                              onOpenFreeNote: widget.onOpenFreeNote,
+                              searchQuery: query,
                             ),
                             _MarksResultsList(
                               items: _controller.quoteResults,
@@ -786,6 +830,8 @@ class _GlobalSearchSheetState extends State<GlobalSearchSheet>
                                       initialSearchQuery: initialSearchQuery,
                                     );
                                   },
+                              onOpenFreeNote: widget.onOpenFreeNote,
+                              searchQuery: query,
                             ),
                           ],
                         ),
@@ -899,6 +945,8 @@ class _MarksResultsList extends StatelessWidget {
     required this.resolveBookAuthor,
     required this.onOpen,
     this.onClose,
+    this.onOpenFreeNote,
+    required this.searchQuery,
   });
 
   final List<SearchHit> items;
@@ -914,6 +962,8 @@ class _MarksResultsList extends StatelessWidget {
     String? initialSearchQuery,
   })
   onOpen;
+  final ValueChanged<String>? onOpenFreeNote;
+  final String searchQuery;
 
   @override
   Widget build(BuildContext context) {
@@ -932,21 +982,31 @@ class _MarksResultsList extends StatelessWidget {
       separatorBuilder: (context, index) => const Divider(height: 1),
       itemBuilder: (context, index) {
         final item = items[index];
-        final title = resolveBookTitle(item.bookId);
-        final author = resolveBookAuthor(item.bookId);
-        final subtitle = author == null || author.trim().isEmpty
-            ? label
-            : '$label · $author';
+        final isFreeNote = item.isFreeNote;
+        final title = isFreeNote
+            ? 'Свободная заметка'
+            : resolveBookTitle(item.bookId);
+        final author = isFreeNote ? null : resolveBookAuthor(item.bookId);
+        final subtitleParts = <String>[
+          label,
+          if (!isFreeNote && author != null && author.trim().isNotEmpty)
+            author.trim(),
+        ];
+        final subtitle = subtitleParts.isEmpty
+            ? null
+            : subtitleParts.join(' · ');
         final snippet = item.snippet.trim();
+        final hasSnippet = snippet.isNotEmpty;
         return ListTile(
           title: Text(title),
-          subtitle: snippet.isEmpty
-              ? Text(subtitle, maxLines: 2, overflow: TextOverflow.ellipsis)
-              : Text.rich(
+          subtitle: hasSnippet
+              ? Text.rich(
                   TextSpan(
                     children: [
-                      TextSpan(text: subtitle),
-                      const TextSpan(text: '\n'),
+                      if (subtitle != null) ...[
+                        TextSpan(text: subtitle),
+                        const TextSpan(text: '\n'),
+                      ],
                       ..._highlightedSnippetSpans(
                         snippet,
                         style: baseStyle,
@@ -956,8 +1016,15 @@ class _MarksResultsList extends StatelessWidget {
                   ),
                   maxLines: 3,
                   overflow: TextOverflow.ellipsis,
-                ),
-          isThreeLine: item.snippet.trim().isNotEmpty,
+                )
+              : (subtitle == null
+                    ? null
+                    : Text(
+                        subtitle,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      )),
+          isThreeLine: hasSnippet,
           leading: item.type == SearchHitType.note
               ? const Icon(Icons.sticky_note_2_outlined)
               : const Icon(Icons.format_quote_outlined),
@@ -968,6 +1035,11 @@ class _MarksResultsList extends StatelessWidget {
           minVerticalPadding: 8,
           trailing: const Icon(Icons.chevron_right),
           onTap: () {
+            if (isFreeNote) {
+              onClose?.call();
+              onOpenFreeNote?.call(item.markId);
+              return;
+            }
             onClose?.call();
             onOpen(
               item.bookId,
@@ -978,6 +1050,7 @@ class _MarksResultsList extends StatelessWidget {
                   ? item.markId
                   : null,
               initialAnchor: item.anchor,
+              initialSearchQuery: searchQuery,
             );
           },
         );
@@ -1057,10 +1130,7 @@ class _EmptyQueryState extends StatelessWidget {
                 style: Theme.of(context).textTheme.labelLarge,
               ),
             ),
-            TextButton(
-              onPressed: onClear,
-              child: const Text('Очистить'),
-            ),
+            TextButton(onPressed: onClear, child: const Text('Очистить')),
           ],
         ),
         const SizedBox(height: 8),
