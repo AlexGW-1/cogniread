@@ -8,6 +8,7 @@ import 'package:cogniread/src/core/services/storage_service.dart';
 import 'package:cogniread/src/core/services/storage_service_impl.dart';
 import 'package:cogniread/src/core/types/toc.dart';
 import 'package:cogniread/src/core/utils/logger.dart';
+import 'package:cogniread/src/core/utils/message_sanitizer.dart';
 import 'package:cogniread/src/features/ai/ai_models.dart';
 import 'package:cogniread/src/features/library/data/library_preferences_store.dart';
 import 'package:cogniread/src/features/library/data/free_notes_store.dart';
@@ -71,6 +72,7 @@ class LibraryBookItem {
     required this.isMissing,
     required this.notes,
     required this.highlights,
+    required this.progress,
   });
 
   factory LibraryBookItem.fromEntry(
@@ -90,6 +92,7 @@ class LibraryBookItem {
       isMissing: isMissing,
       notes: entry.notes,
       highlights: entry.highlights,
+      progress: entry.progress,
     );
   }
 
@@ -105,9 +108,10 @@ class LibraryBookItem {
   final bool isMissing;
   final List<Note> notes;
   final List<Highlight> highlights;
+  final ReadingProgress progress;
 }
 
-enum LibraryViewMode { list, grid }
+enum LibraryViewMode { list, grid, shelves }
 
 enum LibrarySearchResultType { book, note, highlight }
 
@@ -237,7 +241,7 @@ class LibraryController extends ChangeNotifier {
   ];
   String _query = '';
   final List<LibraryBookItem> _books = <LibraryBookItem>[];
-  LibraryViewMode _viewMode = LibraryViewMode.list;
+  LibraryViewMode _viewMode = LibraryViewMode.shelves;
   SyncProvider _syncProvider = SyncProvider.googleDrive;
   String _globalSearchQuery = '';
   bool _globalSearching = false;
@@ -246,11 +250,18 @@ class LibraryController extends ChangeNotifier {
   Timer? _globalSearchDebounce;
   int _globalSearchNonce = 0;
   List<String> _searchHistory = <String>[];
+  final Set<String> _favoriteIds = <String>{};
+  final Set<String> _toReadIds = <String>{};
+  ValueListenable<dynamic>? _libraryListenable;
+  Timer? _libraryReloadDebounce;
   static const Duration _autoSyncInterval = Duration(minutes: 15);
   static const Duration _syncDebounce = Duration(seconds: 5);
   DateTime? _lastSyncAt;
-  bool? _lastSyncOk;
+  SyncStatusState? _lastSyncState;
   String? _lastSyncSummary;
+  SyncMetricsSnapshot? _lastSyncMetrics;
+  int _syncErrorCountTotal = 0;
+  int _syncErrorCountConsecutive = 0;
   AiConfig _aiConfig = const AiConfig();
   bool _aiTestInProgress = false;
   bool? _aiTestOk;
@@ -283,8 +294,17 @@ class LibraryController extends ChangeNotifier {
   WebDavCredentials? get basicAuthCredentials =>
       isNasProvider ? _webDavCredentials : null;
   DateTime? get lastSyncAt => _lastSyncAt;
-  bool? get lastSyncOk => _lastSyncOk;
+  bool? get lastSyncOk {
+    final state = _lastSyncState;
+    if (state == null || state == SyncStatusState.paused) {
+      return null;
+    }
+    return state == SyncStatusState.success;
+  }
+  bool get isSyncPaused => _lastSyncState == SyncStatusState.paused;
+  SyncStatusState? get lastSyncState => _lastSyncState;
   String? get lastSyncSummary => _lastSyncSummary;
+  SyncMetricsSnapshot? get lastSyncMetrics => _lastSyncMetrics;
   AiConfig get aiConfig => _aiConfig;
   bool get aiTestInProgress => _aiTestInProgress;
   bool? get aiTestOk => _aiTestOk;
@@ -330,6 +350,10 @@ class LibraryController extends ChangeNotifier {
   List<LibrarySearchResult> get globalSearchResults =>
       List<LibrarySearchResult>.unmodifiable(_globalSearchResults);
   List<String> get searchHistory => List<String>.unmodifiable(_searchHistory);
+  List<String> get favoriteIds => List<String>.unmodifiable(_favoriteIds);
+  List<String> get toReadIds => List<String>.unmodifiable(_toReadIds);
+  bool isFavorite(String id) => _favoriteIds.contains(id);
+  bool isToRead(String id) => _toReadIds.contains(id);
 
   List<LibraryBookItem> get filteredBooks {
     final needle = _query.toLowerCase().trim();
@@ -436,15 +460,19 @@ class LibraryController extends ChangeNotifier {
         _store.listenable(),
         _freeNotesStore.listenable(),
       ]);
+      _libraryListenable = _store.listenable();
+      _libraryListenable?.addListener(_scheduleLibraryReload);
       await _preferencesStore.init();
       await _syncAuthStore.init();
       await _loadAiConfig();
       await _loadSearchHistory();
+      await _loadUserLists();
       await _loadOAuthConfig();
       await _initAuthLinks();
       await _ensureDeviceId();
       await _loadViewMode();
       await _loadSyncStatus();
+      await _loadSyncMetrics();
       await _loadSyncProvider();
       await _loadProviderConnection(_syncProvider);
       await _refreshSyncAdapter();
@@ -465,8 +493,10 @@ class LibraryController extends ChangeNotifier {
     final stored = await _preferencesStore.loadViewMode();
     if (stored == 'grid') {
       _viewMode = LibraryViewMode.grid;
-    } else {
+    } else if (stored == 'list') {
       _viewMode = LibraryViewMode.list;
+    } else {
+      _viewMode = LibraryViewMode.shelves;
     }
     notifyListeners();
   }
@@ -477,8 +507,22 @@ class LibraryController extends ChangeNotifier {
       return;
     }
     _lastSyncAt = snapshot.at;
-    _lastSyncOk = snapshot.ok;
+    _lastSyncState = snapshot.state;
     _lastSyncSummary = snapshot.summary;
+    if (snapshot.state == SyncStatusState.paused) {
+      _autoSyncDisabled = true;
+    }
+    notifyListeners();
+  }
+
+  Future<void> _loadSyncMetrics() async {
+    final snapshot = await _preferencesStore.loadSyncMetrics();
+    if (snapshot == null) {
+      return;
+    }
+    _lastSyncMetrics = snapshot;
+    _syncErrorCountTotal = snapshot.errorCountTotal;
+    _syncErrorCountConsecutive = snapshot.errorCountConsecutive;
     notifyListeners();
   }
 
@@ -489,6 +533,52 @@ class LibraryController extends ChangeNotifier {
     } catch (_) {
       _searchHistory = <String>[];
     }
+  }
+
+  Future<void> _loadUserLists() async {
+    try {
+      _favoriteIds
+        ..clear()
+        ..addAll(await _preferencesStore.loadFavoriteIds());
+    } catch (_) {
+      _favoriteIds.clear();
+    }
+    try {
+      _toReadIds
+        ..clear()
+        ..addAll(await _preferencesStore.loadToReadIds());
+    } catch (_) {
+      _toReadIds.clear();
+    }
+    notifyListeners();
+  }
+
+  Future<void> setFavorite(String id, bool value) async {
+    if (value) {
+      _favoriteIds.add(id);
+    } else {
+      _favoriteIds.remove(id);
+    }
+    notifyListeners();
+    await _preferencesStore.saveFavoriteIds(_favoriteIds);
+  }
+
+  Future<void> toggleFavorite(String id) async {
+    await setFavorite(id, !_favoriteIds.contains(id));
+  }
+
+  Future<void> setToRead(String id, bool value) async {
+    if (value) {
+      _toReadIds.add(id);
+    } else {
+      _toReadIds.remove(id);
+    }
+    notifyListeners();
+    await _preferencesStore.saveToReadIds(_toReadIds);
+  }
+
+  Future<void> toggleToRead(String id) async {
+    await setToRead(id, !_toReadIds.contains(id));
   }
 
   Future<void> _loadAiConfig() async {
@@ -802,7 +892,7 @@ class LibraryController extends ChangeNotifier {
         .replaceAll(':', '-')
         .replaceAll('.', '-');
     final suggestedName = 'cogniread_notes_$timestamp.zip';
-    final destPath = await FilePicker.platform.saveFile(
+    final destPath = await FilePicker.saveFile(
       dialogTitle: 'Экспорт заметок',
       fileName: suggestedName,
       type: FileType.custom,
@@ -908,9 +998,15 @@ class LibraryController extends ChangeNotifier {
     }
     _viewMode = mode;
     notifyListeners();
-    await _preferencesStore.saveViewMode(
-      mode == LibraryViewMode.grid ? 'grid' : 'list',
-    );
+    if (_stubImport) {
+      return;
+    }
+    final stored = switch (mode) {
+      LibraryViewMode.list => 'list',
+      LibraryViewMode.grid => 'grid',
+      LibraryViewMode.shelves => 'shelves',
+    };
+    await _preferencesStore.saveViewMode(stored);
   }
 
   Future<void> setSyncProvider(SyncProvider provider) async {
@@ -1095,6 +1191,7 @@ class LibraryController extends ChangeNotifier {
     await _preferencesStore.clearSyncProvider();
     await _preferencesStore.clearSyncOAuthConfig();
     await _preferencesStore.clearSyncStatus();
+    await _preferencesStore.clearSyncMetrics();
     if (resetDeviceId) {
       await _preferencesStore.clearDeviceId();
     }
@@ -1107,8 +1204,11 @@ class LibraryController extends ChangeNotifier {
     _smbCredentials = null;
     _syncProvider = SyncProvider.webDav;
     _lastSyncAt = null;
-    _lastSyncOk = null;
+    _lastSyncState = null;
     _lastSyncSummary = null;
+    _lastSyncMetrics = null;
+    _syncErrorCountTotal = 0;
+    _syncErrorCountConsecutive = 0;
     _authError = null;
 
     _syncAdapter = _fallbackSyncAdapter;
@@ -1188,7 +1288,7 @@ class LibraryController extends ChangeNotifier {
         .replaceAll(':', '-')
         .replaceAll('.', '-');
     final suggestedName = 'cogniread_$timestamp.log';
-    final destPath = await FilePicker.platform.saveFile(
+    final destPath = await FilePicker.saveFile(
       dialogTitle: 'Экспорт лога',
       fileName: suggestedName,
       type: FileType.custom,
@@ -1236,6 +1336,14 @@ class LibraryController extends ChangeNotifier {
       } catch (error) {
         Log.d('Diagnostics upload: failed to read log: $error');
       }
+    }
+
+    try {
+      final report = await _buildSyncSupportReport(deviceId: deviceId);
+      final bytes = utf8.encode(jsonEncode(report));
+      archive.addFile(ArchiveFile('sync_report.json', bytes.length, bytes));
+    } catch (error) {
+      Log.d('Diagnostics upload: failed to build report: $error');
     }
 
     File? snapshot;
@@ -1311,6 +1419,25 @@ class LibraryController extends ChangeNotifier {
         await raf?.close();
       } catch (_) {}
     }
+  }
+
+  Future<Map<String, Object?>> _buildSyncSupportReport({
+    required String deviceId,
+  }) async {
+    return <String, Object?>{
+      'generatedAt': DateTime.now().toUtc().toIso8601String(),
+      'deviceId': deviceId,
+      'syncProvider': _syncProvider.name,
+      'syncProviderLabel': _providerLabel(_syncProvider),
+      'syncConnected': isSyncProviderConnected,
+      'autoSyncDisabled': _autoSyncDisabled,
+      'lastSync': <String, Object?>{
+        if (_lastSyncAt != null) 'at': _lastSyncAt!.toIso8601String(),
+        if (_lastSyncState != null) 'state': _lastSyncState!.name,
+        if (_lastSyncSummary != null) 'summary': _lastSyncSummary!,
+      },
+      if (_lastSyncMetrics != null) 'metrics': _lastSyncMetrics!.toMap(),
+    };
   }
 
   Future<void> importEpub() async {
@@ -1467,6 +1594,10 @@ class LibraryController extends ChangeNotifier {
         }
       }
       _books.removeAt(index);
+      _favoriteIds.remove(book.id);
+      _toReadIds.remove(book.id);
+      unawaited(_preferencesStore.saveFavoriteIds(_favoriteIds));
+      unawaited(_preferencesStore.saveToReadIds(_toReadIds));
       notifyListeners();
       _setInfo('Книга удалена');
       _scheduleSync();
@@ -1552,6 +1683,7 @@ class LibraryController extends ChangeNotifier {
         isMissing: book.isMissing,
         notes: book.notes,
         highlights: book.highlights,
+        progress: book.progress,
       );
       _books.sort(_sortByLastOpenedAt);
       notifyListeners();
@@ -1580,6 +1712,7 @@ class LibraryController extends ChangeNotifier {
       isMissing: true,
       notes: book.notes,
       highlights: book.highlights,
+      progress: book.progress,
     );
     notifyListeners();
   }
@@ -1625,6 +1758,17 @@ class LibraryController extends ChangeNotifier {
         ..clear()
         ..addAll(items);
       _books.sort(_sortByLastOpenedAt);
+      final knownIds = _books.map((book) => book.id).toSet();
+      final favoriteBefore = _favoriteIds.length;
+      _favoriteIds.removeWhere((id) => !knownIds.contains(id));
+      if (_favoriteIds.length != favoriteBefore) {
+        unawaited(_preferencesStore.saveFavoriteIds(_favoriteIds));
+      }
+      final toReadBefore = _toReadIds.length;
+      _toReadIds.removeWhere((id) => !knownIds.contains(id));
+      if (_toReadIds.length != toReadBefore) {
+        unawaited(_preferencesStore.saveToReadIds(_toReadIds));
+      }
       _loading = false;
       notifyListeners();
       _syncMissingCovers(entries);
@@ -1634,6 +1778,16 @@ class LibraryController extends ChangeNotifier {
       _loading = false;
       notifyListeners();
     }
+  }
+
+  void _scheduleLibraryReload() {
+    if (_stubImport) {
+      return;
+    }
+    _libraryReloadDebounce?.cancel();
+    _libraryReloadDebounce = Timer(const Duration(milliseconds: 250), () {
+      unawaited(_loadLibrary());
+    });
   }
 
   void _syncMissingCovers(List<LibraryEntry> entries) {
@@ -1694,7 +1848,7 @@ class LibraryController extends ChangeNotifier {
   }
 
   Future<String?> _pickBookFromFilePicker() async {
-    final result = await FilePicker.platform.pickFiles(
+    final result = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: _supportedExtensions
           .map((ext) => ext.replaceFirst('.', ''))
@@ -1766,19 +1920,93 @@ class LibraryController extends ChangeNotifier {
     }
   }
 
-  void _setError(String message) {
-    _errorMessage = message;
-    notifyListeners();
-  }
-
   void _setInfo(String message) {
     _infoMessage = message;
     notifyListeners();
   }
 
   void _setAuthError(String message) {
-    _authError = message;
+    _authError = sanitizeUserMessage(message.trim());
     notifyListeners();
+  }
+
+  void _setError(String message) {
+    _errorMessage = sanitizeUserMessage(message.trim());
+    notifyListeners();
+  }
+
+  Future<void> _persistSyncStatus({
+    required DateTime at,
+    required SyncStatusState state,
+    required String summary,
+  }) async {
+    _lastSyncAt = at;
+    _lastSyncState = state;
+    if (state == SyncStatusState.paused) {
+      _autoSyncDisabled = true;
+    }
+    _lastSyncSummary = sanitizeUserMessage(summary);
+    await _preferencesStore.saveSyncStatus(
+      SyncStatusSnapshot(at: at, state: state, summary: _lastSyncSummary!),
+    );
+  }
+
+  Future<void> _persistSyncMetrics(FileSyncResult result) async {
+    if (result.error == null) {
+      _syncErrorCountConsecutive = 0;
+    } else {
+      _syncErrorCountTotal += 1;
+      _syncErrorCountConsecutive += 1;
+    }
+    final snapshot = SyncMetricsSnapshot(
+      at: result.uploadedAt,
+      durationMs: result.durationMs,
+      bytesUploaded: result.bytesUploaded,
+      bytesDownloaded: result.bytesDownloaded,
+      filesUploaded: result.filesUploaded,
+      filesDownloaded: result.filesDownloaded,
+      appliedEvents: result.appliedEvents,
+      appliedState: result.appliedState,
+      uploadedEvents: result.uploadedEvents,
+      booksUploaded: result.booksUploaded,
+      booksDownloaded: result.booksDownloaded,
+      errorCountTotal: _syncErrorCountTotal,
+      errorCountConsecutive: _syncErrorCountConsecutive,
+      errorCode: result.error?.code,
+    );
+    _lastSyncMetrics = snapshot;
+    await _preferencesStore.saveSyncMetrics(snapshot);
+  }
+
+  Future<void> _persistSyncMetricsError({
+    required DateTime at,
+    required String errorCode,
+  }) async {
+    _syncErrorCountTotal += 1;
+    _syncErrorCountConsecutive += 1;
+    final snapshot = SyncMetricsSnapshot(
+      at: at,
+      durationMs: 0,
+      bytesUploaded: 0,
+      bytesDownloaded: 0,
+      filesUploaded: 0,
+      filesDownloaded: 0,
+      appliedEvents: 0,
+      appliedState: 0,
+      uploadedEvents: 0,
+      booksUploaded: 0,
+      booksDownloaded: 0,
+      errorCountTotal: _syncErrorCountTotal,
+      errorCountConsecutive: _syncErrorCountConsecutive,
+      errorCode: errorCode,
+    );
+    _lastSyncMetrics = snapshot;
+    await _preferencesStore.saveSyncMetrics(snapshot);
+  }
+
+  String _pausedSyncSummary(String label, SyncAdapterException error) {
+    return 'Автосинхронизация приостановлена. '
+        '${_formatSyncAdapterError(label, error)}';
   }
 
   Future<void> _loadOAuthConfig() async {
@@ -2516,53 +2744,49 @@ class LibraryController extends ChangeNotifier {
   }
 
   String _formatSyncAdapterError(String label, SyncAdapterException error) {
+    String message;
     if (error.code == 'webdav_401' || error.code == 'webdav_403') {
-      return '$label: неверный логин/пароль или нет доступа.';
-    }
-    if (error.code == 'webdav_405') {
-      return '$label: метод WebDAV недоступен. Проверь, что WebDAV включён и корректны порт/путь (часто /webdav/ или /dav/, иногда порты 5005/5006).';
-    }
-    if (error.code == 'webdav_404') {
-      return '$label: путь не найден. Проверь URL (часто /webdav/ или /dav/).';
-    }
-    if (error.code == 'smb_not_found') {
-      return '$label: SMB путь не найден. Смонтируй сетевую папку и укажи корректный путь.';
-    }
-    if (error.code == 'webdav_endpoint_not_found') {
-      return '$label: не удалось определить WebDAV URL автоматически. Укажи точный URL или выбери папку.';
-    }
-    if (error.code == 'webdav_invalid_xml') {
-      return '$label: получен HTML вместо WebDAV. Проверь URL и права.';
-    }
-    if (error.code == 'webdav_timeout') {
-      return '$label: таймаут соединения. Проверь доступность сервера.';
-    }
-    if (error.code == 'webdav_ssl') {
-      return '$label: SSL ошибка. Проверь сертификат или включи "Принимать все сертификаты".';
-    }
-    if (error.code == 'webdav_socket') {
-      return '$label: нет доступа к серверу. Проверь адрес, порт и сеть.';
-    }
-    if (error.code == 'webdav_http') {
-      return '$label: ошибка HTTP. Проверь URL и доступ к WebDAV.';
-    }
-    if (error.code == 'yandex_401' || error.code == 'yandex_403') {
-      return '$label: нет доступа. Переподключи аккаунт Yandex и попробуй ещё раз.';
-    }
-    if (error.code == 'yandex_timeout' ||
+      message = '$label: неверный логин/пароль или нет доступа.';
+    } else if (error.code == 'webdav_405') {
+      message =
+          '$label: метод WebDAV недоступен. Проверь, что WebDAV включён и корректны порт/путь (часто /webdav/ или /dav/, иногда порты 5005/5006).';
+    } else if (error.code == 'webdav_404') {
+      message = '$label: путь не найден. Проверь URL (часто /webdav/ или /dav/).';
+    } else if (error.code == 'smb_not_found') {
+      message =
+          '$label: SMB путь не найден. Смонтируй сетевую папку и укажи корректный путь.';
+    } else if (error.code == 'webdav_endpoint_not_found') {
+      message =
+          '$label: не удалось определить WebDAV URL автоматически. Укажи точный URL или выбери папку.';
+    } else if (error.code == 'webdav_invalid_xml') {
+      message = '$label: получен HTML вместо WebDAV. Проверь URL и права.';
+    } else if (error.code == 'webdav_timeout') {
+      message = '$label: таймаут соединения. Проверь доступность сервера.';
+    } else if (error.code == 'webdav_ssl') {
+      message =
+          '$label: SSL ошибка. Проверь сертификат или включи "Принимать все сертификаты".';
+    } else if (error.code == 'webdav_socket') {
+      message = '$label: нет доступа к серверу. Проверь адрес, порт и сеть.';
+    } else if (error.code == 'webdav_http') {
+      message = '$label: ошибка HTTP. Проверь URL и доступ к WebDAV.';
+    } else if (error.code == 'yandex_401' || error.code == 'yandex_403') {
+      message =
+          '$label: нет доступа. Переподключи аккаунт Yandex и попробуй ещё раз.';
+    } else if (error.code == 'yandex_timeout' ||
         error.code == 'yandex_socket' ||
         error.code == 'yandex_http') {
-      return '$label: ошибка сети. Проверь интернет и попробуй ещё раз.';
-    }
-    if (error.code == 'dropbox_401' || error.code == 'dropbox_403') {
-      return '$label: нет доступа. Переподключи Dropbox и попробуй ещё раз.';
-    }
-    if (error.code == 'dropbox_timeout' ||
+      message = '$label: ошибка сети. Проверь интернет и попробуй ещё раз.';
+    } else if (error.code == 'dropbox_401' || error.code == 'dropbox_403') {
+      message =
+          '$label: нет доступа. Переподключи Dropbox и попробуй ещё раз.';
+    } else if (error.code == 'dropbox_timeout' ||
         error.code == 'dropbox_socket' ||
         error.code == 'dropbox_http') {
-      return '$label: ошибка сети. Проверь интернет и попробуй ещё раз.';
+      message = '$label: ошибка сети. Проверь интернет и попробуй ещё раз.';
+    } else {
+      message = '$label ошибка: $error';
     }
-    return '$label ошибка: $error';
+    return sanitizeUserMessage(message);
   }
 
   Uri _normalizeWebDavBaseUri(Uri uri) {
@@ -3136,17 +3360,26 @@ class LibraryController extends ChangeNotifier {
   }
 
   void _disableAutoSync(SyncAdapterException error) {
+    final label = _providerLabel(_syncProvider);
+    final summary = _pausedSyncSummary(label, error);
     if (_autoSyncDisabled) {
+      _setAuthError(summary);
       return;
     }
     _autoSyncDisabled = true;
     _pendingSync = false;
     _scheduledSyncTimer?.cancel();
     _autoSyncTimer?.cancel();
-    final label = _providerLabel(_syncProvider);
-    _setAuthError(
-      'Автосинхронизация отключена. ${_formatSyncAdapterError(label, error)}',
-    );
+    _setAuthError(summary);
+    if (_lastSyncState != SyncStatusState.paused) {
+      unawaited(
+        _persistSyncStatus(
+          at: DateTime.now().toUtc(),
+          state: SyncStatusState.paused,
+          summary: summary,
+        ),
+      );
+    }
   }
 
   bool _isClientErrorCode(String? code) {
@@ -3706,32 +3939,32 @@ class LibraryController extends ChangeNotifier {
       _lastSyncAt = result.uploadedAt;
       final error = result.error;
       if (error != null) {
-        _lastSyncOk = false;
-        _lastSyncSummary = _formatSyncAdapterError(
-          _providerLabel(_syncProvider),
-          error,
-        );
-        await _preferencesStore.saveSyncStatus(
-          SyncStatusSnapshot(
+        final label = _providerLabel(_syncProvider);
+        await _persistSyncMetrics(result);
+        if (_isClientErrorCode(error.code)) {
+          await _persistSyncStatus(
             at: _lastSyncAt!,
-            ok: false,
-            summary: _lastSyncSummary!,
-          ),
-        );
+            state: SyncStatusState.paused,
+            summary: _pausedSyncSummary(label, error),
+          );
+        } else {
+          await _persistSyncStatus(
+            at: _lastSyncAt!,
+            state: SyncStatusState.error,
+            summary: _formatSyncAdapterError(label, error),
+          );
+        }
         _handleSyncError(error);
         Log.d('File sync failed: $error');
         return;
       }
-      _lastSyncOk = true;
-      _lastSyncSummary =
-          'Успех: events=${result.appliedEvents}, state=${result.appliedState}, '
-          'books↑=${result.booksUploaded}, books↓=${result.booksDownloaded}';
-      await _preferencesStore.saveSyncStatus(
-        SyncStatusSnapshot(
-          at: _lastSyncAt!,
-          ok: true,
-          summary: _lastSyncSummary!,
-        ),
+      await _persistSyncMetrics(result);
+      await _persistSyncStatus(
+        at: _lastSyncAt!,
+        state: SyncStatusState.success,
+        summary:
+            'Успех: events=${result.appliedEvents}, state=${result.appliedState}, '
+            'books↑=${result.booksUploaded}, books↓=${result.booksDownloaded}',
       );
       if (result.appliedEvents > 0 ||
           result.appliedState > 0 ||
@@ -3744,11 +3977,11 @@ class LibraryController extends ChangeNotifier {
       }
     } catch (e) {
       final now = DateTime.now().toUtc();
-      _lastSyncAt = now;
-      _lastSyncOk = false;
-      _lastSyncSummary = 'Синхронизация не удалась: $e';
-      await _preferencesStore.saveSyncStatus(
-        SyncStatusSnapshot(at: now, ok: false, summary: _lastSyncSummary!),
+      await _persistSyncMetricsError(at: now, errorCode: 'sync_exception');
+      await _persistSyncStatus(
+        at: now,
+        state: SyncStatusState.error,
+        summary: 'Синхронизация не удалась: $e',
       );
       _handleSyncError(e);
       Log.d('File sync failed: $e');
@@ -3875,6 +4108,12 @@ class LibraryController extends ChangeNotifier {
         isMissing: false,
         notes: const <Note>[],
         highlights: const <Highlight>[],
+        progress: const ReadingProgress(
+          percent: null,
+          chapterIndex: null,
+          totalChapters: null,
+          updatedAt: null,
+        ),
       ),
     );
     notifyListeners();
@@ -3883,6 +4122,8 @@ class LibraryController extends ChangeNotifier {
   @override
   void dispose() {
     _globalSearchDebounce?.cancel();
+    _libraryReloadDebounce?.cancel();
+    _libraryListenable?.removeListener(_scheduleLibraryReload);
     _authLinkSub?.cancel();
     _autoSyncTimer?.cancel();
     _scheduledSyncTimer?.cancel();

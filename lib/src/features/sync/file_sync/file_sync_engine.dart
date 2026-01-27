@@ -36,11 +36,13 @@ class FileSyncEngine {
   final StorageService _storageService;
   final String basePath;
   final int maxConcurrentBookUploads;
+  _SyncMetricsTracker? _metrics;
 
   Future<FileSyncResult> sync() async {
     final stopwatch = Stopwatch()..start();
     Log.d('FileSyncEngine: sync started');
     final now = DateTime.now().toUtc();
+    _metrics = _SyncMetricsTracker();
     try {
       final remoteEvents = await _readEventLog();
       final remoteState = await _readState();
@@ -115,6 +117,11 @@ class FileSyncEngine {
         uploadedAt: now,
         booksUploaded: booksSync.uploaded,
         booksDownloaded: booksSync.downloaded,
+        durationMs: stopwatch.elapsedMilliseconds,
+        bytesUploaded: _metrics?.bytesUploaded ?? 0,
+        bytesDownloaded: _metrics?.bytesDownloaded ?? 0,
+        filesUploaded: _metrics?.filesUploaded ?? 0,
+        filesDownloaded: _metrics?.filesDownloaded ?? 0,
       );
       Log.d(
         'FileSyncEngine: sync finished in ${stopwatch.elapsedMilliseconds} ms',
@@ -125,13 +132,25 @@ class FileSyncEngine {
       return FileSyncResult.error(
         error: error,
         uploadedAt: now,
+        durationMs: stopwatch.elapsedMilliseconds,
+        bytesUploaded: _metrics?.bytesUploaded ?? 0,
+        bytesDownloaded: _metrics?.bytesDownloaded ?? 0,
+        filesUploaded: _metrics?.filesUploaded ?? 0,
+        filesDownloaded: _metrics?.filesDownloaded ?? 0,
       );
     } catch (error) {
       Log.d('FileSyncEngine: sync failed: $error');
       return FileSyncResult.error(
         error: SyncAdapterException(error.toString(), code: 'sync_error'),
         uploadedAt: now,
+        durationMs: stopwatch.elapsedMilliseconds,
+        bytesUploaded: _metrics?.bytesUploaded ?? 0,
+        bytesDownloaded: _metrics?.bytesDownloaded ?? 0,
+        filesUploaded: _metrics?.filesUploaded ?? 0,
+        filesDownloaded: _metrics?.filesDownloaded ?? 0,
       );
+    } finally {
+      _metrics = null;
     }
   }
 
@@ -152,7 +171,7 @@ class FileSyncEngine {
         generatedAt: now,
         books: result.nextIndex.values.toList(),
       );
-      await _adapter.putFile(
+      await _putFile(
         _booksIndexPath(),
         nextIndex.toJsonBytes(),
         contentType: 'application/json',
@@ -221,7 +240,7 @@ class FileSyncEngine {
       }
       uploadJobs.add(() async {
         final bytes = await file.readAsBytes();
-        await _adapter.putFile(
+        await _putFile(
           _bookPath(localDesc),
           bytes,
           contentType: _contentTypeForExt(localDesc.extension),
@@ -260,7 +279,7 @@ class FileSyncEngine {
       }
       // Download missing book.
       final remotePath = remote.path ?? _defaultBookPath(remote);
-      final file = await _adapter.getFile(remotePath);
+      final file = await _getFile(remotePath);
       if (file == null) {
         nextIndex[remote.fingerprint] = remote;
         continue;
@@ -372,7 +391,7 @@ class FileSyncEngine {
   Future<SyncBooksIndexFile> _readBooksIndex() async {
     Log.d('FileSyncEngine: reading ${_booksIndexPath()}');
     try {
-      final file = await _adapter.getFile(_booksIndexPath());
+      final file = await _getFile(_booksIndexPath());
       if (file == null) {
         Log.d('FileSyncEngine: books_index.json not found, using empty');
         return SyncBooksIndexFile(
@@ -517,7 +536,7 @@ class FileSyncEngine {
   Future<SyncEventLogFile> _readEventLog() async {
     Log.d('FileSyncEngine: reading ${_path('event_log.json')}');
     try {
-      final file = await _adapter.getFile(_path('event_log.json'));
+      final file = await _getFile(_path('event_log.json'));
       if (file == null) {
         Log.d('FileSyncEngine: event_log.json not found, using empty');
         return SyncEventLogFile(
@@ -555,7 +574,7 @@ class FileSyncEngine {
   Future<SyncStateFile> _readState() async {
     Log.d('FileSyncEngine: reading ${_path('state.json')}');
     try {
-      final file = await _adapter.getFile(_path('state.json'));
+      final file = await _getFile(_path('state.json'));
       if (file == null) {
         Log.d('FileSyncEngine: state.json not found, using empty');
         return SyncStateFile(
@@ -646,17 +665,34 @@ class FileSyncEngine {
     String? contentType,
   }) async {
     try {
-      await _adapter.putFile(
-        path,
-        bytes,
-        contentType: contentType,
-      );
+      await _putFile(path, bytes, contentType: contentType);
     } on SyncAdapterException catch (error) {
       Log.d('FileSyncEngine: failed to upload $path: $error');
       if (_isClientError(error)) {
         rethrow;
       }
     }
+  }
+
+  Future<void> _putFile(
+    String path,
+    List<int> bytes, {
+    String? contentType,
+  }) async {
+    await _adapter.putFile(
+      path,
+      bytes,
+      contentType: contentType,
+    );
+    _metrics?.addUpload(bytes.length);
+  }
+
+  Future<SyncFile?> _getFile(String path) async {
+    final file = await _adapter.getFile(path);
+    if (file != null) {
+      _metrics?.addDownload(file.bytes.length);
+    }
+    return file;
   }
 
   bool _isClientError(SyncAdapterException error) {
@@ -929,12 +965,22 @@ class FileSyncResult {
     required this.uploadedAt,
     required this.booksUploaded,
     required this.booksDownloaded,
+    required this.durationMs,
+    required this.bytesUploaded,
+    required this.bytesDownloaded,
+    required this.filesUploaded,
+    required this.filesDownloaded,
     this.error,
   });
 
   const FileSyncResult.error({
     required this.error,
     required this.uploadedAt,
+    required this.durationMs,
+    required this.bytesUploaded,
+    required this.bytesDownloaded,
+    required this.filesUploaded,
+    required this.filesDownloaded,
   })  : appliedEvents = 0,
         appliedState = 0,
         uploadedEvents = 0,
@@ -947,7 +993,29 @@ class FileSyncResult {
   final DateTime uploadedAt;
   final int booksUploaded;
   final int booksDownloaded;
+  final int durationMs;
+  final int bytesUploaded;
+  final int bytesDownloaded;
+  final int filesUploaded;
+  final int filesDownloaded;
   final SyncAdapterException? error;
+}
+
+class _SyncMetricsTracker {
+  int bytesUploaded = 0;
+  int bytesDownloaded = 0;
+  int filesUploaded = 0;
+  int filesDownloaded = 0;
+
+  void addUpload(int bytes) {
+    filesUploaded += 1;
+    bytesUploaded += bytes;
+  }
+
+  void addDownload(int bytes) {
+    filesDownloaded += 1;
+    bytesDownloaded += bytes;
+  }
 }
 
 class _MergeBooksResult {

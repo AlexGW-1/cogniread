@@ -8,14 +8,30 @@ import 'package:cogniread/src/features/search/book_text_extractor.dart';
 import 'package:flutter/material.dart';
 
 class BookDetailsScreen extends StatefulWidget {
-  const BookDetailsScreen({super.key, required this.book, this.aiConfig});
+  const BookDetailsScreen({
+    super.key,
+    required this.book,
+    required this.isFavorite,
+    required this.isToRead,
+    required this.onFavoriteChanged,
+    required this.onToReadChanged,
+    this.aiConfig,
+  });
 
   final LibraryBookItem book;
+  final bool isFavorite;
+  final bool isToRead;
+  final Future<void> Function(bool value) onFavoriteChanged;
+  final Future<void> Function(bool value) onToReadChanged;
   final AiConfig? aiConfig;
 
   static Future<void> show(
     BuildContext context, {
     required LibraryBookItem book,
+    required bool isFavorite,
+    required bool isToRead,
+    required Future<void> Function(bool value) onFavoriteChanged,
+    required Future<void> Function(bool value) onToReadChanged,
     AiConfig? aiConfig,
   }) async {
     final isDesktop = MediaQuery.of(context).size.width >= 1000;
@@ -27,7 +43,14 @@ class BookDetailsScreen extends StatefulWidget {
           child: SizedBox(
             width: 820,
             height: 720,
-            child: BookDetailsScreen(book: book, aiConfig: aiConfig),
+            child: BookDetailsScreen(
+              book: book,
+              isFavorite: isFavorite,
+              isToRead: isToRead,
+              onFavoriteChanged: onFavoriteChanged,
+              onToReadChanged: onToReadChanged,
+              aiConfig: aiConfig,
+            ),
           ),
         ),
       );
@@ -35,7 +58,14 @@ class BookDetailsScreen extends StatefulWidget {
     }
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => BookDetailsScreen(book: book, aiConfig: aiConfig),
+        builder: (_) => BookDetailsScreen(
+          book: book,
+          isFavorite: isFavorite,
+          isToRead: isToRead,
+          onFavoriteChanged: onFavoriteChanged,
+          onToReadChanged: onToReadChanged,
+          aiConfig: aiConfig,
+        ),
       ),
     );
   }
@@ -50,11 +80,27 @@ class _BookDetailsScreenState extends State<BookDetailsScreen> {
   String? _contextText;
   bool _contextLoading = false;
   String? _contextError;
+  late bool _isFavorite;
+  late bool _isToRead;
+  late bool _isRead;
 
   @override
   void initState() {
     super.initState();
     _extractor = ReaderBookTextExtractor(store: _store);
+    _isFavorite = widget.isFavorite;
+    _isToRead = widget.isToRead;
+    _isRead = _resolveRead();
+  }
+
+  bool _resolveRead() {
+    final raw = widget.book.progress.percent;
+    final percent = raw == null
+        ? 0
+        : raw <= 1
+        ? raw * 100
+        : raw;
+    return percent >= 98;
   }
 
   @override
@@ -110,6 +156,38 @@ class _BookDetailsScreenState extends State<BookDetailsScreen> {
                             style: TextStyle(color: scheme.error),
                           ),
                         ],
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 6,
+                          children: [
+                            FilterChip(
+                              label: const Text('Избранное'),
+                              selected: _isFavorite,
+                              onSelected: (value) async {
+                                setState(() {
+                                  _isFavorite = value;
+                                });
+                                await widget.onFavoriteChanged(value);
+                              },
+                            ),
+                            FilterChip(
+                              label: const Text('Хочу прочитать'),
+                              selected: _isToRead,
+                              onSelected: (value) async {
+                                setState(() {
+                                  _isToRead = value;
+                                });
+                                await widget.onToReadChanged(value);
+                              },
+                            ),
+                            FilterChip(
+                              label: const Text('Прочитано'),
+                              selected: _isRead,
+                              onSelected: null,
+                            ),
+                          ],
+                        ),
                       ],
                     ),
                   ),

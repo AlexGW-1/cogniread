@@ -215,7 +215,7 @@ void rebuildSearchBooksIndexIsolate(Map<String, Object?> args) {
           }
         }
       } finally {
-        stmt.dispose();
+        stmt.close();
       }
 
       final now = DateTime.now().toUtc();
@@ -252,7 +252,7 @@ void rebuildSearchBooksIndexIsolate(Map<String, Object?> args) {
     });
   } finally {
     try {
-      db?.dispose();
+      db?.close();
     } catch (_) {}
     control.close();
   }

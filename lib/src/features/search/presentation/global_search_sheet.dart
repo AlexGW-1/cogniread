@@ -577,10 +577,11 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
       return content;
     }
 
-    return WillPopScope(
-      onWillPop: () async {
-        _commitQuery();
-        return true;
+    return PopScope(
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) {
+          _commitQuery();
+        }
       },
       child: Scaffold(
         appBar: AppBar(

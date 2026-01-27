@@ -118,6 +118,15 @@ void main() {
       return null;
     }
 
+    Future<void> ensureListView() async {
+      final toggleToList = find.byTooltip('Список');
+      if (toggleToList.evaluate().isNotEmpty) {
+        await tester.tap(toggleToList);
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+    }
+
+    await ensureListView();
     var tappableBook = await waitForBookTile();
     if (tappableBook == null) {
       final importButton = find.byKey(const ValueKey('import-epub-button'));
@@ -127,10 +136,12 @@ void main() {
         await tester.tap(find.byKey(const ValueKey('import-epub-fab')));
       }
       await tester.pump(const Duration(milliseconds: 100));
+      await ensureListView();
       tappableBook = await waitForBookTile();
     }
     if (tappableBook == null) {
       await tester.pump(const Duration(seconds: 2));
+      await ensureListView();
       tappableBook = findBookTile();
     }
     expect(tappableBook, isNotNull);

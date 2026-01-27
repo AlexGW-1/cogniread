@@ -118,7 +118,7 @@ class _TocEntry {
   final String? fragment;
 }
 
-enum _TocSource { nav, ncx, headings, spine, fb2, none }
+enum _TocSource { nav, ncx, headings, spine, none }
 
 class _TocQuality {
   const _TocQuality({
@@ -246,7 +246,7 @@ bool _isFictionBookXml(String xml) => xml.contains('<FictionBook');
 
 String _decodeFb2Bytes(List<int> bytes) {
   final utf = utf8.decode(bytes, allowMalformed: true);
-  if (utf.contains('encoding=\"windows-1251\"') ||
+  if (utf.contains('encoding="windows-1251"') ||
       utf.contains("encoding='windows-1251'")) {
     return utf;
   }
@@ -1111,22 +1111,22 @@ String _stripHtmlToText(String html) {
   var text = html;
   text = text.replaceAll(
     RegExp(
-      r'<(script|style)[^>]*>.*?</\\1>',
+      r'<(script|style)[^>]*>.*?</\1>',
       dotAll: true,
       caseSensitive: false,
     ),
     '',
   );
-  text = text.replaceAll(RegExp(r'<br\\s*/?>', caseSensitive: false), '\\n');
-  text = text.replaceAll(RegExp(r'</p>', caseSensitive: false), '\\n\\n');
+  text = text.replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n');
+  text = text.replaceAll(RegExp(r'</p>', caseSensitive: false), '\n\n');
   text = text.replaceAll(RegExp(r'<[^>]+>', dotAll: true), '');
   text = text.replaceAll('&nbsp;', ' ');
   text = text.replaceAll('&amp;', '&');
   text = text.replaceAll('&lt;', '<');
   text = text.replaceAll('&gt;', '>');
-  text = text.replaceAll('&quot;', '\"');
+  text = text.replaceAll('&quot;', '"');
   text = text.replaceAll('&#39;', "'");
-  return text.replaceAll(RegExp(r'[ \\t]+'), ' ').trim();
+  return text.replaceAll(RegExp(r'[ \t]+'), ' ').trim();
 }
 
 String _extractChapterTitle(String html, String fallback) {

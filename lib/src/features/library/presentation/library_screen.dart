@@ -37,6 +37,12 @@ class LibraryScreen extends StatefulWidget {
 }
 
 class _LibraryScreenState extends State<LibraryScreen> {
+  static const int _readingNowDays = 14;
+  static const int _abandonedDays = 60;
+  static const int _recentAddedDays = 14;
+  static const int _shortShelfMax = 7;
+  static const int _shelfMax = 10;
+
   late final LibraryController _controller;
   late final VoidCallback _controllerListener;
   late final TextEditingController _searchController;
@@ -159,6 +165,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
     await BookDetailsScreen.show(
       context,
       book: book,
+      isFavorite: _controller.isFavorite(book.id),
+      isToRead: _controller.isToRead(book.id),
+      onFavoriteChanged: (value) => _controller.setFavorite(book.id, value),
+      onToReadChanged: (value) => _controller.setToRead(book.id, value),
       aiConfig: _controller.aiConfig,
     );
   }
@@ -166,6 +176,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
   Future<void> _openFreeNote(String noteId) async {
     final item = await _controller.loadFreeNoteItem(noteId);
     if (item == null) {
+      return;
+    }
+    if (!mounted) {
       return;
     }
     await _showFreeNoteEditor(context, _controller, existing: item);
@@ -187,6 +200,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   Future<void> _deleteBook(int index) async {
     final book = _controller.filteredBooks[index];
+    await _confirmDeleteBook(book);
+  }
+
+  Future<void> _confirmDeleteBook(LibraryBookItem book) async {
     final shouldDelete = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -279,10 +296,53 @@ class _LibraryScreenState extends State<LibraryScreen> {
     });
   }
 
+  LibraryViewMode _nextViewMode(LibraryViewMode mode) {
+    return switch (mode) {
+      LibraryViewMode.shelves => LibraryViewMode.list,
+      LibraryViewMode.list => LibraryViewMode.grid,
+      LibraryViewMode.grid => LibraryViewMode.shelves,
+    };
+  }
+
+  IconData _viewModeIcon(LibraryViewMode mode) {
+    final next = _nextViewMode(mode);
+    return switch (next) {
+      LibraryViewMode.shelves => Icons.view_carousel_outlined,
+      LibraryViewMode.list => Icons.view_list_outlined,
+      LibraryViewMode.grid => Icons.grid_view_outlined,
+    };
+  }
+
+  String _viewModeTooltip(LibraryViewMode mode) {
+    final next = _nextViewMode(mode);
+    return switch (next) {
+      LibraryViewMode.shelves => 'Полки',
+      LibraryViewMode.list => 'Список',
+      LibraryViewMode.grid => 'Плитка',
+    };
+  }
+
+  bool _isRead(LibraryBookItem book) {
+    final raw = book.progress.percent;
+    final percent = raw == null
+        ? _percentFromChapters(book) ?? 0
+        : raw <= 1
+        ? raw * 100
+        : raw;
+    return percent >= 98;
+  }
+
+  double? _percentFromChapters(LibraryBookItem book) {
+    final index = book.progress.chapterIndex;
+    final total = book.progress.totalChapters;
+    if (index == null || total == null || total <= 0) {
+      return null;
+    }
+    return ((index + 1) / total) * 100;
+  }
+
   Future<void> _toggleViewMode() async {
-    final next = _controller.viewMode == LibraryViewMode.list
-        ? LibraryViewMode.grid
-        : LibraryViewMode.list;
+    final next = _nextViewMode(_controller.viewMode);
     await _controller.setViewMode(next);
   }
 
@@ -347,17 +407,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     icon: const Icon(Icons.delete_outline),
                   ),
                   IconButton(
-                    tooltip: viewMode == LibraryViewMode.list
-                        ? 'Плитка'
-                        : 'Список',
+                    tooltip: _viewModeTooltip(viewMode),
                     onPressed: _controller.books.isEmpty
                         ? null
                         : _toggleViewMode,
-                    icon: Icon(
-                      viewMode == LibraryViewMode.list
-                          ? Icons.grid_view_outlined
-                          : Icons.view_list_outlined,
-                    ),
+                    icon: Icon(_viewModeIcon(viewMode)),
                   ),
                 ],
                 IconButton(
@@ -518,6 +572,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }) {
     final isLandscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
+    final query = _controller.query.trim();
+    final showShelves =
+        viewMode == LibraryViewMode.shelves && query.isEmpty;
+    final effectiveViewMode = viewMode == LibraryViewMode.grid
+        ? LibraryViewMode.grid
+        : LibraryViewMode.list;
     if (_controller.loading) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -569,9 +629,20 @@ class _LibraryScreenState extends State<LibraryScreen> {
             ),
           ),
         Expanded(
-          child: filtered.isEmpty
+          child: showShelves
+              ? _buildLibraryShelvesView(
+                  books: _controller.books,
+                  compact: isLandscape,
+                  padding: EdgeInsets.fromLTRB(
+                    isLandscape ? 8 : 12,
+                    4,
+                    isLandscape ? 8 : 12,
+                    8,
+                  ),
+                )
+              : filtered.isEmpty
               ? const Center(child: Text('Ничего не найдено.'))
-              : viewMode == LibraryViewMode.list
+              : effectiveViewMode == LibraryViewMode.list
               ? ListView.separated(
                   itemCount: filtered.length,
                   separatorBuilder: (context, index) =>
@@ -589,6 +660,15 @@ class _LibraryScreenState extends State<LibraryScreen> {
                       trailing: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
+                          if (_isRead(book))
+                            Padding(
+                              padding: const EdgeInsets.only(right: 4),
+                              child: Icon(
+                                Icons.check_circle,
+                                color: scheme.tertiary,
+                                size: 18,
+                              ),
+                            ),
                           IconButton(
                             key: ValueKey('library-details-$i'),
                             icon: const Icon(Icons.auto_awesome_outlined),
@@ -628,13 +708,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
                       itemCount: filtered.length,
                       itemBuilder: (context, i) {
                         final book = filtered[i];
-                        return _BookGridTile(
-                          key: ValueKey('library-book-grid-$i'),
-                          book: book,
-                          onTap: () => _open(book.id),
-                          onDetails: () => _openBookDetails(book),
-                          onDelete: () => _deleteBook(i),
-                        );
+    return _BookGridTile(
+      key: ValueKey('library-book-grid-$i'),
+      book: book,
+      showReadBadge: _isRead(book),
+      onTap: () => _open(book.id),
+      onDetails: () => _openBookDetails(book),
+      onDelete: () => _deleteBook(i),
+    );
                       },
                     );
                   },
@@ -642,6 +723,255 @@ class _LibraryScreenState extends State<LibraryScreen> {
         ),
       ],
     );
+  }
+
+  Widget _buildLibraryShelvesView({
+    required List<LibraryBookItem> books,
+    required bool compact,
+    required EdgeInsets padding,
+  }) {
+    final groups = _buildShelfGroups(books);
+    if (groups.isEmpty) {
+      return const Center(child: Text('Пока нет книг для полок.'));
+    }
+    return ListView(
+      padding: padding,
+      children: [
+        for (var groupIndex = 0; groupIndex < groups.length; groupIndex++)
+          ...[
+            _ShelfGroupHeader(title: groups[groupIndex].title),
+            const SizedBox(height: 12),
+            for (final shelf in groups[groupIndex].shelves)
+              _ShelfRow(
+                title: shelf.title,
+                items: shelf.items,
+                maxItems: shelf.maxItems,
+                compact: compact,
+                isRead: _isRead,
+                isFavorite: _controller.isFavorite,
+                isToRead: _controller.isToRead,
+                onOpen: (book) => _open(book.id),
+                onDetails: _openBookDetails,
+                onDelete: _confirmDeleteBook,
+                onToggleFavorite: (book) {
+                  unawaited(_controller.toggleFavorite(book.id));
+                },
+                onToggleToRead: (book) {
+                  unawaited(_controller.toggleToRead(book.id));
+                },
+              ),
+            if (groupIndex != groups.length - 1) ...[
+              const SizedBox(height: 20),
+              const Divider(height: 1),
+              const SizedBox(height: 20),
+            ],
+          ],
+      ],
+    );
+  }
+
+  List<_ShelfGroup> _buildShelfGroups(List<LibraryBookItem> books) {
+    final now = DateTime.now();
+    double percent(LibraryBookItem book) {
+      final raw = book.progress.percent;
+      if (raw == null) {
+        final fromChapters = _percentFromChapters(book);
+        if (fromChapters != null) {
+          return fromChapters;
+        }
+        return book.lastOpenedAt == null ? 0 : 1;
+      }
+      if (raw <= 1) {
+        return raw * 100;
+      }
+      return raw;
+    }
+
+    bool inProgress(LibraryBookItem book) {
+      final value = percent(book);
+      return value > 0 && value < 100;
+    }
+
+    bool isCompleted(LibraryBookItem book) {
+      return percent(book) >= 100;
+    }
+
+    bool openedWithinDays(DateTime? date, int days) {
+      if (date == null) {
+        return false;
+      }
+      return now.difference(date).inDays <= days;
+    }
+
+    bool openedBeforeDays(DateTime? date, int days) {
+      if (date == null) {
+        return false;
+      }
+      return now.difference(date).inDays >= days;
+    }
+
+    int compareLastOpenedDesc(LibraryBookItem a, LibraryBookItem b) {
+      final left = a.lastOpenedAt;
+      final right = b.lastOpenedAt;
+      if (left == null && right == null) {
+        return 0;
+      }
+      if (left == null) {
+        return 1;
+      }
+      if (right == null) {
+        return -1;
+      }
+      return right.compareTo(left);
+    }
+
+    int compareAddedDesc(LibraryBookItem a, LibraryBookItem b) {
+      return b.addedAt.compareTo(a.addedAt);
+    }
+
+    final readingNow = books
+        .where(
+          (book) =>
+              inProgress(book) &&
+              percent(book) >= 1 &&
+              percent(book) <= 95 &&
+              openedWithinDays(book.lastOpenedAt, _readingNowDays),
+        )
+        .toList()
+      ..sort(compareLastOpenedDesc);
+    final readingNowIds = readingNow.map((book) => book.id).toSet();
+    final continueReading = books
+        .where(
+          (book) => inProgress(book) && !readingNowIds.contains(book.id),
+        )
+        .toList()
+      ..sort(compareLastOpenedDesc);
+    final favorites = books
+        .where((book) => _controller.isFavorite(book.id))
+        .toList()
+      ..sort(compareLastOpenedDesc);
+    final toRead = books
+        .where((book) => _controller.isToRead(book.id))
+        .toList()
+      ..sort(compareAddedDesc);
+    final recentCutoff = now.subtract(const Duration(days: _recentAddedDays));
+    var recentlyAdded =
+        books.where((book) => book.addedAt.isAfter(recentCutoff)).toList();
+    if (recentlyAdded.isEmpty) {
+      recentlyAdded = books.toList();
+    }
+    recentlyAdded.sort(compareAddedDesc);
+    final toReview = books
+        .where(
+          (book) => book.highlights.isNotEmpty && book.notes.isEmpty,
+        )
+        .toList()
+      ..sort(compareLastOpenedDesc);
+    final toReviewIds = toReview.map((book) => book.id).toSet();
+    final withMarks = books
+        .where(
+          (book) =>
+              (book.notes.isNotEmpty || book.highlights.isNotEmpty) &&
+              !toReviewIds.contains(book.id),
+        )
+        .toList()
+      ..sort(compareLastOpenedDesc);
+    final completed = books.where(isCompleted).toList()
+      ..sort(compareLastOpenedDesc);
+    final abandoned = books
+        .where(
+          (book) => inProgress(book) && openedBeforeDays(
+            book.lastOpenedAt,
+            _abandonedDays,
+          ),
+        )
+        .toList()
+      ..sort(compareLastOpenedDesc);
+
+    final groups = <_ShelfGroup>[];
+    final quickAccess = <_ShelfDefinition>[
+      if (readingNow.isNotEmpty)
+        _ShelfDefinition(
+          title: 'Читаю сейчас',
+          items: readingNow,
+          maxItems: _shortShelfMax,
+        ),
+      if (continueReading.isNotEmpty)
+        _ShelfDefinition(
+          title: 'Продолжить',
+          items: continueReading,
+          maxItems: _shortShelfMax,
+        ),
+    ];
+    if (quickAccess.isNotEmpty) {
+      groups.add(_ShelfGroup(title: 'Быстрый доступ', shelves: quickAccess));
+    }
+
+    final manualLists = <_ShelfDefinition>[
+      if (favorites.isNotEmpty)
+        _ShelfDefinition(
+          title: 'Избранное',
+          items: favorites,
+          maxItems: _shelfMax,
+        ),
+      if (toRead.isNotEmpty)
+        _ShelfDefinition(
+          title: 'Хочу прочитать',
+          items: toRead,
+          maxItems: _shelfMax,
+        ),
+    ];
+    if (manualLists.isNotEmpty) {
+      groups.add(
+        _ShelfGroup(title: 'Управление списками', shelves: manualLists),
+      );
+    }
+
+    final workShelves = <_ShelfDefinition>[
+      if (recentlyAdded.isNotEmpty)
+        _ShelfDefinition(
+          title: 'Недавно добавлено',
+          items: recentlyAdded,
+          maxItems: _shelfMax,
+        ),
+      if (withMarks.isNotEmpty)
+        _ShelfDefinition(
+          title: 'С заметками и выделениями',
+          items: withMarks,
+          maxItems: _shelfMax,
+        ),
+      if (toReview.isNotEmpty)
+        _ShelfDefinition(
+          title: 'К разбору',
+          items: toReview,
+          maxItems: _shelfMax,
+        ),
+    ];
+    if (workShelves.isNotEmpty) {
+      groups.add(
+        _ShelfGroup(title: 'Работа с материалом', shelves: workShelves),
+      );
+    }
+
+    final archiveShelves = <_ShelfDefinition>[
+      if (completed.isNotEmpty)
+        _ShelfDefinition(
+          title: 'Завершено',
+          items: completed,
+          maxItems: _shelfMax,
+        ),
+      if (abandoned.isNotEmpty)
+        _ShelfDefinition(
+          title: 'Заброшено',
+          items: abandoned,
+          maxItems: _shelfMax,
+        ),
+    ];
+    if (archiveShelves.isNotEmpty) {
+      groups.add(_ShelfGroup(title: 'Архив', shelves: archiveShelves));
+    }
+
+    return groups;
   }
 
   Widget _buildDesktopScaffold() {
@@ -819,6 +1149,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
         subtitle: 'Раздел в разработке',
       );
     }
+    final query = _controller.query.trim();
+    final showShelves =
+        viewMode == LibraryViewMode.shelves && query.isEmpty;
     return Row(
       children: [
         Flexible(
@@ -834,6 +1167,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
             },
             viewMode: viewMode,
             onToggleViewMode: _toggleViewMode,
+            viewModeIcon: _viewModeIcon(viewMode),
+            viewModeTooltip: _viewModeTooltip(viewMode),
             onToggleSearch: _toggleSearch,
             onGlobalSearch: _controller.books.isEmpty
                 ? null
@@ -853,6 +1188,15 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 _pendingSearchQuery = null;
               });
             },
+            showShelves: showShelves,
+            shelvesView: showShelves
+                ? _buildLibraryShelvesView(
+                    books: _controller.books,
+                    compact: false,
+                    padding: EdgeInsets.zero,
+                  )
+                : null,
+            isRead: _isRead,
           ),
         ),
         const SizedBox(width: 20),
@@ -915,6 +1259,7 @@ class _SettingsPanel extends StatelessWidget {
       builder: (context, _) {
         final lastSync = controller.lastSyncAt;
         final lastSyncOk = controller.lastSyncOk;
+        final syncPaused = controller.isSyncPaused;
         final syncSummary = controller.lastSyncSummary;
         final syncLabel = controller.syncAdapterLabel;
         final syncAvailable = syncLabel != 'none';
@@ -998,9 +1343,11 @@ class _SettingsPanel extends StatelessWidget {
                       label: Text(
                         controller.syncInProgress
                             ? 'Синхронизация...'
-                            : (lastSyncOk == false
-                                  ? 'Повторить'
-                                  : 'Синхронизировать сейчас'),
+                            : (syncPaused
+                                  ? 'Возобновить синхронизацию'
+                                  : (lastSyncOk == false
+                                        ? 'Повторить'
+                                        : 'Синхронизировать сейчас')),
                       ),
                     ),
                     const SizedBox(height: 10),
@@ -1024,12 +1371,20 @@ class _SettingsPanel extends StatelessWidget {
                           : 'Последняя синхронизация: ${lastSync.toLocal()}',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
-                    if (lastSyncOk != null) ...[
+                    if (syncPaused || lastSyncOk != null) ...[
                       const SizedBox(height: 6),
                       Text(
-                        lastSyncOk ? 'Статус: успех' : 'Статус: ошибка',
+                        syncPaused
+                            ? 'Статус: пауза'
+                            : (lastSyncOk == true
+                                  ? 'Статус: успех'
+                                  : 'Статус: ошибка'),
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: lastSyncOk ? scheme.primary : scheme.error,
+                          color: syncPaused
+                              ? scheme.tertiary
+                              : (lastSyncOk == true
+                                    ? scheme.primary
+                                    : scheme.error),
                         ),
                       ),
                     ],
@@ -1255,6 +1610,8 @@ class _SettingsPanel extends StatelessWidget {
                       style: Theme.of(context).textTheme.labelLarge,
                     ),
                     const SizedBox(height: 6),
+                    _SyncMetricsCard(controller: controller),
+                    const SizedBox(height: 10),
                     Text(
                       'Лог: ${controller.logFilePath ?? 'не доступен'}',
                       style: Theme.of(context).textTheme.bodySmall,
@@ -2847,6 +3204,8 @@ class _LibraryPanel extends StatelessWidget {
     required this.onQueryChanged,
     required this.viewMode,
     required this.onToggleViewMode,
+    required this.viewModeIcon,
+    required this.viewModeTooltip,
     required this.onToggleSearch,
     required this.onGlobalSearch,
     required this.onClearLibrary,
@@ -2856,6 +3215,9 @@ class _LibraryPanel extends StatelessWidget {
     required this.onDetails,
     required this.selectedId,
     required this.onSelect,
+    required this.showShelves,
+    required this.shelvesView,
+    required this.isRead,
   });
 
   final bool loading;
@@ -2866,6 +3228,8 @@ class _LibraryPanel extends StatelessWidget {
   final ValueChanged<String> onQueryChanged;
   final LibraryViewMode viewMode;
   final VoidCallback onToggleViewMode;
+  final IconData viewModeIcon;
+  final String viewModeTooltip;
   final VoidCallback onToggleSearch;
   final VoidCallback? onGlobalSearch;
   final VoidCallback? onClearLibrary;
@@ -2875,6 +3239,9 @@ class _LibraryPanel extends StatelessWidget {
   final ValueChanged<int> onDetails;
   final String? selectedId;
   final ValueChanged<String> onSelect;
+  final bool showShelves;
+  final Widget? shelvesView;
+  final bool Function(LibraryBookItem book) isRead;
 
   @override
   Widget build(BuildContext context) {
@@ -2909,13 +3276,9 @@ class _LibraryPanel extends StatelessWidget {
               ),
             if (!compactMode) const SizedBox(width: 8),
             IconButton(
-              tooltip: viewMode == LibraryViewMode.list ? 'Плитка' : 'Список',
+              tooltip: viewModeTooltip,
               onPressed: onToggleViewMode,
-              icon: Icon(
-                viewMode == LibraryViewMode.list
-                    ? Icons.grid_view_outlined
-                    : Icons.view_list_outlined,
-              ),
+              icon: Icon(viewModeIcon),
               iconSize: iconSize,
               padding: padding,
               visualDensity: density,
@@ -3004,7 +3367,9 @@ class _LibraryPanel extends StatelessWidget {
                     ? const Center(child: CircularProgressIndicator())
                     : books.isEmpty
                     ? _LibraryEmpty(onImport: onImport)
-                    : viewMode == LibraryViewMode.list
+                    : showShelves && shelvesView != null
+                    ? shelvesView!
+                    : viewMode != LibraryViewMode.grid
                     ? ListView.separated(
                         itemCount: books.length,
                         separatorBuilder: (_, _) => const SizedBox(height: 12),
@@ -3015,6 +3380,7 @@ class _LibraryPanel extends StatelessWidget {
                             book: book,
                             index: index,
                             selected: book.id == selectedId,
+                            isRead: isRead(book),
                             onTap: () {
                               onSelect(book.id);
                               onOpen(index);
@@ -3044,6 +3410,7 @@ class _LibraryPanel extends StatelessWidget {
                               return _BookGridTile(
                                 key: ValueKey('library-book-grid-$index'),
                                 book: book,
+                                showReadBadge: isRead(book),
                                 selected: book.id == selectedId,
                                 onTap: () {
                                   onSelect(book.id);
@@ -3065,12 +3432,298 @@ class _LibraryPanel extends StatelessWidget {
   }
 }
 
+class _ShelfGroup {
+  const _ShelfGroup({required this.title, required this.shelves});
+
+  final String title;
+  final List<_ShelfDefinition> shelves;
+}
+
+class _ShelfDefinition {
+  const _ShelfDefinition({
+    required this.title,
+    required this.items,
+    required this.maxItems,
+  });
+
+  final String title;
+  final List<LibraryBookItem> items;
+  final int maxItems;
+}
+
+class _ShelfGroupHeader extends StatelessWidget {
+  const _ShelfGroupHeader({required this.title});
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      title,
+      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+        fontWeight: FontWeight.w600,
+      ),
+    );
+  }
+}
+
+class _ShelfRow extends StatelessWidget {
+  const _ShelfRow({
+    required this.title,
+    required this.items,
+    required this.maxItems,
+    required this.compact,
+    required this.isRead,
+    required this.isFavorite,
+    required this.isToRead,
+    required this.onOpen,
+    required this.onDetails,
+    required this.onDelete,
+    required this.onToggleFavorite,
+    required this.onToggleToRead,
+  });
+
+  final String title;
+  final List<LibraryBookItem> items;
+  final int maxItems;
+  final bool compact;
+  final bool Function(LibraryBookItem book) isRead;
+  final bool Function(String id) isFavorite;
+  final bool Function(String id) isToRead;
+  final ValueChanged<LibraryBookItem> onOpen;
+  final ValueChanged<LibraryBookItem> onDetails;
+  final ValueChanged<LibraryBookItem> onDelete;
+  final ValueChanged<LibraryBookItem> onToggleFavorite;
+  final ValueChanged<LibraryBookItem> onToggleToRead;
+
+  @override
+  Widget build(BuildContext context) {
+    if (items.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final tileWidth = compact ? 120.0 : 140.0;
+    final tileHeight = tileWidth * (compact ? 1.95 : 2.05);
+    final visible = items.take(maxItems).toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 8),
+        SizedBox(
+          height: tileHeight,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: visible.length,
+            separatorBuilder: (_, _) => const SizedBox(width: 12),
+            itemBuilder: (context, index) {
+              final book = visible[index];
+              return _ShelfBookTile(
+                book: book,
+                width: tileWidth,
+                isRead: isRead(book),
+                isFavorite: isFavorite(book.id),
+                isToRead: isToRead(book.id),
+                onOpen: () => onOpen(book),
+                onDetails: () => onDetails(book),
+                onDelete: () => onDelete(book),
+                onToggleFavorite: () => onToggleFavorite(book),
+                onToggleToRead: () => onToggleToRead(book),
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 16),
+      ],
+    );
+  }
+}
+
+enum _ShelfAction { details, delete, toggleFavorite, toggleToRead }
+
+class _ShelfBookTile extends StatelessWidget {
+  const _ShelfBookTile({
+    required this.book,
+    required this.width,
+    required this.isRead,
+    required this.isFavorite,
+    required this.isToRead,
+    required this.onOpen,
+    required this.onDetails,
+    required this.onDelete,
+    required this.onToggleFavorite,
+    required this.onToggleToRead,
+  });
+
+  final LibraryBookItem book;
+  final double width;
+  final bool isRead;
+  final bool isFavorite;
+  final bool isToRead;
+  final VoidCallback onOpen;
+  final VoidCallback onDetails;
+  final VoidCallback onDelete;
+  final VoidCallback onToggleFavorite;
+  final VoidCallback onToggleToRead;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final titleStyle = Theme.of(context).textTheme.bodySmall?.copyWith(
+      fontWeight: FontWeight.w600,
+    );
+    final subtitleStyle = Theme.of(context).textTheme.labelSmall?.copyWith(
+      color: scheme.onSurfaceVariant,
+    );
+    return SizedBox(
+      width: width,
+      child: Material(
+        color: scheme.surface,
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: onOpen,
+          child: Padding(
+            padding: const EdgeInsets.all(6),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Stack(
+                  children: [
+                    AspectRatio(
+                      aspectRatio: 2 / 3,
+                      child: _BookCover(
+                        title: book.title,
+                        coverPath: book.coverPath,
+                        width: width,
+                        height: width * 1.5,
+                        borderRadius: 12,
+                      ),
+                    ),
+                    if (isRead)
+                      Positioned(
+                        left: 6,
+                        top: 6,
+                        child: _ReadBadge(color: scheme.tertiary),
+                      ),
+                    Positioned(
+                      right: 0,
+                      top: 0,
+                      child: PopupMenuButton<_ShelfAction>(
+                        tooltip: 'Действия',
+                        onSelected: (action) {
+                          switch (action) {
+                            case _ShelfAction.details:
+                              onDetails();
+                              break;
+                            case _ShelfAction.delete:
+                              onDelete();
+                              break;
+                            case _ShelfAction.toggleFavorite:
+                              onToggleFavorite();
+                              break;
+                            case _ShelfAction.toggleToRead:
+                              onToggleToRead();
+                              break;
+                          }
+                        },
+                        itemBuilder: (context) => [
+                          const PopupMenuItem(
+                            value: _ShelfAction.details,
+                            child: Text('Детали'),
+                          ),
+                          PopupMenuItem(
+                            value: _ShelfAction.toggleFavorite,
+                            child: Text(
+                              isFavorite
+                                  ? 'Убрать из избранного'
+                                  : 'В избранное',
+                            ),
+                          ),
+                          PopupMenuItem(
+                            value: _ShelfAction.toggleToRead,
+                            child: Text(
+                              isToRead
+                                  ? 'Убрать из "Хочу прочитать"'
+                                  : 'Хочу прочитать',
+                            ),
+                          ),
+                          const PopupMenuDivider(),
+                          const PopupMenuItem(
+                            value: _ShelfAction.delete,
+                            child: Text('Удалить'),
+                          ),
+                        ],
+                        icon: Icon(
+                          Icons.more_vert,
+                          size: 18,
+                          color: scheme.onSurface,
+                        ),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  book.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: titleStyle,
+                ),
+                if (book.author != null) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    book.author!,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: subtitleStyle,
+                  ),
+                ],
+                if (book.isMissing) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    'Файл отсутствует',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: subtitleStyle?.copyWith(color: scheme.error),
+                  ),
+                ],
+                const Spacer(),
+                Row(
+                  children: [
+                    if (isFavorite)
+                      Icon(Icons.star, size: 14, color: scheme.tertiary),
+                    if (isFavorite && isToRead) const SizedBox(width: 6),
+                    if (isToRead)
+                      Icon(
+                        Icons.bookmark,
+                        size: 14,
+                        color: scheme.primary,
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _BookCard extends StatelessWidget {
   const _BookCard({
     super.key,
     required this.book,
     required this.index,
     required this.selected,
+    required this.isRead,
     required this.onTap,
     required this.onDetails,
     required this.onDelete,
@@ -3079,6 +3732,7 @@ class _BookCard extends StatelessWidget {
   final LibraryBookItem book;
   final int index;
   final bool selected;
+  final bool isRead;
   final VoidCallback onTap;
   final VoidCallback onDetails;
   final VoidCallback onDelete;
@@ -3132,11 +3786,24 @@ class _BookCard extends StatelessWidget {
                       ),
                     ],
                     const SizedBox(height: 10),
-                    Text(
-                      'Добавлена ${_formatDate(book.addedAt)}',
-                      style: Theme.of(
-                        context,
-                      ).textTheme.bodySmall?.copyWith(color: scheme.outline),
+                    Row(
+                      children: [
+                        if (isRead)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 6),
+                            child: Icon(
+                              Icons.check_circle,
+                              size: 16,
+                              color: scheme.tertiary,
+                            ),
+                          ),
+                        Text(
+                          'Добавлена ${_formatDate(book.addedAt)}',
+                          style: Theme.of(
+                            context,
+                          ).textTheme.bodySmall?.copyWith(color: scheme.outline),
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -3260,6 +3927,34 @@ class _BookCoverPlaceholder extends StatelessWidget {
   }
 }
 
+class _ReadBadge extends StatelessWidget {
+  const _ReadBadge({required this.color});
+
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      width: 20,
+      height: 20,
+      decoration: BoxDecoration(
+        color: scheme.surface.withAlpha(220),
+        shape: BoxShape.circle,
+        border: Border.all(color: scheme.outlineVariant.withAlpha(160)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withAlpha(40),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Icon(Icons.check, size: 14, color: color),
+    );
+  }
+}
+
 class _BookGridTile extends StatelessWidget {
   const _BookGridTile({
     super.key,
@@ -3267,6 +3962,7 @@ class _BookGridTile extends StatelessWidget {
     required this.onTap,
     required this.onDetails,
     required this.onDelete,
+    this.showReadBadge = false,
     this.selected = false,
   });
 
@@ -3274,6 +3970,7 @@ class _BookGridTile extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onDetails;
   final VoidCallback onDelete;
+  final bool showReadBadge;
   final bool selected;
 
   @override
@@ -3304,12 +4001,22 @@ class _BookGridTile extends StatelessWidget {
                 padding: const EdgeInsets.all(10),
                 child: AspectRatio(
                   aspectRatio: 2 / 3,
-                  child: _BookCover(
-                    title: book.title,
-                    coverPath: book.coverPath,
-                    width: 120,
-                    height: 180,
-                    borderRadius: 12,
+                  child: Stack(
+                    children: [
+                      _BookCover(
+                        title: book.title,
+                        coverPath: book.coverPath,
+                        width: 120,
+                        height: 180,
+                        borderRadius: 12,
+                      ),
+                      if (showReadBadge)
+                        Positioned(
+                          left: 6,
+                          top: 6,
+                          child: _ReadBadge(color: scheme.tertiary),
+                        ),
+                    ],
                   ),
                 ),
               ),
@@ -3363,6 +4070,124 @@ class _SearchIndexDiagnosticsCard extends StatefulWidget {
   @override
   State<_SearchIndexDiagnosticsCard> createState() =>
       _SearchIndexDiagnosticsCardState();
+}
+
+class _SyncMetricsCard extends StatefulWidget {
+  const _SyncMetricsCard({required this.controller});
+
+  final LibraryController controller;
+
+  @override
+  State<_SyncMetricsCard> createState() => _SyncMetricsCardState();
+}
+
+class _SyncMetricsCardState extends State<_SyncMetricsCard> {
+  bool _expanded = false;
+
+  String _formatBytes(int bytes) {
+    if (bytes < 1024) {
+      return '$bytes B';
+    }
+    final kb = bytes / 1024;
+    if (kb < 1024) {
+      return '${kb.toStringAsFixed(1)} KB';
+    }
+    final mb = kb / 1024;
+    if (mb < 1024) {
+      return '${mb.toStringAsFixed(1)} MB';
+    }
+    final gb = mb / 1024;
+    return '${gb.toStringAsFixed(1)} GB';
+  }
+
+  String _formatDuration(int ms) {
+    final seconds = (ms / 1000).round();
+    if (seconds < 60) {
+      return '$seconds c';
+    }
+    final minutes = seconds ~/ 60;
+    final rest = seconds % 60;
+    return '$minutes м ${rest.toString().padLeft(2, '0')} c';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final metrics = widget.controller.lastSyncMetrics;
+    if (metrics == null) {
+      return Text(
+        'Метрики синхронизации ещё не собраны.',
+        style: Theme.of(context).textTheme.bodySmall,
+      );
+    }
+    final lastAt = metrics.at.toLocal();
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest.withAlpha(64),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Метрики синка',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+              ),
+              TextButton(
+                onPressed: () => setState(() => _expanded = !_expanded),
+                child: Text(_expanded ? 'Свернуть' : 'Показать'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Последнее измерение: $lastAt',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          if (_expanded) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Длительность: ${_formatDuration(metrics.durationMs)}',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            Text(
+              'Передано: ↑ ${_formatBytes(metrics.bytesUploaded)} '
+              '(${metrics.filesUploaded} файлов), '
+              '↓ ${_formatBytes(metrics.bytesDownloaded)} '
+              '(${metrics.filesDownloaded} файлов)',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            Text(
+              'События: applied=${metrics.appliedEvents}, '
+              'state=${metrics.appliedState}, '
+              'uploaded=${metrics.uploadedEvents}',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            Text(
+              'Книги: ↑ ${metrics.booksUploaded}, ↓ ${metrics.booksDownloaded}',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            Text(
+              'Ошибки: всего=${metrics.errorCountTotal}, '
+              'подряд=${metrics.errorCountConsecutive}'
+              '${metrics.errorCode == null ? '' : ', код=${metrics.errorCode}'}',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: metrics.errorCountConsecutive > 0
+                    ? scheme.error
+                    : scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
 }
 
 class _SearchIndexDiagnosticsCardState

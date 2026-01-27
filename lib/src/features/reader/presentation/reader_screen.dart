@@ -1771,9 +1771,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   Widget _buildBody(BuildContext context) {
-    final currentPosition = _computeReadingPosition();
-    final currentBookmark =
-        currentPosition == null ? null : _bookmarkForPosition(currentPosition);
     final scheme = Theme.of(context).colorScheme;
     final hasToc = _controller.chapters.length > 1;
     final readerSurface = scheme.surface.withAlpha(242);

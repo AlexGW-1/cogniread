@@ -132,7 +132,7 @@ class SearchIndexService {
     if (db == null) {
       return;
     }
-    db.dispose();
+    db.close();
     _database = null;
   }
 
@@ -265,7 +265,7 @@ class SearchIndexService {
             ]);
           }
         } finally {
-          stmt.dispose();
+          stmt.close();
         }
         watch.stop();
         _db.execute(
@@ -365,7 +365,7 @@ class SearchIndexService {
             }
           }
         } finally {
-          stmt.dispose();
+          stmt.close();
         }
         watch.stop();
         _db.execute(
@@ -1076,7 +1076,7 @@ class SearchIndexService {
   Future<void> _recreateIndexFile() async {
     final existing = _database;
     if (existing != null) {
-      existing.dispose();
+      existing.close();
       _database = null;
     }
 
@@ -1180,7 +1180,7 @@ class SearchIndexService {
             }
           }
         } finally {
-          stmt.dispose();
+          stmt.close();
         }
         _db.execute(
           'INSERT OR REPLACE INTO search_books_state(book_id, fingerprint, indexed_at) '
@@ -1225,7 +1225,7 @@ class SearchIndexService {
             ]);
           }
         } finally {
-          stmt.dispose();
+          stmt.close();
         }
       }
 
