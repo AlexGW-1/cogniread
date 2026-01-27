@@ -1007,19 +1007,19 @@ class _ReaderScreenState extends State<ReaderScreen> {
       _showPositioningError('Не удалось создать закладку');
       return;
     }
+    final wasBookmarked = _bookmarkForPosition(position) != null;
     final saved = await _controller.toggleBookmark(position);
     if (!mounted) {
       return;
     }
-    final hasBookmark = _controller.bookmark != null;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
           saved
-              ? hasBookmark
-                    ? 'Закладка сохранена'
-                    : 'Закладка удалена'
-              : 'Не удалось изменить закладку',
+              ? 'Закладка сохранена'
+              : wasBookmarked
+              ? 'Закладка уже есть'
+              : 'Не удалось создать закладку',
         ),
       ),
     );
@@ -1067,16 +1067,28 @@ class _ReaderScreenState extends State<ReaderScreen> {
                     subtitle: Text(
                       '$chapterTitle · ${_formatDateTime(bookmark.createdAt)}',
                     ),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.delete_outline),
-                      tooltip: 'Удалить закладку',
-                      onPressed: () async {
-                        final confirmed = await _confirmDeleteBookmark();
-                        if (confirmed != true) {
-                          return;
-                        }
-                        await _controller.removeBookmark(bookmark.id);
-                      },
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.edit_outlined),
+                          tooltip: 'Переименовать закладку',
+                          onPressed: () {
+                            _editBookmark(bookmark);
+                          },
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete_outline),
+                          tooltip: 'Удалить закладку',
+                          onPressed: () async {
+                            final confirmed = await _confirmDeleteBookmark();
+                            if (confirmed != true) {
+                              return;
+                            }
+                            await _controller.removeBookmark(bookmark.id);
+                          },
+                        ),
+                      ],
                     ),
                     onTap: anchor == null
                         ? null
@@ -1092,6 +1104,44 @@ class _ReaderScreenState extends State<ReaderScreen> {
         );
       },
     );
+  }
+
+  Future<void> _editBookmark(Bookmark bookmark) async {
+    final controller = TextEditingController(text: bookmark.label);
+    final updatedLabel = await showDialog<String>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Переименовать закладку'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            decoration: const InputDecoration(hintText: 'Название закладки'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Отмена'),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.of(context).pop(controller.text);
+              },
+              child: const Text('Сохранить'),
+            ),
+          ],
+        );
+      },
+    );
+    if (updatedLabel == null) {
+      return;
+    }
+    final trimmed = updatedLabel.trim();
+    if (trimmed.isEmpty) {
+      _showPositioningError('Название закладки пустое');
+      return;
+    }
+    await _controller.updateBookmarkLabel(bookmark.id, trimmed);
   }
 
   int? _chapterIndexForHighlight(Highlight highlight) {
@@ -1642,6 +1692,24 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
+  Bookmark? _bookmarkForPosition(ReadingPosition position) {
+    final chapterHref = position.chapterHref;
+    final offset = position.offset;
+    if (chapterHref == null || offset == null || offset < 0) {
+      return null;
+    }
+    final anchor = Anchor(
+      chapterHref: chapterHref,
+      offset: offset,
+    ).toString();
+    for (final bookmark in _controller.bookmarks) {
+      if (bookmark.anchor == anchor) {
+        return bookmark;
+      }
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final hasToc = _controller.chapters.length > 1;
@@ -1664,14 +1732,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
             icon: const Icon(Icons.auto_awesome_outlined),
           ),
           IconButton(
-            tooltip: _controller.bookmark == null
-                ? 'Добавить закладку'
-                : 'Удалить закладку',
+            tooltip: 'Добавить закладку',
             onPressed: _toggleBookmark,
             icon: Icon(
-              _controller.bookmark == null
-                  ? Icons.bookmark_add_outlined
-                  : Icons.bookmark_remove_outlined,
+              Icons.bookmark_add_outlined,
             ),
           ),
           IconButton(
@@ -1707,6 +1771,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   Widget _buildBody(BuildContext context) {
+    final currentPosition = _computeReadingPosition();
+    final currentBookmark =
+        currentPosition == null ? null : _bookmarkForPosition(currentPosition);
     final scheme = Theme.of(context).colorScheme;
     final hasToc = _controller.chapters.length > 1;
     final readerSurface = scheme.surface.withAlpha(242);
@@ -1747,7 +1814,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                       _ReaderHeader(
                         title: _controller.title ?? 'Reader',
                         hasToc: hasToc,
-                        hasBookmark: _controller.bookmark != null,
+                        hasBookmark: false,
                         onTocTap: _showToc,
                         onHighlightsTap: _showHighlights,
                         onNotesTap: _showNotes,

@@ -822,6 +822,76 @@ class LibraryStore {
     );
   }
 
+  Future<void> updateBookmark(
+    String id,
+    String bookmarkId,
+    String label,
+    DateTime updatedAt,
+  ) async {
+    final entry = await getById(id);
+    if (entry == null) {
+      return;
+    }
+    var changed = false;
+    Bookmark? updatedBookmark;
+    final updatedBookmarks = entry.bookmarks.map((bookmark) {
+      if (bookmark.id != bookmarkId) {
+        return bookmark;
+      }
+      if (bookmark.label == label && bookmark.updatedAt == updatedAt) {
+        return bookmark;
+      }
+      changed = true;
+      final next = Bookmark(
+        id: bookmark.id,
+        bookId: bookmark.bookId,
+        anchor: bookmark.anchor,
+        label: label,
+        createdAt: bookmark.createdAt,
+        updatedAt: updatedAt,
+      );
+      updatedBookmark = next;
+      return next;
+    }).toList();
+    if (!changed) {
+      return;
+    }
+    await upsert(
+      LibraryEntry(
+        id: entry.id,
+        title: entry.title,
+        author: entry.author,
+        localPath: entry.localPath,
+        coverPath: entry.coverPath,
+        addedAt: entry.addedAt,
+        fingerprint: entry.fingerprint,
+        sourcePath: entry.sourcePath,
+        readingPosition: entry.readingPosition,
+        progress: entry.progress,
+        lastOpenedAt: entry.lastOpenedAt,
+        notes: entry.notes,
+        highlights: entry.highlights,
+        bookmarks: updatedBookmarks,
+        tocOfficial: entry.tocOfficial,
+        tocGenerated: entry.tocGenerated,
+        tocMode: entry.tocMode,
+      ),
+    );
+    final payload = updatedBookmark?.toMap() ??
+        <String, Object?>{
+          'id': bookmarkId,
+          'bookId': entry.id,
+          'label': label,
+          'updatedAt': updatedAt.toIso8601String(),
+        };
+    await _logEvent(
+      entityType: 'bookmark',
+      entityId: bookmarkId,
+      op: 'update',
+      payload: payload,
+    );
+  }
+
   Future<void> setBookmark(String id, Bookmark bookmark) async {
     final entry = await getById(id);
     if (entry == null) {

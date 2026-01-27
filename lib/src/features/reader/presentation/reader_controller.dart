@@ -370,18 +370,13 @@ class ReaderController extends ChangeNotifier {
       return false;
     }
     await _store.init();
-    if (_bookmarks.isNotEmpty) {
-      final toRemove = _bookmarks.first;
-      await _store.removeBookmark(bookId, toRemove.id);
-      _bookmarks = const <Bookmark>[];
-      _bookmark = null;
-      notifyListeners();
-      return true;
-    }
     final anchor = Anchor(
       chapterHref: chapterHref,
       offset: offset,
     ).toString();
+    if (_bookmarks.any((item) => item.anchor == anchor)) {
+      return false;
+    }
     final now = DateTime.now();
     final bookmark = Bookmark(
       id: _makeId(),
@@ -391,9 +386,8 @@ class ReaderController extends ChangeNotifier {
       createdAt: now,
       updatedAt: now,
     );
-    await _store.setBookmark(bookId, bookmark);
-    _bookmarks = <Bookmark>[bookmark];
-    _bookmark = bookmark;
+    await _store.addBookmark(bookId, bookmark);
+    _bookmarks = <Bookmark>[..._bookmarks, bookmark];
     notifyListeners();
     return true;
   }
@@ -407,6 +401,42 @@ class ReaderController extends ChangeNotifier {
     await _store.removeBookmark(bookId, bookmarkId);
     _bookmarks = _bookmarks.where((item) => item.id != bookmarkId).toList();
     _bookmark = _bookmarks.isEmpty ? null : _bookmarks.first;
+    notifyListeners();
+    return true;
+  }
+
+  Future<bool> updateBookmarkLabel(String bookmarkId, String label) async {
+    final bookId = _activeBookId;
+    if (bookId == null) {
+      return false;
+    }
+    final trimmed = label.trim();
+    if (trimmed.isEmpty) {
+      return false;
+    }
+    await _store.init();
+    final now = DateTime.now();
+    await _store.updateBookmark(bookId, bookmarkId, trimmed, now);
+    _bookmarks = _bookmarks
+        .map(
+          (bookmark) => bookmark.id == bookmarkId
+              ? Bookmark(
+                  id: bookmark.id,
+                  bookId: bookmark.bookId,
+                  anchor: bookmark.anchor,
+                  label: trimmed,
+                  createdAt: bookmark.createdAt,
+                  updatedAt: now,
+                )
+              : bookmark,
+        )
+        .toList();
+    if (_bookmark?.id == bookmarkId) {
+      _bookmark = _bookmarks.firstWhere(
+        (item) => item.id == bookmarkId,
+        orElse: () => _bookmark!,
+      );
+    }
     notifyListeners();
     return true;
   }
@@ -639,6 +669,55 @@ class ReaderController extends ChangeNotifier {
   ) async {
     await _store.init();
     await _store.updateReadingPosition(bookId, position);
+    if (_chapters.isEmpty) {
+      return;
+    }
+    final entry = await _store.getById(bookId);
+    if (entry == null) {
+      return;
+    }
+    final totalChapters = _chapters.length;
+    final chapterIndex = _resolveChapterIndex(position, totalChapters);
+    if (chapterIndex == null) {
+      return;
+    }
+    final currentPercent = ((chapterIndex + 1) / totalChapters) * 100;
+    final storedRaw = entry.progress.percent ?? 0;
+    final storedPercent = storedRaw <= 1 ? storedRaw * 100 : storedRaw;
+    final nextPercent = max(storedPercent, currentPercent).clamp(0, 100);
+    await _store.updateProgress(
+      bookId,
+      ReadingProgress(
+        percent: nextPercent.toDouble(),
+        chapterIndex: chapterIndex,
+        totalChapters: totalChapters,
+        updatedAt: DateTime.now(),
+      ),
+    );
+  }
+
+  int? _resolveChapterIndex(
+    ReadingPosition position,
+    int totalChapters,
+  ) {
+    final href = position.chapterHref;
+    if (href == null) {
+      return null;
+    }
+    if (href.startsWith('index:')) {
+      final raw = href.substring('index:'.length);
+      final parsed = int.tryParse(raw);
+      if (parsed == null || parsed < 0 || parsed >= totalChapters) {
+        return null;
+      }
+      return parsed;
+    }
+    for (var i = 0; i < _chapters.length; i += 1) {
+      if (_chapters[i].href == href) {
+        return i;
+      }
+    }
+    return null;
   }
 
   Future<List<_ChapterSource>> _extractChapters(
