@@ -47,6 +47,7 @@ dependencies:
   image: ^3.3.0
   url_launcher: ^6.3.0
   app_links: ^6.1.0
+  flutter_markdown: ^0.7.1
   sqlite3: ^2.9.4
   sqlite3_flutter_libs: ^0.5.41
 

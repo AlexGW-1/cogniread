@@ -8,6 +8,7 @@ import 'package:cogniread/src/core/services/storage_service.dart';
 import 'package:cogniread/src/core/services/storage_service_impl.dart';
 import 'package:cogniread/src/core/types/toc.dart';
 import 'package:cogniread/src/core/utils/logger.dart';
+import 'package:cogniread/src/features/ai/ai_models.dart';
 import 'package:cogniread/src/features/library/data/library_preferences_store.dart';
 import 'package:cogniread/src/features/library/data/free_notes_store.dart';
 import 'package:cogniread/src/features/library/data/library_store.dart';
@@ -250,6 +251,11 @@ class LibraryController extends ChangeNotifier {
   DateTime? _lastSyncAt;
   bool? _lastSyncOk;
   String? _lastSyncSummary;
+  AiConfig _aiConfig = const AiConfig();
+  bool _aiTestInProgress = false;
+  bool? _aiTestOk;
+  String? _aiTestMessage;
+  DateTime? _aiTestAt;
 
   bool get loading => _loading;
   List<LibraryBookItem> get books => List<LibraryBookItem>.unmodifiable(_books);
@@ -279,6 +285,11 @@ class LibraryController extends ChangeNotifier {
   DateTime? get lastSyncAt => _lastSyncAt;
   bool? get lastSyncOk => _lastSyncOk;
   String? get lastSyncSummary => _lastSyncSummary;
+  AiConfig get aiConfig => _aiConfig;
+  bool get aiTestInProgress => _aiTestInProgress;
+  bool? get aiTestOk => _aiTestOk;
+  String? get aiTestMessage => _aiTestMessage;
+  DateTime? get aiTestAt => _aiTestAt;
   String? get logFilePath => Log.logFilePath;
   SearchIndexService get searchIndex => _searchIndex;
   String get syncAdapterLabel =>
@@ -427,6 +438,7 @@ class LibraryController extends ChangeNotifier {
       ]);
       await _preferencesStore.init();
       await _syncAuthStore.init();
+      await _loadAiConfig();
       await _loadSearchHistory();
       await _loadOAuthConfig();
       await _initAuthLinks();
@@ -476,6 +488,95 @@ class LibraryController extends ChangeNotifier {
       notifyListeners();
     } catch (_) {
       _searchHistory = <String>[];
+    }
+  }
+
+  Future<void> _loadAiConfig() async {
+    try {
+      _aiConfig = await _preferencesStore.loadAiConfig();
+      notifyListeners();
+    } catch (error) {
+      Log.d('Failed to load AI config: $error');
+      _aiConfig = const AiConfig();
+    }
+  }
+
+  Future<void> updateAiConfig({
+    required String baseUrl,
+    String? apiKey,
+    String? model,
+    String? embeddingModel,
+  }) async {
+    final trimmedBase = baseUrl.trim();
+    if (trimmedBase.isEmpty) {
+      await clearAiConfig();
+      return;
+    }
+    _aiConfig = AiConfig(
+      baseUrl: trimmedBase,
+      apiKey: apiKey?.trim().isEmpty == true ? null : apiKey?.trim(),
+      model: model?.trim().isEmpty == true ? null : model?.trim(),
+      embeddingModel:
+          embeddingModel?.trim().isEmpty == true
+              ? null
+              : embeddingModel?.trim(),
+    );
+    notifyListeners();
+    try {
+      await _preferencesStore.saveAiConfig(_aiConfig);
+    } catch (error) {
+      Log.d('Failed to save AI config: $error');
+    }
+  }
+
+  Future<void> clearAiConfig() async {
+    _aiConfig = const AiConfig();
+    notifyListeners();
+    try {
+      await _preferencesStore.saveAiConfig(_aiConfig);
+    } catch (error) {
+      Log.d('Failed to clear AI config: $error');
+    }
+  }
+
+  Future<void> testAiConnection() async {
+    final config = _aiConfig;
+    final baseUrl = config.baseUrl?.trim() ?? '';
+    if (baseUrl.isEmpty) {
+      _aiTestOk = false;
+      _aiTestMessage = 'AI endpoint не задан.';
+      _aiTestAt = DateTime.now();
+      notifyListeners();
+      return;
+    }
+    final uri = Uri.tryParse(baseUrl);
+    if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
+      _aiTestOk = false;
+      _aiTestMessage = 'Endpoint должен начинаться с http:// или https://';
+      _aiTestAt = DateTime.now();
+      notifyListeners();
+      return;
+    }
+    if (_aiTestInProgress) {
+      return;
+    }
+    _aiTestInProgress = true;
+    _aiTestMessage = null;
+    notifyListeners();
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 6);
+    try {
+      final result = await _probeAiEndpoint(client, uri, apiKey: config.apiKey);
+      _aiTestOk = result.ok;
+      _aiTestMessage = result.message;
+      _aiTestAt = DateTime.now();
+    } catch (error) {
+      _aiTestOk = false;
+      _aiTestMessage = error.toString();
+      _aiTestAt = DateTime.now();
+    } finally {
+      client.close(force: true);
+      _aiTestInProgress = false;
+      notifyListeners();
     }
   }
 
@@ -741,15 +842,14 @@ class LibraryController extends ChangeNotifier {
       ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
     final payload = <String, Object?>{
       'generatedAt': generatedAt.toIso8601String(),
-      'items':
-          sorted.map((item) {
+      'items': sorted
+          .map((item) {
             return <String, Object?>{
-              'type':
-                  switch (item.type) {
-                    NotesItemType.note => 'note',
-                    NotesItemType.highlight => 'highlight',
-                    NotesItemType.freeNote => 'free_note',
-                  },
+              'type': switch (item.type) {
+                NotesItemType.note => 'note',
+                NotesItemType.highlight => 'highlight',
+                NotesItemType.freeNote => 'free_note',
+              },
               'id': item.id,
               'bookId': item.bookId,
               'bookTitle': item.bookTitle,
@@ -761,7 +861,8 @@ class LibraryController extends ChangeNotifier {
               'createdAt': item.createdAt.toIso8601String(),
               'updatedAt': item.updatedAt.toIso8601String(),
             };
-          }).toList(growable: false),
+          })
+          .toList(growable: false),
     };
     return const JsonEncoder.withIndent('  ').convert(payload);
   }
@@ -780,16 +881,14 @@ class LibraryController extends ChangeNotifier {
     for (final item in sorted) {
       final date = item.updatedAt.toIso8601String();
       final color = item.color;
-      final title =
-          item.type == NotesItemType.freeNote
-              ? 'Без книги'
-              : (item.bookTitle ?? 'Без названия');
-      final typeLabel =
-          switch (item.type) {
-            NotesItemType.note => 'Заметка',
-            NotesItemType.highlight => 'Выделение',
-            NotesItemType.freeNote => 'Заметка',
-          };
+      final title = item.type == NotesItemType.freeNote
+          ? 'Без книги'
+          : (item.bookTitle ?? 'Без названия');
+      final typeLabel = switch (item.type) {
+        NotesItemType.note => 'Заметка',
+        NotesItemType.highlight => 'Выделение',
+        NotesItemType.freeNote => 'Заметка',
+      };
       final text = item.text.trim();
       final excerpt = item.excerpt.trim();
       buffer.writeln('- [$date] ($color) $title · $typeLabel');
@@ -1127,7 +1226,10 @@ class LibraryController extends ChangeNotifier {
     final logPath = logFilePath;
     if (logPath != null && logPath.trim().isNotEmpty) {
       try {
-        final bytes = await _readTailBytes(File(logPath), maxBytes: maxLogBytes);
+        final bytes = await _readTailBytes(
+          File(logPath),
+          maxBytes: maxLogBytes,
+        );
         if (bytes != null && bytes.isNotEmpty) {
           archive.addFile(ArchiveFile('cogniread.log', bytes.length, bytes));
         }
@@ -1170,13 +1272,10 @@ class LibraryController extends ChangeNotifier {
       _setAuthError('Не удалось подготовить архив');
       return;
     }
-    final remotePath = 'diagnostics/$deviceId/cogniread_diagnostics_$timestamp.zip';
+    final remotePath =
+        'diagnostics/$deviceId/cogniread_diagnostics_$timestamp.zip';
     try {
-      await adapter.putFile(
-        remotePath,
-        bytes,
-        contentType: 'application/zip',
-      );
+      await adapter.putFile(remotePath, bytes, contentType: 'application/zip');
       _setInfo('Диагностика выгружена: $remotePath');
     } catch (error) {
       _setAuthError('Не удалось выгрузить диагностику: $error');
@@ -2285,13 +2384,20 @@ class LibraryController extends ChangeNotifier {
     try {
       final files = await adapter.listFiles();
       _setInfo('Подключение успешно (файлов: ${files.length})');
+    } on SyncAdapterException catch (error) {
+      final label = _providerLabel(_syncProvider);
+      if ((error.code == 'webdav_405') &&
+          (_syncProvider == SyncProvider.webDav ||
+              _syncProvider == SyncProvider.synologyDrive)) {
+        _setInfo(
+          '$label: подключение успешно, но сервер не поддерживает список файлов (PROPFIND).',
+        );
+        return;
+      }
+      _setAuthError(_formatSyncAdapterError(label, error));
     } catch (error) {
       final label = _providerLabel(_syncProvider);
-      if (error is SyncAdapterException) {
-        _setAuthError(_formatSyncAdapterError(label, error));
-      } else {
-        _setAuthError('$label проверка не удалась: $error');
-      }
+      _setAuthError('$label проверка не удалась: $error');
     } finally {
       _connectionInProgress = false;
       notifyListeners();
@@ -4447,4 +4553,246 @@ CoverPayload? _extractFb2Cover(String xml) {
   }
   final bytes = base64.decode(raw);
   return CoverPayload(bytes: bytes, extension: extension);
+}
+
+class _AiProbeResult {
+  const _AiProbeResult({required this.ok, required this.message});
+
+  final bool ok;
+  final String message;
+}
+
+class _AiProbeResponse {
+  const _AiProbeResponse({
+    required this.statusCode,
+    required this.body,
+    required this.path,
+  });
+
+  final int statusCode;
+  final String body;
+  final String path;
+}
+
+Future<_AiProbeResult> _probeAiEndpoint(
+  HttpClient client,
+  Uri baseUri, {
+  String? apiKey,
+}) async {
+  if (_isGeminiEndpoint(baseUri)) {
+    final key = apiKey?.trim();
+    if (key == null || key.isEmpty) {
+      return const _AiProbeResult(
+        ok: false,
+        message: 'Endpoint требует API ключ.',
+      );
+    }
+    final uri = _geminiModelsUri(baseUri, apiKey: key);
+    final response = await _aiRequest(
+      client,
+      baseUri,
+      uri.toString(),
+      method: 'GET',
+      apiKey: null,
+    );
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      return _AiProbeResult(ok: true, message: 'OK (/models)');
+    }
+    return _AiProbeResult(
+      ok: false,
+      message:
+          'Gemini HTTP ${response.statusCode}: ${_compactBody(response.body)}',
+    );
+  }
+  if (_isOpenAiEndpoint(baseUri)) {
+    final modelsUri = _openAiCompatibleUri(baseUri, 'models');
+    final response = await _aiRequest(
+      client,
+      baseUri,
+      modelsUri.toString(),
+      method: 'GET',
+      apiKey: apiKey,
+    );
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      return _AiProbeResult(ok: true, message: 'OK (/v1/models)');
+    }
+    if (response.statusCode == 401 || response.statusCode == 403) {
+      final message = apiKey == null || apiKey.trim().isEmpty
+          ? 'Endpoint требует API ключ.'
+          : 'API ключ отклонён (${response.statusCode}).';
+      return _AiProbeResult(ok: false, message: message);
+    }
+    return _AiProbeResult(
+      ok: false,
+      message:
+          'OpenAI HTTP ${response.statusCode}: ${_compactBody(response.body)}',
+    );
+  }
+  const healthPaths = <String>['/ai/health', '/health', '/ai/ping', '/ping'];
+  for (final path in healthPaths) {
+    final response = await _aiRequest(
+      client,
+      baseUri,
+      path,
+      method: 'GET',
+      apiKey: apiKey,
+    );
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      return _AiProbeResult(ok: true, message: 'OK (${response.path})');
+    }
+    if (response.statusCode == 401 || response.statusCode == 403) {
+      final message = apiKey == null || apiKey.trim().isEmpty
+          ? 'Endpoint требует API ключ.'
+          : 'API ключ отклонён (${response.statusCode}).';
+      return _AiProbeResult(ok: false, message: message);
+    }
+    if (response.statusCode == 404) {
+      continue;
+    }
+    return _AiProbeResult(
+      ok: false,
+      message:
+          'HTTP ${response.statusCode} на ${response.path}: ${_compactBody(response.body)}',
+    );
+  }
+
+  final fallbackPayload = <String, Object?>{
+    'text': 'ping',
+    'scopeId': 'ping',
+    'scopeType': 'book',
+    'title': 'ping',
+  };
+  final summaryResponse = await _aiRequest(
+    client,
+    baseUri,
+    '/ai/summary',
+    method: 'POST',
+    apiKey: apiKey,
+    payload: fallbackPayload,
+  );
+  if (summaryResponse.statusCode >= 200 && summaryResponse.statusCode < 300) {
+    return _AiProbeResult(ok: true, message: 'OK (/ai/summary)');
+  }
+  if (summaryResponse.statusCode == 401 || summaryResponse.statusCode == 403) {
+    final message = apiKey == null || apiKey.trim().isEmpty
+        ? 'Endpoint требует API ключ.'
+        : 'API ключ отклонён (${summaryResponse.statusCode}).';
+    return _AiProbeResult(ok: false, message: message);
+  }
+  if (summaryResponse.statusCode == 400 || summaryResponse.statusCode == 422) {
+    return _AiProbeResult(
+      ok: true,
+      message:
+          'Endpoint доступен, но формат запроса отличается (HTTP ${summaryResponse.statusCode}).',
+    );
+  }
+  return _AiProbeResult(
+    ok: false,
+    message:
+        'Не удалось проверить endpoint (HTTP ${summaryResponse.statusCode}).',
+  );
+}
+
+Future<_AiProbeResponse> _aiRequest(
+  HttpClient client,
+  Uri baseUri,
+  String path, {
+  required String method,
+  String? apiKey,
+  Map<String, Object?>? payload,
+}) async {
+  final uri = path.startsWith('http://') || path.startsWith('https://')
+      ? Uri.parse(path)
+      : _resolveAiUri(baseUri, path);
+  final request = await client.openUrl(method, uri);
+  request.headers.set(HttpHeaders.acceptHeader, 'application/json');
+  if (apiKey != null && apiKey.trim().isNotEmpty) {
+    request.headers.set('Authorization', 'Bearer ${apiKey.trim()}');
+  }
+  if (payload != null) {
+    request.headers.contentType = ContentType.json;
+    request.add(utf8.encode(jsonEncode(payload)));
+  }
+  final response = await request.close();
+  final body = await response.transform(utf8.decoder).join();
+  return _AiProbeResponse(
+    statusCode: response.statusCode,
+    body: body,
+    path: path,
+  );
+}
+
+Uri _resolveAiUri(Uri baseUri, String path) {
+  final normalizedBase = baseUri.toString().trim();
+  final base = normalizedBase.endsWith('/')
+      ? normalizedBase
+      : '$normalizedBase/';
+  final normalizedPath = path.startsWith('/') ? path.substring(1) : path;
+  return Uri.parse(base).resolve(normalizedPath);
+}
+
+String _compactBody(String body) {
+  final trimmed = body.trim();
+  if (trimmed.isEmpty) {
+    return 'без ответа';
+  }
+  if (trimmed.length <= 120) {
+    return trimmed;
+  }
+  return '${trimmed.substring(0, 120)}…';
+}
+
+bool _isOpenAiEndpoint(Uri baseUri) {
+  final host = baseUri.host.toLowerCase();
+  if (host.contains('openai.com') || host.contains('groq.com')) {
+    return true;
+  }
+  final path = baseUri.path.toLowerCase();
+  if (path.contains('/openai/')) {
+    return true;
+  }
+  return false;
+}
+
+bool _isGeminiEndpoint(Uri baseUri) {
+  final host = baseUri.host.toLowerCase();
+  if (host.contains('generativelanguage.googleapis.com') ||
+      host.contains('ai.google.dev')) {
+    return true;
+  }
+  return false;
+}
+
+Uri _geminiModelsUri(Uri baseUri, {required String apiKey}) {
+  var path = baseUri.path.trim();
+  if (path.isEmpty || path == '/') {
+    path = '/v1beta';
+  }
+  if (path.endsWith('/')) {
+    path = path.substring(0, path.length - 1);
+  }
+  if (!path.contains('/v1')) {
+    path = '/v1beta';
+  }
+  final targetPath = '$path/models';
+  final query = Map<String, String>.from(baseUri.queryParameters);
+  query['key'] = apiKey;
+  return baseUri.replace(path: targetPath, queryParameters: query);
+}
+
+Uri _openAiCompatibleUri(Uri baseUri, String suffix) {
+  var path = baseUri.path.trim();
+  if (path.isEmpty) {
+    path = '/v1';
+  }
+  if (path.endsWith('/openai')) {
+    path = '$path/v1';
+  }
+  if (path.endsWith('/')) {
+    path = path.substring(0, path.length - 1);
+  }
+  if (!path.endsWith('/$suffix')) {
+    path = '$path/$suffix';
+  }
+  return baseUri.replace(path: path, query: null);
 }

@@ -126,16 +126,38 @@ class HttpWebDavApiClient implements WebDavApiClient {
   </prop>
 </propfind>
 ''');
-    final bytes = await _request(
+    final response = await _requestRaw(
       'PROPFIND',
       uri,
       body: body,
       contentType: 'text/xml',
       headers: const <String, String>{'Depth': '1'},
-      allowMultiStatus: true,
       timeout: _requestTimeout,
     );
-    return _parsePropfind(bytes, uri);
+    final ok = response.statusCode < 400 || response.statusCode == 207;
+    if (!ok) {
+      if (response.statusCode == 405) {
+        final normalizedPath = path.trim();
+        final isRoot =
+            normalizedPath.isEmpty || normalizedPath == '/' || normalizedPath == '.';
+        if (isRoot) {
+          final options = await _tryOptions(uri);
+          if (options != null && !options.hasDav && !options.allowsPropfind) {
+            final safeUri = _safeUriForLogs(uri);
+            throw SyncAdapterException(
+              'WebDAV endpoint not found: $safeUri',
+              code: 'webdav_endpoint_not_found',
+            );
+          }
+        }
+      }
+      final safeUri = _safeUriForLogs(uri);
+      throw SyncAdapterException(
+        'WebDAV error ${response.statusCode}: PROPFIND $safeUri',
+        code: 'webdav_${response.statusCode}',
+      );
+    }
+    return _parsePropfind(response.bytes, uri);
   }
 
   Future<WebDavRawResponse> propfindRaw(
@@ -566,6 +588,14 @@ class HttpWebDavApiClient implements WebDavApiClient {
         'WebDAV HTTP error: ${error.message}',
         code: 'webdav_http',
       );
+    }
+  }
+
+  Future<WebDavOptionsResult?> _tryOptions(Uri uri) async {
+    try {
+      return await _requestOptions(uri, timeout: _requestTimeout);
+    } on SyncAdapterException {
+      return null;
     }
   }
 

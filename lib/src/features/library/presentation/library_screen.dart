@@ -4,7 +4,9 @@ import 'dart:io';
 import 'package:cogniread/src/core/services/storage_service.dart';
 import 'package:cogniread/src/core/ui/mark_colors.dart';
 import 'package:cogniread/src/core/utils/logger.dart';
+import 'package:cogniread/src/features/ai/ai_models.dart';
 import 'package:cogniread/src/features/library/presentation/library_controller.dart';
+import 'package:cogniread/src/features/library/presentation/book_details_screen.dart';
 import 'package:cogniread/src/features/reader/presentation/reader_screen.dart';
 import 'package:cogniread/src/features/search/presentation/global_search_sheet.dart';
 import 'package:cogniread/src/features/search/search_index_service.dart';
@@ -144,8 +146,20 @@ class _LibraryScreenState extends State<LibraryScreen> {
           initialHighlightId: initialHighlightId,
           initialAnchor: initialAnchor,
           initialSearchQuery: initialSearchQuery,
+          aiConfig: _controller.aiConfig,
         ),
       ),
+    );
+  }
+
+  Future<void> _openBookDetails(LibraryBookItem book) async {
+    if (!mounted) {
+      return;
+    }
+    await BookDetailsScreen.show(
+      context,
+      book: book,
+      aiConfig: _controller.aiConfig,
     );
   }
 
@@ -322,8 +336,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
           : AppBar(
               title: Text(_sectionTitle(_sectionIndex)),
               toolbarHeight: isLandscape ? 48 : null,
-              actionsIconTheme:
-                  isLandscape ? const IconThemeData(size: 20) : null,
+              actionsIconTheme: isLandscape
+                  ? const IconThemeData(size: 20)
+                  : null,
               actions: [
                 if (_sectionIndex == 0) ...[
                   IconButton(
@@ -434,6 +449,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         embedded: false,
         initialQuery: _globalSearchController.text,
         searchIndex: _controller.searchIndex,
+        aiConfig: _controller.aiConfig,
         resolveBookTitle: (bookId) => meta[bookId]?.title ?? 'Книга',
         resolveBookAuthor: (bookId) => meta[bookId]?.author,
         recentQueries: _controller.searchHistory,
@@ -570,11 +586,22 @@ class _LibraryScreenState extends State<LibraryScreen> {
                       ),
                       title: Text(book.title),
                       subtitle: _buildBookSubtitle(book, scheme),
-                      trailing: IconButton(
-                        key: ValueKey('library-delete-$i'),
-                        icon: const Icon(Icons.delete_outline),
-                        onPressed: () => _deleteBook(i),
-                        tooltip: 'Удалить книгу',
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            key: ValueKey('library-details-$i'),
+                            icon: const Icon(Icons.auto_awesome_outlined),
+                            onPressed: () => _openBookDetails(book),
+                            tooltip: 'AI / Сводка',
+                          ),
+                          IconButton(
+                            key: ValueKey('library-delete-$i'),
+                            icon: const Icon(Icons.delete_outline),
+                            onPressed: () => _deleteBook(i),
+                            tooltip: 'Удалить книгу',
+                          ),
+                        ],
                       ),
                       onTap: () => _open(book.id),
                     );
@@ -605,6 +632,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                           key: ValueKey('library-book-grid-$i'),
                           book: book,
                           onTap: () => _open(book.id),
+                          onDetails: () => _openBookDetails(book),
                           onDelete: () => _deleteBook(i),
                         );
                       },
@@ -711,6 +739,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         embedded: true,
         initialQuery: _globalSearchController.text,
         searchIndex: _controller.searchIndex,
+        aiConfig: _controller.aiConfig,
         resolveBookTitle: (bookId) => meta[bookId]?.title ?? 'Книга',
         resolveBookAuthor: (bookId) => meta[bookId]?.author,
         recentQueries: _controller.searchHistory,
@@ -757,9 +786,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 });
               },
               icon: const Icon(Icons.arrow_back),
-              label: Text(
-                backIndex == 3 ? 'Назад к заметкам' : 'Назад',
-              ),
+              label: Text(backIndex == 3 ? 'Назад к заметкам' : 'Назад'),
             ),
           if (backIndex != null) const SizedBox(height: 12),
           Expanded(
@@ -769,6 +796,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
               initialHighlightId: _pendingHighlightId,
               initialAnchor: _pendingAnchor,
               initialSearchQuery: _pendingSearchQuery,
+              aiConfig: _controller.aiConfig,
             ),
           ),
         ],
@@ -814,6 +842,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
             onImport: _importEpub,
             onOpen: (index) => _open(filtered[index].id),
             onDelete: (index) => _deleteBook(index),
+            onDetails: (index) => _openBookDetails(filtered[index]),
             selectedId: _selectedBookId,
             onSelect: (id) {
               setState(() {
@@ -835,6 +864,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
             initialHighlightId: _pendingHighlightId,
             initialAnchor: _pendingAnchor,
             initialSearchQuery: _pendingSearchQuery,
+            aiConfig: _controller.aiConfig,
           ),
         ),
       ],
@@ -1140,6 +1170,86 @@ class _SettingsPanel extends StatelessWidget {
                       ],
                     ),
                     const SizedBox(height: 24),
+                    Text('AI', style: Theme.of(context).textTheme.labelLarge),
+                    const SizedBox(height: 6),
+                    Text(
+                      controller.aiConfig.baseUrl == null
+                          ? 'Endpoint: не задан'
+                          : 'Endpoint: ${controller.aiConfig.baseUrl}',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    if (controller.aiConfig.model != null &&
+                        controller.aiConfig.model!.trim().isNotEmpty)
+                      Text(
+                        'Модель: ${controller.aiConfig.model}',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    if (controller.aiTestOk != null) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        controller.aiTestOk!
+                            ? 'Статус: успешно'
+                            : 'Статус: ошибка',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: controller.aiTestOk!
+                              ? scheme.primary
+                              : scheme.error,
+                        ),
+                      ),
+                    ],
+                    if (controller.aiTestMessage != null) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        controller.aiTestMessage!,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                    if (controller.aiTestAt != null) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        'Проверено: ${controller.aiTestAt!.toLocal()}',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        FilledButton.icon(
+                          onPressed: () =>
+                              _showAiSettingsDialog(context, controller),
+                          icon: const Icon(Icons.auto_awesome_outlined),
+                          label: const Text('Настроить AI'),
+                        ),
+                        if (controller.aiConfig.isConfigured)
+                          OutlinedButton.icon(
+                            onPressed: controller.clearAiConfig,
+                            icon: const Icon(Icons.delete_outline),
+                            label: const Text('Очистить'),
+                          ),
+                        OutlinedButton.icon(
+                          onPressed: controller.aiTestInProgress
+                              ? null
+                              : controller.testAiConnection,
+                          icon: controller.aiTestInProgress
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.check_circle_outline),
+                          label: Text(
+                            controller.aiTestInProgress
+                                ? 'Проверяем...'
+                                : 'Проверить',
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
                     Text(
                       'Диагностика',
                       style: Theme.of(context).textTheme.labelLarge,
@@ -1258,6 +1368,120 @@ class _SettingsPanel extends StatelessWidget {
       return;
     }
     await controller.connectSyncProvider();
+  }
+
+  Future<void> _showAiSettingsDialog(
+    BuildContext context,
+    LibraryController controller,
+  ) async {
+    final config = controller.aiConfig;
+    final baseController = TextEditingController(text: config.baseUrl ?? '');
+    final keyController = TextEditingController(text: config.apiKey ?? '');
+    final modelController = TextEditingController(text: config.model ?? '');
+    final embeddingController = TextEditingController(
+      text: config.embeddingModel ?? '',
+    );
+    String? errorMessage;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('AI настройки'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: baseController,
+                  decoration: const InputDecoration(
+                    labelText: 'AI Endpoint',
+                    hintText: 'https://ai.example.com/',
+                  ),
+                  keyboardType: TextInputType.url,
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: keyController,
+                  decoration: const InputDecoration(
+                    labelText: 'API Key (опционально)',
+                  ),
+                  obscureText: true,
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: modelController,
+                  decoration: const InputDecoration(
+                    labelText: 'Модель (опционально)',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: embeddingController,
+                  decoration: const InputDecoration(
+                    labelText: 'Модель эмбеддингов (опционально)',
+                  ),
+                ),
+                if (errorMessage != null) ...[
+                  const SizedBox(height: 12),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      errorMessage!,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Отмена'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final trimmed = baseController.text.trim();
+                if (trimmed.isNotEmpty) {
+                  final uri = Uri.tryParse(trimmed);
+                  if (uri == null ||
+                      (uri.scheme != 'http' && uri.scheme != 'https')) {
+                    setDialogState(() {
+                      errorMessage =
+                          'Endpoint должен начинаться с http:// или https://';
+                    });
+                    return;
+                  }
+                  final modelText = modelController.text.trim();
+                  final requiresModel = _requiresModel(trimmed);
+                  if (requiresModel && modelText.isEmpty) {
+                    setDialogState(() {
+                      errorMessage =
+                          'Для этого провайдера необходимо указать модель.';
+                    });
+                    return;
+                  }
+                  await controller.updateAiConfig(
+                    baseUrl: trimmed,
+                    apiKey: keyController.text,
+                    model: modelController.text,
+                    embeddingModel: embeddingController.text,
+                  );
+                } else {
+                  await controller.clearAiConfig();
+                }
+                if (context.mounted) {
+                  Navigator.of(context).pop();
+                }
+              },
+              child: const Text('Сохранить'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _showNasDialog(
@@ -2056,8 +2280,9 @@ class _NotesPanelState extends State<_NotesPanel> {
         final padding = compact
             ? const EdgeInsets.symmetric(horizontal: 4)
             : EdgeInsets.zero;
-        final density =
-            compact ? VisualDensity.compact : VisualDensity.standard;
+        final density = compact
+            ? VisualDensity.compact
+            : VisualDensity.standard;
 
         List<Widget> buildActions() {
           final actions = <Widget>[
@@ -2164,22 +2389,14 @@ class _NotesPanelState extends State<_NotesPanel> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Expanded(child: title),
-              ],
-            ),
+            Row(children: [Expanded(child: title)]),
             const SizedBox(height: 8),
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: segmented,
             ),
             const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: buildActions(),
-            ),
+            Wrap(spacing: 8, runSpacing: 8, children: buildActions()),
           ],
         );
       },
@@ -2636,6 +2853,7 @@ class _LibraryPanel extends StatelessWidget {
     required this.onImport,
     required this.onOpen,
     required this.onDelete,
+    required this.onDetails,
     required this.selectedId,
     required this.onSelect,
   });
@@ -2654,6 +2872,7 @@ class _LibraryPanel extends StatelessWidget {
   final VoidCallback onImport;
   final ValueChanged<int> onOpen;
   final ValueChanged<int> onDelete;
+  final ValueChanged<int> onDetails;
   final String? selectedId;
   final ValueChanged<String> onSelect;
 
@@ -2667,8 +2886,9 @@ class _LibraryPanel extends StatelessWidget {
         final padding = compact
             ? const EdgeInsets.symmetric(horizontal: 4)
             : EdgeInsets.zero;
-        final density =
-            compact ? VisualDensity.compact : VisualDensity.standard;
+        final density = compact
+            ? VisualDensity.compact
+            : VisualDensity.standard;
 
         List<Widget> buildActions({required bool compactMode}) {
           final actions = <Widget>[
@@ -2747,12 +2967,8 @@ class _LibraryPanel extends StatelessWidget {
                         maxLines: 1,
                         softWrap: false,
                         overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context)
-                            .textTheme
-                            .headlineSmall
-                            ?.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
+                        style: Theme.of(context).textTheme.headlineSmall
+                            ?.copyWith(fontWeight: FontWeight.w600),
                       ),
                     ),
                     ...buildActions(compactMode: false),
@@ -2764,81 +2980,84 @@ class _LibraryPanel extends StatelessWidget {
                   runSpacing: 6,
                   children: buildActions(compactMode: true),
                 ),
-          const SizedBox(height: 16),
-          if (showSearch) ...[
-            TextField(
-              key: const ValueKey('library-search-field'),
-              controller: searchController,
-              onChanged: onQueryChanged,
-              decoration: InputDecoration(
-                hintText: 'Поиск по библиотеке',
-                prefixIcon: const Icon(Icons.search),
-                filled: true,
-                fillColor: scheme.surfaceContainerHighest.withAlpha(128),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(14),
-                  borderSide: BorderSide(color: scheme.outlineVariant),
+              const SizedBox(height: 16),
+              if (showSearch) ...[
+                TextField(
+                  key: const ValueKey('library-search-field'),
+                  controller: searchController,
+                  onChanged: onQueryChanged,
+                  decoration: InputDecoration(
+                    hintText: 'Поиск по библиотеке',
+                    prefixIcon: const Icon(Icons.search),
+                    filled: true,
+                    fillColor: scheme.surfaceContainerHighest.withAlpha(128),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide(color: scheme.outlineVariant),
+                    ),
+                  ),
                 ),
-              ),
-            ),
-            const SizedBox(height: 16),
-          ],
-          Expanded(
-            child: loading
-                ? const Center(child: CircularProgressIndicator())
-                : books.isEmpty
-                ? _LibraryEmpty(onImport: onImport)
-                : viewMode == LibraryViewMode.list
-                ? ListView.separated(
-                    itemCount: books.length,
-                    separatorBuilder: (_, _) => const SizedBox(height: 12),
-                    itemBuilder: (context, index) {
-                      final book = books[index];
-                      return _BookCard(
-                        key: ValueKey('library-book-card-$index'),
-                        book: book,
-                        index: index,
-                        selected: book.id == selectedId,
-                        onTap: () {
-                          onSelect(book.id);
-                          onOpen(index);
-                        },
-                        onDelete: () => onDelete(index),
-                      );
-                    },
-                  )
-                : LayoutBuilder(
-                    builder: (context, constraints) {
-                      final crossAxisCount = (constraints.maxWidth / 200)
-                          .floor()
-                          .clamp(3, 5);
-                      return GridView.builder(
-                        padding: const EdgeInsets.all(8),
-                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: crossAxisCount,
-                          mainAxisSpacing: 12,
-                          crossAxisSpacing: 12,
-                          childAspectRatio: 0.68,
-                        ),
+                const SizedBox(height: 16),
+              ],
+              Expanded(
+                child: loading
+                    ? const Center(child: CircularProgressIndicator())
+                    : books.isEmpty
+                    ? _LibraryEmpty(onImport: onImport)
+                    : viewMode == LibraryViewMode.list
+                    ? ListView.separated(
                         itemCount: books.length,
+                        separatorBuilder: (_, _) => const SizedBox(height: 12),
                         itemBuilder: (context, index) {
                           final book = books[index];
-                          return _BookGridTile(
-                            key: ValueKey('library-book-grid-$index'),
+                          return _BookCard(
+                            key: ValueKey('library-book-card-$index'),
                             book: book,
+                            index: index,
                             selected: book.id == selectedId,
                             onTap: () {
                               onSelect(book.id);
                               onOpen(index);
                             },
+                            onDetails: () => onDetails(index),
                             onDelete: () => onDelete(index),
                           );
                         },
-                      );
-                    },
-                  ),
-          ),
-        ],
+                      )
+                    : LayoutBuilder(
+                        builder: (context, constraints) {
+                          final crossAxisCount = (constraints.maxWidth / 200)
+                              .floor()
+                              .clamp(3, 5);
+                          return GridView.builder(
+                            padding: const EdgeInsets.all(8),
+                            gridDelegate:
+                                SliverGridDelegateWithFixedCrossAxisCount(
+                                  crossAxisCount: crossAxisCount,
+                                  mainAxisSpacing: 12,
+                                  crossAxisSpacing: 12,
+                                  childAspectRatio: 0.68,
+                                ),
+                            itemCount: books.length,
+                            itemBuilder: (context, index) {
+                              final book = books[index];
+                              return _BookGridTile(
+                                key: ValueKey('library-book-grid-$index'),
+                                book: book,
+                                selected: book.id == selectedId,
+                                onTap: () {
+                                  onSelect(book.id);
+                                  onOpen(index);
+                                },
+                                onDetails: () => onDetails(index),
+                                onDelete: () => onDelete(index),
+                              );
+                            },
+                          );
+                        },
+                      ),
+              ),
+            ],
           ),
         );
       },
@@ -2853,6 +3072,7 @@ class _BookCard extends StatelessWidget {
     required this.index,
     required this.selected,
     required this.onTap,
+    required this.onDetails,
     required this.onDelete,
   });
 
@@ -2860,6 +3080,7 @@ class _BookCard extends StatelessWidget {
   final int index;
   final bool selected;
   final VoidCallback onTap;
+  final VoidCallback onDetails;
   final VoidCallback onDelete;
 
   @override
@@ -2919,6 +3140,12 @@ class _BookCard extends StatelessWidget {
                     ),
                   ],
                 ),
+              ),
+              IconButton(
+                key: ValueKey('library-details-$index'),
+                onPressed: onDetails,
+                icon: const Icon(Icons.auto_awesome_outlined),
+                tooltip: 'AI / Сводка',
               ),
               IconButton(
                 key: ValueKey('library-delete-$index'),
@@ -3038,12 +3265,14 @@ class _BookGridTile extends StatelessWidget {
     super.key,
     required this.book,
     required this.onTap,
+    required this.onDetails,
     required this.onDelete,
     this.selected = false,
   });
 
   final LibraryBookItem book;
   final VoidCallback onTap;
+  final VoidCallback onDetails;
   final VoidCallback onDelete;
   final bool selected;
 
@@ -3102,9 +3331,17 @@ class _BookGridTile extends StatelessWidget {
                 else
                   const Spacer(),
                 IconButton(
+                  key: ValueKey('library-details-grid-${book.id}'),
+                  onPressed: onDetails,
+                  icon: const Icon(Icons.auto_awesome_outlined, size: 18),
+                  tooltip: 'AI / Сводка',
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                ),
+                IconButton(
                   key: ValueKey('library-delete-grid-${book.id}'),
                   onPressed: onDelete,
-                  icon: const Icon(Icons.more_horiz, size: 18),
+                  icon: const Icon(Icons.delete_outline, size: 18),
                   tooltip: 'Удалить книгу',
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(),
@@ -3372,6 +3609,7 @@ class _ReaderPanel extends StatelessWidget {
     required this.initialHighlightId,
     required this.initialAnchor,
     required this.initialSearchQuery,
+    this.aiConfig,
   });
 
   final String? bookId;
@@ -3379,6 +3617,7 @@ class _ReaderPanel extends StatelessWidget {
   final String? initialHighlightId;
   final String? initialAnchor;
   final String? initialSearchQuery;
+  final AiConfig? aiConfig;
 
   @override
   Widget build(BuildContext context) {
@@ -3406,6 +3645,7 @@ class _ReaderPanel extends StatelessWidget {
       initialHighlightId: initialHighlightId,
       initialAnchor: initialAnchor,
       initialSearchQuery: initialSearchQuery,
+      aiConfig: aiConfig,
     );
   }
 }
@@ -3414,4 +3654,33 @@ String _formatDate(DateTime date) {
   return '${date.day.toString().padLeft(2, '0')}.'
       '${date.month.toString().padLeft(2, '0')}.'
       '${date.year}';
+}
+
+bool _isOpenAiCompatibleEndpoint(String baseUrl) {
+  final uri = Uri.tryParse(baseUrl.trim());
+  if (uri == null) {
+    return false;
+  }
+  final host = uri.host.toLowerCase();
+  if (host.contains('openai.com') || host.contains('groq.com')) {
+    return true;
+  }
+  return uri.path.toLowerCase().contains('/openai/');
+}
+
+bool _isGeminiEndpoint(String baseUrl) {
+  final uri = Uri.tryParse(baseUrl.trim());
+  if (uri == null) {
+    return false;
+  }
+  final host = uri.host.toLowerCase();
+  if (host.contains('generativelanguage.googleapis.com') ||
+      host.contains('ai.google.dev')) {
+    return true;
+  }
+  return false;
+}
+
+bool _requiresModel(String baseUrl) {
+  return _isOpenAiCompatibleEndpoint(baseUrl) || _isGeminiEndpoint(baseUrl);
 }

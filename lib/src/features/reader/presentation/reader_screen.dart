@@ -10,7 +10,10 @@ import 'package:cogniread/src/core/types/anchor.dart';
 import 'package:cogniread/src/core/types/toc.dart';
 import 'package:cogniread/src/core/ui/mark_colors.dart';
 import 'package:cogniread/src/core/utils/logger.dart';
+import 'package:cogniread/src/features/ai/ai_models.dart';
+import 'package:cogniread/src/features/ai/presentation/ai_panel.dart';
 import 'package:cogniread/src/features/reader/presentation/reader_controller.dart';
+import 'package:cogniread/src/features/library/data/library_preferences_store.dart';
 import 'package:cogniread/src/features/library/data/library_store.dart';
 import 'package:cogniread/src/features/search/search_models.dart';
 
@@ -25,6 +28,7 @@ class ReaderScreen extends StatefulWidget {
     this.initialHighlightId,
     this.initialAnchor,
     this.initialSearchQuery,
+    this.aiConfig,
   });
 
   final String bookId;
@@ -35,6 +39,7 @@ class ReaderScreen extends StatefulWidget {
   final String? initialHighlightId;
   final String? initialAnchor;
   final String? initialSearchQuery;
+  final AiConfig? aiConfig;
 
   @override
   State<ReaderScreen> createState() => _ReaderScreenState();
@@ -67,6 +72,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
   String? _pendingInitialSearchQuery;
   bool _initialJumpDone = false;
   bool _skipRestore = false;
+  AiConfig? _resolvedAiConfig;
+  bool _aiConfigLoaded = false;
 
   @override
   void initState() {
@@ -100,6 +107,15 @@ class _ReaderScreenState extends State<ReaderScreen> {
   @override
   void didUpdateWidget(covariant ReaderScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.aiConfig != oldWidget.aiConfig) {
+      if (widget.aiConfig != null) {
+        _resolvedAiConfig = widget.aiConfig;
+        _aiConfigLoaded = true;
+      } else {
+        _resolvedAiConfig = null;
+        _aiConfigLoaded = false;
+      }
+    }
     if (widget.bookId != oldWidget.bookId) {
       _positionDebounce?.cancel();
       _persistReadingPositionFor(oldWidget.bookId);
@@ -1643,6 +1659,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
             icon: const Icon(Icons.search),
           ),
           IconButton(
+            tooltip: 'AI',
+            onPressed: _showAiPanel,
+            icon: const Icon(Icons.auto_awesome_outlined),
+          ),
+          IconButton(
             tooltip: _controller.bookmark == null
                 ? 'Добавить закладку'
                 : 'Удалить закладку',
@@ -1734,6 +1755,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                         onBookmarkToggle: _toggleBookmark,
                         onBookmarksTap: _showBookmarks,
                         onSearchTap: _showSearch,
+                        onAiTap: _showAiPanel,
                       ),
                       const SizedBox(height: 16),
                     ],
@@ -1817,6 +1839,113 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
+  Future<void> _showAiPanel() async {
+    if (_controller.loading || _controller.chapters.isEmpty) {
+      return;
+    }
+    final config = await _ensureAiConfig();
+    final chapterIndex = _currentVisibleChapterIndex() ?? 0;
+    if (chapterIndex < 0 || chapterIndex >= _controller.chapters.length) {
+      return;
+    }
+    final chapter = _controller.chapters[chapterIndex];
+    final chapterText = _chapterPlainText(chapterIndex);
+    final chapterScopeId = _chapterScopeId(chapterIndex);
+    final contexts = <String, AiContext>{
+      chapterScopeId: AiContext(text: chapterText, title: chapter.title),
+    };
+    final scopes = <AiScope>[
+      AiScope(type: AiScopeType.chapter, id: chapterScopeId, label: 'Глава'),
+    ];
+    final selectionText = _selectionText?.trim();
+    final selectionRange = _selectionRange;
+    final selectionIndex = _selectionChapterIndex;
+    if (selectionText != null &&
+        selectionText.isNotEmpty &&
+        selectionRange != null &&
+        selectionIndex != null) {
+      final selectionId = _selectionScopeId(selectionIndex, selectionRange);
+      contexts[selectionId] = AiContext(
+        text: selectionText,
+        title: 'Выделение',
+      );
+      scopes.add(
+        AiScope(
+          type: AiScopeType.selection,
+          id: selectionId,
+          label: 'Выделение',
+        ),
+      );
+    }
+    if (!mounted) {
+      return;
+    }
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) {
+        final media = MediaQuery.of(context);
+        final height = media.size.height * 0.85;
+        return SizedBox(
+          height: height,
+          child: AiPanel(
+            title: chapter.title.isEmpty ? 'AI' : 'AI · ${chapter.title}',
+            config: config,
+            scopes: scopes,
+            contextProvider: (scope) async {
+              final context = contexts[scope.id];
+              if (context == null) {
+                throw StateError('Контекст недоступен');
+              }
+              return context;
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  Future<AiConfig> _ensureAiConfig() async {
+    if (_aiConfigLoaded) {
+      return _resolvedAiConfig ?? const AiConfig();
+    }
+    final provided = widget.aiConfig;
+    if (provided != null) {
+      _resolvedAiConfig = provided;
+      _aiConfigLoaded = true;
+      return provided;
+    }
+    final store = LibraryPreferencesStore();
+    await store.init();
+    _resolvedAiConfig = await store.loadAiConfig();
+    _aiConfigLoaded = true;
+    return _resolvedAiConfig ?? const AiConfig();
+  }
+
+  int? _currentVisibleChapterIndex() {
+    final positions = _itemPositionsListener.itemPositions.value;
+    if (positions.isEmpty) {
+      return null;
+    }
+    final visible = positions.toList()
+      ..sort((a, b) => a.index.compareTo(b.index));
+    final active = visible.firstWhere(
+      (pos) => pos.itemLeadingEdge <= 0 && pos.itemTrailingEdge > 0,
+      orElse: () => visible.first,
+    );
+    return active.index;
+  }
+
+  String _chapterScopeId(int index) {
+    final chapter = _controller.chapters[index];
+    final href = chapter.href ?? 'index:$index';
+    return '${widget.bookId}:$href';
+  }
+
+  String _selectionScopeId(int chapterIndex, SelectedContentRange range) {
+    return 'sel:${widget.bookId}:$chapterIndex:${range.startOffset}-${range.endOffset}';
+  }
+
   void _showToc() {
     showModalBottomSheet<void>(
       context: context,
@@ -1828,10 +1957,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
             final hasGenerated = _controller.hasGeneratedToc;
             final mode = _controller.tocMode;
             final media = MediaQuery.of(context);
-            final isLandscape =
-                media.orientation == Orientation.landscape;
-            final height =
-                media.size.height * (isLandscape ? 0.92 : 0.85);
+            final isLandscape = media.orientation == Orientation.landscape;
+            final height = media.size.height * (isLandscape ? 0.92 : 0.85);
             return SafeArea(
               child: SizedBox(
                 height: height,
@@ -2262,6 +2389,7 @@ class _ReaderHeader extends StatelessWidget {
     required this.onBookmarkToggle,
     required this.onBookmarksTap,
     required this.onSearchTap,
+    required this.onAiTap,
   });
 
   final String title;
@@ -2274,14 +2402,16 @@ class _ReaderHeader extends StatelessWidget {
   final VoidCallback onBookmarkToggle;
   final VoidCallback onBookmarksTap;
   final VoidCallback onSearchTap;
+  final VoidCallback onAiTap;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     Widget buildActionsRow({required bool compact}) {
       final iconSize = compact ? 20.0 : 24.0;
-      final padding =
-          compact ? const EdgeInsets.symmetric(horizontal: 4) : EdgeInsets.zero;
+      final padding = compact
+          ? const EdgeInsets.symmetric(horizontal: 4)
+          : EdgeInsets.zero;
       final density = compact ? VisualDensity.compact : VisualDensity.standard;
       return Row(
         mainAxisSize: MainAxisSize.min,
@@ -2299,6 +2429,14 @@ class _ReaderHeader extends StatelessWidget {
             tooltip: 'Поиск',
             onPressed: onSearchTap,
             icon: Icon(Icons.search, color: scheme.primary),
+            iconSize: iconSize,
+            padding: padding,
+            visualDensity: density,
+          ),
+          IconButton(
+            tooltip: 'AI',
+            onPressed: onAiTap,
+            icon: Icon(Icons.auto_awesome_outlined, color: scheme.primary),
             iconSize: iconSize,
             padding: padding,
             visualDensity: density,

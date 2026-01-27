@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:cogniread/src/core/services/hive_bootstrap.dart';
+import 'package:cogniread/src/features/ai/ai_models.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 class LibraryPreferencesStore {
@@ -11,6 +12,10 @@ class LibraryPreferencesStore {
   static const String _syncOAuthConfigKey = 'sync_oauth_config';
   static const String _syncStatusKey = 'sync_status';
   static const String _searchHistoryKey = 'search_history';
+  static const String _aiBaseUrlKey = 'ai_base_url';
+  static const String _aiApiKeyKey = 'ai_api_key';
+  static const String _aiModelKey = 'ai_model';
+  static const String _aiEmbeddingModelKey = 'ai_embedding_model';
   Box<dynamic>? _box;
 
   Future<void> init() async {
@@ -142,6 +147,53 @@ class LibraryPreferencesStore {
 
   Future<void> clearSearchHistory() async {
     await _requireBox.delete(_searchHistoryKey);
+  }
+
+  Future<AiConfig> loadAiConfig() async {
+    final baseUrl = _requireBox.get(_aiBaseUrlKey) as String?;
+    final apiKey = _requireBox.get(_aiApiKeyKey) as String?;
+    final model = _requireBox.get(_aiModelKey) as String?;
+    final embeddingModel = _requireBox.get(_aiEmbeddingModelKey) as String?;
+    return AiConfig(
+      baseUrl: baseUrl?.trim().isEmpty == true ? null : baseUrl?.trim(),
+      apiKey: apiKey?.trim().isEmpty == true ? null : apiKey?.trim(),
+      model: model?.trim().isEmpty == true ? null : model?.trim(),
+      embeddingModel:
+          embeddingModel?.trim().isEmpty == true
+              ? null
+              : embeddingModel?.trim(),
+    );
+  }
+
+  Future<void> saveAiConfig(AiConfig config) async {
+    final baseUrl = config.baseUrl?.trim() ?? '';
+    if (baseUrl.isEmpty) {
+      await _requireBox.delete(_aiBaseUrlKey);
+      await _requireBox.delete(_aiApiKeyKey);
+      await _requireBox.delete(_aiModelKey);
+      await _requireBox.delete(_aiEmbeddingModelKey);
+      return;
+    }
+    await _requireBox.put(_aiBaseUrlKey, baseUrl);
+    if (config.apiKey != null && config.apiKey!.trim().isNotEmpty) {
+      await _requireBox.put(_aiApiKeyKey, config.apiKey!.trim());
+    } else {
+      await _requireBox.delete(_aiApiKeyKey);
+    }
+    if (config.model != null && config.model!.trim().isNotEmpty) {
+      await _requireBox.put(_aiModelKey, config.model!.trim());
+    } else {
+      await _requireBox.delete(_aiModelKey);
+    }
+    if (config.embeddingModel != null &&
+        config.embeddingModel!.trim().isNotEmpty) {
+      await _requireBox.put(
+        _aiEmbeddingModelKey,
+        config.embeddingModel!.trim(),
+      );
+    } else {
+      await _requireBox.delete(_aiEmbeddingModelKey);
+    }
   }
 }
 

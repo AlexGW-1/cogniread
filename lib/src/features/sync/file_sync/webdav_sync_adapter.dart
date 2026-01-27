@@ -25,7 +25,10 @@ class WebDavSyncAdapter implements SyncAdapter {
     final all = <SyncFileRef>[];
     all.addAll(await _listFilesAtBase(_basePath, allowCreate: true));
     final legacy = _legacyBasePath;
-    if (legacy != null && legacy.isNotEmpty && legacy != _basePath) {
+    if (legacy != null &&
+        legacy.isNotEmpty &&
+        legacy != _basePath &&
+        all.isEmpty) {
       try {
         all.addAll(await _listFilesAtBase(legacy, allowCreate: false));
       } on SyncAdapterException catch (error) {
@@ -163,7 +166,18 @@ class WebDavSyncAdapter implements SyncAdapter {
       if (allowCreate &&
           (error.code == 'webdav_404' || error.code == 'webdav_405')) {
         await _ensureBaseFolder();
-        items = await _apiClient.listFolder(basePath);
+        try {
+          items = await _apiClient.listFolder(basePath);
+        } on SyncAdapterException catch (error) {
+          if (error.code == 'webdav_405') {
+            Log.d(
+              'WebDAV listFiles: PROPFIND not supported for $basePath, '
+              'returning empty list',
+            );
+            return const <SyncFileRef>[];
+          }
+          rethrow;
+        }
       } else if (!allowCreate &&
           (error.code == 'webdav_404' || error.code == 'webdav_405')) {
         return const <SyncFileRef>[];

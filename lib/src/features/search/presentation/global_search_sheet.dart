@@ -1,6 +1,8 @@
+import 'package:cogniread/src/features/ai/ai_models.dart';
 import 'package:cogniread/src/features/search/presentation/global_search_controller.dart';
 import 'package:cogniread/src/features/search/search_index_service.dart';
 import 'package:cogniread/src/features/search/search_models.dart';
+import 'package:cogniread/src/features/search/semantic/semantic_search_service.dart';
 import 'package:flutter/material.dart';
 
 typedef BookTitleResolver = String Function(String bookId);
@@ -15,6 +17,7 @@ class GlobalSearchScreen extends StatefulWidget {
     this.searchIndex,
     this.initialQuery = '',
     this.embedded = false,
+    this.aiConfig = const AiConfig(),
     this.onSaveQuery,
     this.recentQueries = const <String>[],
     this.onClearRecentQueries,
@@ -36,6 +39,7 @@ class GlobalSearchScreen extends StatefulWidget {
   final SearchIndexService? searchIndex;
   final String initialQuery;
   final bool embedded;
+  final AiConfig aiConfig;
   final ValueChanged<String>? onSaveQuery;
   final List<String> recentQueries;
   final VoidCallback? onClearRecentQueries;
@@ -120,7 +124,10 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
   @override
   void initState() {
     super.initState();
-    _controller = GlobalSearchController(searchIndex: widget.searchIndex);
+    _controller = GlobalSearchController(
+      searchIndex: widget.searchIndex,
+      aiConfig: widget.aiConfig,
+    );
     _textController = TextEditingController(text: widget.initialQuery);
     _tabController = TabController(length: 3, vsync: this);
     _recentQueries = List<String>.from(widget.recentQueries);
@@ -143,6 +150,14 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
     _textController.dispose();
     _controller.dispose();
     super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant GlobalSearchScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.aiConfig != widget.aiConfig) {
+      _controller.setAiConfig(widget.aiConfig);
+    }
   }
 
   GlobalSearchTab _tabForIndex(int index) {
@@ -177,6 +192,37 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
     return '$base · $title';
   }
 
+  String _semanticRebuildLabel(SemanticSearchRebuildProgress? progress) {
+    if (progress == null) {
+      return 'Подготовка эмбеддингов…';
+    }
+    final title = progress.currentTitle?.trim();
+    final message = progress.message?.trim();
+    final total = progress.totalItems;
+    final processed = progress.processedItems;
+    final base =
+        total > 0 ? 'Эмбеддинги: $processed/$total' : 'Эмбеддинги: $processed';
+    if (message != null && message.isNotEmpty) {
+      return '$base · $message';
+    }
+    if (title == null || title.isEmpty) {
+      return base;
+    }
+    return '$base · $title';
+  }
+
+  bool _isSemanticConfigReady(AiConfig config) {
+    if (!config.isConfigured) {
+      return false;
+    }
+    final model = config.embeddingModel?.trim();
+    if (model != null && model.isNotEmpty) {
+      return true;
+    }
+    final fallback = config.model?.trim();
+    return fallback != null && fallback.isNotEmpty;
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -189,10 +235,31 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
         builder: (context, _) {
           final query = _controller.query.trim();
           final searching = _controller.searching;
-          final rebuilding = _controller.rebuilding;
-          final rebuildProgress = _controller.rebuildProgress;
-          final cancelingRebuild = _controller.cancelingRebuild;
-          final error = _controller.error ?? _controller.status?.lastError;
+          final mode = _controller.mode;
+          final isSemantic = mode == GlobalSearchMode.semantic;
+          final rebuilding = isSemantic
+              ? _controller.semanticRebuilding
+              : _controller.rebuilding;
+          final lexicalProgress = _controller.rebuildProgress;
+          final semanticProgress = _controller.semanticRebuildProgress;
+          final progressValue = isSemantic
+              ? semanticProgress?.fraction
+              : lexicalProgress?.fraction;
+          final cancelingRebuild = isSemantic
+              ? _controller.semanticCancelingRebuild
+              : _controller.cancelingRebuild;
+          final error = isSemantic
+              ? (_controller.semanticError ??
+                  _controller.semanticStatus?.lastError)
+              : (_controller.error ?? _controller.status?.lastError);
+          final semanticStatus = _controller.semanticStatus;
+          final semanticItems = semanticStatus?.itemsCount ?? 0;
+          final semanticConfigReady = _isSemanticConfigReady(widget.aiConfig);
+          final showSemanticEmptyState =
+              isSemantic &&
+              !rebuilding &&
+              semanticItems == 0 &&
+              (error == null || error.trim().isEmpty);
           final tooShort =
               query.isNotEmpty &&
               query.length < GlobalSearchController.minQueryLength;
@@ -222,6 +289,29 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
                             horizontal: 12,
                           )
                         : null,
+                  ),
+                ),
+                SizedBox(height: gap),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: SegmentedButton<GlobalSearchMode>(
+                    segments: const [
+                      ButtonSegment(
+                        value: GlobalSearchMode.lexical,
+                        label: Text('Текстовый'),
+                      ),
+                      ButtonSegment(
+                        value: GlobalSearchMode.semantic,
+                        label: Text('Семантический'),
+                      ),
+                    ],
+                    selected: {mode},
+                    onSelectionChanged: (selection) {
+                      if (selection.isEmpty) {
+                        return;
+                      }
+                      _controller.setMode(selection.first);
+                    },
                   ),
                 ),
                 SizedBox(height: gap),
@@ -260,18 +350,23 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
                       children: [
                         Row(
                           children: [
-                            const Expanded(
+                            Expanded(
                               child: Text(
-                                'Индексирование',
-                                style: TextStyle(fontWeight: FontWeight.w600),
+                                isSemantic ? 'Эмбеддинги' : 'Индексирование',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
                             ),
                             TextButton(
                               onPressed:
                                   (cancelingRebuild ||
-                                      rebuildProgress?.stage == 'marks')
+                                      (!isSemantic &&
+                                          lexicalProgress?.stage == 'marks'))
                                   ? null
-                                  : _controller.cancelRebuild,
+                                  : (isSemantic
+                                        ? _controller.cancelSemanticRebuild
+                                        : _controller.cancelRebuild),
                               child: Text(
                                 cancelingRebuild ? 'Отмена…' : 'Отменить',
                               ),
@@ -280,15 +375,52 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
                         ),
                         const SizedBox(height: 8),
                         LinearProgressIndicator(
-                          value: rebuildProgress?.fraction,
+                          value: progressValue,
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          _rebuildLabel(rebuildProgress),
+                          isSemantic
+                              ? _semanticRebuildLabel(semanticProgress)
+                              : _rebuildLabel(lexicalProgress),
                           style: Theme.of(context).textTheme.bodySmall,
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                         ),
+                      ],
+                    ),
+                  ),
+                  SizedBox(height: gap),
+                ],
+                if (showSemanticEmptyState) ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: scheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Семантический индекс не построен',
+                          style: TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          semanticConfigReady
+                              ? 'Постройте эмбеддинги, чтобы искать по смыслу.'
+                              : 'Укажите AI endpoint и модель эмбеддингов в настройках.',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                        if (semanticConfigReady) ...[
+                          const SizedBox(height: 10),
+                          FilledButton.icon(
+                            onPressed: _controller.rebuildSemanticIndex,
+                            icon: const Icon(Icons.auto_awesome),
+                            label: const Text('Построить эмбеддинги'),
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -307,7 +439,9 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Поиск недоступен',
+                          isSemantic
+                              ? 'Семантический поиск недоступен'
+                              : 'Поиск недоступен',
                           style: TextStyle(
                             color: scheme.onErrorContainer,
                             fontWeight: FontWeight.w600,
@@ -324,9 +458,21 @@ class _GlobalSearchScreenState extends State<GlobalSearchScreen>
                         FilledButton.icon(
                           onPressed: rebuilding
                               ? null
-                              : _controller.rebuildIndex,
-                          icon: const Icon(Icons.restart_alt),
-                          label: const Text('Перестроить индекс'),
+                              : (isSemantic
+                                    ? (semanticConfigReady
+                                          ? _controller.rebuildSemanticIndex
+                                          : null)
+                                    : _controller.rebuildIndex),
+                          icon: Icon(
+                            isSemantic
+                                ? Icons.auto_awesome
+                                : Icons.restart_alt,
+                          ),
+                          label: Text(
+                            isSemantic
+                                ? 'Перестроить эмбеддинги'
+                                : 'Перестроить индекс',
+                          ),
                         ),
                       ],
                     ),
@@ -455,6 +601,7 @@ class GlobalSearchSheet extends StatefulWidget {
     required this.resolveBookAuthor,
     this.searchIndex,
     this.initialQuery = '',
+    this.aiConfig = const AiConfig(),
     this.onSaveQuery,
     this.recentQueries = const <String>[],
     this.onClearRecentQueries,
@@ -475,6 +622,7 @@ class GlobalSearchSheet extends StatefulWidget {
   final BookAuthorResolver resolveBookAuthor;
   final SearchIndexService? searchIndex;
   final String initialQuery;
+  final AiConfig aiConfig;
   final ValueChanged<String>? onSaveQuery;
   final List<String> recentQueries;
   final VoidCallback? onClearRecentQueries;
@@ -559,7 +707,10 @@ class _GlobalSearchSheetState extends State<GlobalSearchSheet>
   @override
   void initState() {
     super.initState();
-    _controller = GlobalSearchController(searchIndex: widget.searchIndex);
+    _controller = GlobalSearchController(
+      searchIndex: widget.searchIndex,
+      aiConfig: widget.aiConfig,
+    );
     _textController = TextEditingController(text: widget.initialQuery);
     _tabController = TabController(length: 3, vsync: this);
     _recentQueries = List<String>.from(widget.recentQueries);
@@ -582,6 +733,14 @@ class _GlobalSearchSheetState extends State<GlobalSearchSheet>
     _textController.dispose();
     _controller.dispose();
     super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant GlobalSearchSheet oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.aiConfig != widget.aiConfig) {
+      _controller.setAiConfig(widget.aiConfig);
+    }
   }
 
   GlobalSearchTab _tabForIndex(int index) {
@@ -616,6 +775,37 @@ class _GlobalSearchSheetState extends State<GlobalSearchSheet>
     return '$base · $title';
   }
 
+  String _semanticRebuildLabel(SemanticSearchRebuildProgress? progress) {
+    if (progress == null) {
+      return 'Подготовка эмбеддингов…';
+    }
+    final title = progress.currentTitle?.trim();
+    final message = progress.message?.trim();
+    final total = progress.totalItems;
+    final processed = progress.processedItems;
+    final base =
+        total > 0 ? 'Эмбеддинги: $processed/$total' : 'Эмбеддинги: $processed';
+    if (message != null && message.isNotEmpty) {
+      return '$base · $message';
+    }
+    if (title == null || title.isEmpty) {
+      return base;
+    }
+    return '$base · $title';
+  }
+
+  bool _isSemanticConfigReady(AiConfig config) {
+    if (!config.isConfigured) {
+      return false;
+    }
+    final model = config.embeddingModel?.trim();
+    if (model != null && model.isNotEmpty) {
+      return true;
+    }
+    final fallback = config.model?.trim();
+    return fallback != null && fallback.isNotEmpty;
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -625,10 +815,31 @@ class _GlobalSearchSheetState extends State<GlobalSearchSheet>
         builder: (context, _) {
           final query = _controller.query.trim();
           final searching = _controller.searching;
-          final rebuilding = _controller.rebuilding;
-          final rebuildProgress = _controller.rebuildProgress;
-          final cancelingRebuild = _controller.cancelingRebuild;
-          final error = _controller.error ?? _controller.status?.lastError;
+          final mode = _controller.mode;
+          final isSemantic = mode == GlobalSearchMode.semantic;
+          final rebuilding = isSemantic
+              ? _controller.semanticRebuilding
+              : _controller.rebuilding;
+          final lexicalProgress = _controller.rebuildProgress;
+          final semanticProgress = _controller.semanticRebuildProgress;
+          final progressValue = isSemantic
+              ? semanticProgress?.fraction
+              : lexicalProgress?.fraction;
+          final cancelingRebuild = isSemantic
+              ? _controller.semanticCancelingRebuild
+              : _controller.cancelingRebuild;
+          final error = isSemantic
+              ? (_controller.semanticError ??
+                  _controller.semanticStatus?.lastError)
+              : (_controller.error ?? _controller.status?.lastError);
+          final semanticStatus = _controller.semanticStatus;
+          final semanticItems = semanticStatus?.itemsCount ?? 0;
+          final semanticConfigReady = _isSemanticConfigReady(widget.aiConfig);
+          final showSemanticEmptyState =
+              isSemantic &&
+              !rebuilding &&
+              semanticItems == 0 &&
+              (error == null || error.trim().isEmpty);
           final tooShort =
               query.isNotEmpty &&
               query.length < GlobalSearchController.minQueryLength;
@@ -675,6 +886,29 @@ class _GlobalSearchSheetState extends State<GlobalSearchSheet>
                   ),
                 ),
                 const SizedBox(height: 12),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: SegmentedButton<GlobalSearchMode>(
+                    segments: const [
+                      ButtonSegment(
+                        value: GlobalSearchMode.lexical,
+                        label: Text('Текстовый'),
+                      ),
+                      ButtonSegment(
+                        value: GlobalSearchMode.semantic,
+                        label: Text('Семантический'),
+                      ),
+                    ],
+                    selected: {mode},
+                    onSelectionChanged: (selection) {
+                      if (selection.isEmpty) {
+                        return;
+                      }
+                      _controller.setMode(selection.first);
+                    },
+                  ),
+                ),
+                const SizedBox(height: 12),
                 TabBar(
                   controller: _tabController,
                   tabs: const [
@@ -698,18 +932,23 @@ class _GlobalSearchSheetState extends State<GlobalSearchSheet>
                       children: [
                         Row(
                           children: [
-                            const Expanded(
+                            Expanded(
                               child: Text(
-                                'Индексирование',
-                                style: TextStyle(fontWeight: FontWeight.w600),
+                                isSemantic ? 'Эмбеддинги' : 'Индексирование',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
                             ),
                             TextButton(
                               onPressed:
                                   (cancelingRebuild ||
-                                      rebuildProgress?.stage == 'marks')
+                                      (!isSemantic &&
+                                          lexicalProgress?.stage == 'marks'))
                                   ? null
-                                  : _controller.cancelRebuild,
+                                  : (isSemantic
+                                        ? _controller.cancelSemanticRebuild
+                                        : _controller.cancelRebuild),
                               child: Text(
                                 cancelingRebuild ? 'Отмена…' : 'Отменить',
                               ),
@@ -718,15 +957,52 @@ class _GlobalSearchSheetState extends State<GlobalSearchSheet>
                         ),
                         const SizedBox(height: 8),
                         LinearProgressIndicator(
-                          value: rebuildProgress?.fraction,
+                          value: progressValue,
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          _rebuildLabel(rebuildProgress),
+                          isSemantic
+                              ? _semanticRebuildLabel(semanticProgress)
+                              : _rebuildLabel(lexicalProgress),
                           style: Theme.of(context).textTheme.bodySmall,
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                         ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+                if (showSemanticEmptyState) ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: scheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Семантический индекс не построен',
+                          style: TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          semanticConfigReady
+                              ? 'Постройте эмбеддинги, чтобы искать по смыслу.'
+                              : 'Укажите AI endpoint и модель эмбеддингов в настройках.',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                        if (semanticConfigReady) ...[
+                          const SizedBox(height: 10),
+                          FilledButton.icon(
+                            onPressed: _controller.rebuildSemanticIndex,
+                            icon: const Icon(Icons.auto_awesome),
+                            label: const Text('Построить эмбеддинги'),
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -745,7 +1021,9 @@ class _GlobalSearchSheetState extends State<GlobalSearchSheet>
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Поиск недоступен',
+                          isSemantic
+                              ? 'Семантический поиск недоступен'
+                              : 'Поиск недоступен',
                           style: TextStyle(
                             color: scheme.onErrorContainer,
                             fontWeight: FontWeight.w600,
@@ -762,9 +1040,21 @@ class _GlobalSearchSheetState extends State<GlobalSearchSheet>
                         FilledButton.icon(
                           onPressed: rebuilding
                               ? null
-                              : _controller.rebuildIndex,
-                          icon: const Icon(Icons.restart_alt),
-                          label: const Text('Перестроить индекс'),
+                              : (isSemantic
+                                    ? (semanticConfigReady
+                                          ? _controller.rebuildSemanticIndex
+                                          : null)
+                                    : _controller.rebuildIndex),
+                          icon: Icon(
+                            isSemantic
+                                ? Icons.auto_awesome
+                                : Icons.restart_alt,
+                          ),
+                          label: Text(
+                            isSemantic
+                                ? 'Перестроить эмбеддинги'
+                                : 'Перестроить индекс',
+                          ),
                         ),
                       ],
                     ),
