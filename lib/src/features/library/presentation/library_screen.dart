@@ -1272,6 +1272,8 @@ class _SettingsPanel extends StatelessWidget {
         final authError = controller.authError;
         final basicCredentials = controller.basicAuthCredentials;
         final smbCredentials = controller.smbCredentials;
+        final isConfigured = controller.isSyncProviderConfigured;
+        final developerMode = controller.developerMode;
         final providers = controller.availableSyncProviders;
         final selectedProvider = providers.contains(controller.syncProvider)
             ? controller.syncProvider
@@ -1448,9 +1450,20 @@ class _SettingsPanel extends StatelessWidget {
                     Text(
                       oauthConnected
                           ? 'Статус: подключено'
-                          : 'Статус: не подключено',
+                          : (isBasicAuth
+                                ? 'Статус: не подключено'
+                                : (isConfigured
+                                      ? 'Статус: не подключено'
+                                      : 'Статус: не настроено')),
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
+                    if (!isBasicAuth && !isConfigured && developerMode) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        'Провайдер не настроен. Добавь параметры подключения.',
+                        style: TextStyle(color: scheme.error),
+                      ),
+                    ],
                     if (authError != null) ...[
                       const SizedBox(height: 6),
                       Text(authError, style: TextStyle(color: scheme.error)),
@@ -1460,7 +1473,7 @@ class _SettingsPanel extends StatelessWidget {
                       spacing: 8,
                       runSpacing: 8,
                       children: [
-                        if (!oauthConnected)
+                        if (!oauthConnected && isConfigured)
                           FilledButton.icon(
                             onPressed: authInProgress
                                 ? null
@@ -1480,6 +1493,19 @@ class _SettingsPanel extends StatelessWidget {
                                   : (isBasicAuth
                                         ? 'Настроить'
                                         : 'Подключить ${_providerLabel(controller.syncProvider)}'),
+                            ),
+                          ),
+                        if (!isBasicAuth && !isConfigured && developerMode)
+                          FilledButton.icon(
+                            onPressed: authInProgress
+                                ? null
+                                : () => _showOAuthConfigDialog(
+                                      context,
+                                      controller,
+                                    ),
+                            icon: const Icon(Icons.settings),
+                            label: Text(
+                              'Настроить ${_providerLabel(controller.syncProvider)}',
                             ),
                           ),
                         if (oauthConnected)
@@ -2067,6 +2093,165 @@ class _SettingsPanel extends StatelessWidget {
                 if (saved && context.mounted) {
                   Navigator.of(context).pop();
                 }
+              },
+              child: const Text('Сохранить'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showOAuthConfigDialog(
+    BuildContext context,
+    LibraryController controller,
+  ) async {
+    if (controller.isNasProvider) {
+      return;
+    }
+    final provider = controller.syncProvider;
+    final config = controller.oauthConfig;
+    String clientId = '';
+    String clientSecret = '';
+    String redirectUri = 'cogniread://oauth';
+    String tenant = 'common';
+
+    switch (provider) {
+      case SyncProvider.googleDrive:
+        final google = config?.googleDrive;
+        if (google != null) {
+          clientId = google.clientId;
+          clientSecret = google.clientSecret ?? '';
+          redirectUri = google.redirectUri;
+        }
+        break;
+      case SyncProvider.dropbox:
+        final dropbox = config?.dropbox;
+        if (dropbox != null) {
+          clientId = dropbox.clientId;
+          clientSecret = dropbox.clientSecret ?? '';
+          redirectUri = dropbox.redirectUri;
+        }
+        break;
+      case SyncProvider.oneDrive:
+        final oneDrive = config?.oneDrive;
+        if (oneDrive != null) {
+          clientId = oneDrive.clientId;
+          clientSecret = oneDrive.clientSecret ?? '';
+          redirectUri = oneDrive.redirectUri;
+          tenant = oneDrive.tenant;
+        }
+        break;
+      case SyncProvider.yandexDisk:
+        final yandex = config?.yandexDisk;
+        if (yandex != null) {
+          clientId = yandex.clientId;
+          clientSecret = yandex.clientSecret ?? '';
+          redirectUri = yandex.redirectUri;
+        }
+        break;
+      case SyncProvider.webDav:
+      case SyncProvider.synologyDrive:
+      case SyncProvider.smb:
+        return;
+    }
+
+    final clientIdController = TextEditingController(text: clientId);
+    final clientSecretController = TextEditingController(text: clientSecret);
+    final redirectController = TextEditingController(text: redirectUri);
+    final tenantController = TextEditingController(text: tenant);
+    bool obscureSecret = true;
+    String? errorMessage;
+    final title = 'Настройка ${_providerLabel(provider)}';
+    await showDialog<void>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(title),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: clientIdController,
+                  decoration: const InputDecoration(
+                    labelText: 'ID приложения (Client ID)',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: redirectController,
+                  decoration: const InputDecoration(
+                    labelText: 'Redirect URI',
+                    hintText: 'cogniread://oauth',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: clientSecretController,
+                  decoration: InputDecoration(
+                    labelText: 'Секрет приложения (опционально)',
+                    suffixIcon: IconButton(
+                      onPressed: () {
+                        setDialogState(() {
+                          obscureSecret = !obscureSecret;
+                        });
+                      },
+                      icon: Icon(
+                        obscureSecret
+                            ? Icons.visibility
+                            : Icons.visibility_off,
+                      ),
+                    ),
+                  ),
+                  obscureText: obscureSecret,
+                ),
+                if (provider == SyncProvider.oneDrive) ...[
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: tenantController,
+                    decoration: const InputDecoration(
+                      labelText: 'Tenant (по умолчанию common)',
+                    ),
+                  ),
+                ],
+                if (errorMessage != null) ...[
+                  const SizedBox(height: 12),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      errorMessage!,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Отмена'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final ok = await controller.saveOAuthConfig(
+                  provider: provider,
+                  clientId: clientIdController.text,
+                  clientSecret: clientSecretController.text,
+                  redirectUri: redirectController.text,
+                  tenant: tenantController.text,
+                );
+                if (ok && context.mounted) {
+                  Navigator.of(context).pop();
+                  return;
+                }
+                setDialogState(() {
+                  errorMessage =
+                      controller.authError ?? 'Не удалось сохранить настройки.';
+                });
               },
               child: const Text('Сохранить'),
             ),

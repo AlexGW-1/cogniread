@@ -2,5 +2,37 @@
   "yandexDisk": {
     "clientId": "2a81daffa5af42b3be8f6446730a13a5",
     "redirectUri": "https://oauth.yandex.ru/verification_code"
+  },
+  "googleDrive": {
+    "desktop": {
+      "clientId": "7777649200-nhhj58cek63vumm1umgbmbo2j4dmhqog.apps.googleusercontent.com",
+      "clientSecret": "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",
+      "redirectUri": "http://localhost"
+    },
+    "ios": {
+      "clientId": "7777649200-etuohc615na6dqrb1uq89b7m6l4tafr8.apps.googleusercontent.com",
+      "redirectUri": "com.googleusercontent.apps.7777649200-etuohc615na6dqrb1uq89b7m6l4tafr8:/oauth2redirect"
+    },
+    "android": {
+      "clientId": "7777649200-snb8rrkpuv1p9tid00s79ejmhn0p1sp0.apps.googleusercontent.com",
+      "redirectUri": "com.googleusercontent.apps.7777649200-snb8rrkpuv1p9tid00s79ejmhn0p1sp0:/oauth2redirect"
+    }
+  },
+  "oneDrive": {
+    "desktop": {
+      "clientId": "15f18e6a-ddca-4410-8176-af80964249c8",
+      "redirectUri": "msauth.msauth.com.cogniread.cogniread://auth",
+      "tenant": "common"
+    },
+    "ios": {
+      "clientId": "15f18e6a-ddca-4410-8176-af80964249c8",
+      "redirectUri": "msauth.msauth.com.cogniread.cogniread://auth",
+      "tenant": "common"
+    },
+    "android": {
+      "clientId": "15f18e6a-ddca-4410-8176-af80964249c8",
+      "redirectUri": "msauth://com.cogniread.cogniread/+1dREnwmnAy8i1dqnBjAOcgxg40=",
+      "tenant": "common"
+    }
   }
 }

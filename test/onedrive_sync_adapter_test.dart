@@ -37,6 +37,18 @@ class _FakeOneDriveApiClient implements OneDriveApiClient {
   }
 
   @override
+  Future<void> createFolder(String path) async {
+    final name = path.split('/').last;
+    _files[path] = _FakeFile(
+      id: 'id-$name',
+      name: name,
+      path: path,
+      bytes: const <int>[],
+      modifiedTime: DateTime.now().toUtc(),
+    );
+  }
+
+  @override
   Future<List<int>> download(String path) async {
     final file = _files[path];
     if (file == null) {

@@ -137,6 +137,21 @@ class LibrarySearchResult {
 
 enum NotesItemType { note, highlight, freeNote }
 
+enum _BatchImportStatus {
+  imported,
+  restored,
+  duplicate,
+  invalid,
+  failed,
+}
+
+class _BatchImportResult {
+  const _BatchImportResult({required this.status, this.message});
+
+  final _BatchImportStatus status;
+  final String? message;
+}
+
 class NotesItem {
   const NotesItem({
     required this.type,
@@ -217,6 +232,7 @@ class LibraryController extends ChangeNotifier {
   bool _deleteInProgress = false;
   String? _authError;
   String? _authState;
+  String? _authRedirectOverride;
   SyncProvider? _pendingAuthProvider;
   WebDavCredentials? _webDavCredentials;
   SmbCredentials? _smbCredentials;
@@ -225,6 +241,8 @@ class LibraryController extends ChangeNotifier {
   final Map<SyncProvider, bool> _providerConnected = <SyncProvider, bool>{};
   String? _yandexPkceVerifier;
   String? _dropboxPkceVerifier;
+  String? _googlePkceVerifier;
+  String? _oneDrivePkceVerifier;
   Timer? _autoSyncTimer;
   Timer? _scheduledSyncTimer;
   bool _pendingSync = false;
@@ -287,6 +305,7 @@ class LibraryController extends ChangeNotifier {
       _providerConnected[_syncProvider] ?? false;
   bool get isNasProvider => _syncProvider == SyncProvider.webDav;
   bool get isBasicAuthProvider => isNasProvider;
+  bool get developerMode => _developerMode;
   bool get isSyncProviderConfigured =>
       _oauthConfig?.isConfigured(_syncProvider) ?? false;
   WebDavCredentials? get webDavCredentials => _webDavCredentials;
@@ -376,7 +395,11 @@ class LibraryController extends ChangeNotifier {
     await _loadOAuthConfig();
     if (!isSyncProviderConfigured) {
       Log.d('Sync provider not configured: $_syncProvider');
-      _setAuthError(_oauthNotConfiguredMessage(_syncProvider));
+      _setAuthError(
+        _developerMode
+            ? _oauthNotConfiguredMessage(_syncProvider)
+            : 'Провайдер не настроен. Добавь параметры подключения.',
+      );
       return null;
     }
     if (isNasProvider) {
@@ -425,8 +448,11 @@ class LibraryController extends ChangeNotifier {
       _authInProgress = false;
       _pendingAuthProvider = null;
       _authState = null;
+      _authRedirectOverride = null;
       _yandexPkceVerifier = null;
       _dropboxPkceVerifier = null;
+      _googlePkceVerifier = null;
+      _oneDrivePkceVerifier = null;
       notifyListeners();
     }
   }
@@ -435,8 +461,11 @@ class LibraryController extends ChangeNotifier {
     _authInProgress = false;
     _pendingAuthProvider = null;
     _authState = null;
+    _authRedirectOverride = null;
     _yandexPkceVerifier = null;
     _dropboxPkceVerifier = null;
+    _googlePkceVerifier = null;
+    _oneDrivePkceVerifier = null;
     if (message != null && message.trim().isNotEmpty) {
       _setAuthError(message.trim());
     }
@@ -892,7 +921,7 @@ class LibraryController extends ChangeNotifier {
         .replaceAll(':', '-')
         .replaceAll('.', '-');
     final suggestedName = 'cogniread_notes_$timestamp.zip';
-    final destPath = await FilePicker.saveFile(
+    final destPath = await FilePicker.platform.saveFile(
       dialogTitle: 'Экспорт заметок',
       fileName: suggestedName,
       type: FileType.custom,
@@ -1288,7 +1317,7 @@ class LibraryController extends ChangeNotifier {
         .replaceAll(':', '-')
         .replaceAll('.', '-');
     final suggestedName = 'cogniread_$timestamp.log';
-    final destPath = await FilePicker.saveFile(
+    final destPath = await FilePicker.platform.saveFile(
       dialogTitle: 'Экспорт лога',
       fileName: suggestedName,
       type: FileType.custom,
@@ -1447,20 +1476,72 @@ class LibraryController extends ChangeNotifier {
       _setInfo('Книга добавлена');
       return;
     }
-    final path = _pickEpubPath == null
-        ? await _pickBookFromFilePicker()
-        : await _pickEpubPath();
-    if (path == null) {
+    final paths = _pickEpubPath == null
+        ? await _pickBooksFromFilePicker()
+        : await _pickEpubPath().then(
+            (value) => value == null ? null : <String>[value],
+          );
+    if (paths == null || paths.isEmpty) {
       _setInfo('Импорт отменён');
       return;
     }
-
-    final validationError = await _validateBookPath(path);
-    if (validationError != null) {
-      _setError(validationError);
+    var imported = 0;
+    var restored = 0;
+    var duplicates = 0;
+    var invalid = 0;
+    var failed = 0;
+    String? lastError;
+    for (final path in paths) {
+      final result = await _importBookAtPath(path);
+      switch (result.status) {
+        case _BatchImportStatus.imported:
+          imported += 1;
+        case _BatchImportStatus.restored:
+          restored += 1;
+        case _BatchImportStatus.duplicate:
+          duplicates += 1;
+        case _BatchImportStatus.invalid:
+          invalid += 1;
+          lastError = result.message ?? lastError;
+        case _BatchImportStatus.failed:
+          failed += 1;
+          lastError = result.message ?? lastError;
+      }
+    }
+    final total = paths.length;
+    if (total == 1) {
+      if (imported == 1) {
+        _setInfo('Книга добавлена');
+      } else if (restored == 1) {
+        _setInfo('Книга восстановлена');
+      } else if (duplicates == 1) {
+        _setError('Эта книга уже в библиотеке');
+      } else {
+        _setError(lastError ?? 'Не удалось импортировать книгу');
+      }
       return;
     }
+    final summary = StringBuffer()
+      ..write('Импорт: добавлено $imported')
+      ..write(restored > 0 ? ', восстановлено $restored' : '')
+      ..write(duplicates > 0 ? ', уже в библиотеке $duplicates' : '')
+      ..write(invalid > 0 ? ', пропущено $invalid' : '')
+      ..write(failed > 0 ? ', ошибок $failed' : '');
+    if (imported + restored > 0) {
+      _setInfo(summary.toString());
+    } else {
+      _setError(summary.toString());
+    }
+  }
 
+  Future<_BatchImportResult> _importBookAtPath(String path) async {
+    final validationError = await _validateBookPath(path);
+    if (validationError != null) {
+      return _BatchImportResult(
+        status: _BatchImportStatus.invalid,
+        message: validationError,
+      );
+    }
     try {
       await _storeReady;
       final stored = await _storageService.copyToAppStorageWithHash(path);
@@ -1512,11 +1593,9 @@ class LibraryController extends ChangeNotifier {
           } else {
             await _loadLibrary();
           }
-          _setInfo('Книга восстановлена');
-          return;
+          return const _BatchImportResult(status: _BatchImportStatus.restored);
         }
-        _setError('Эта книга уже в библиотеке');
-        return;
+        return const _BatchImportResult(status: _BatchImportStatus.duplicate);
       }
       final metadata = await _readMetadata(stored.path, fallbackTitle);
       String? coverPath;
@@ -1561,12 +1640,14 @@ class LibraryController extends ChangeNotifier {
       _books.sort(_sortByLastOpenedAt);
       notifyListeners();
       Log.d('Book copied to: ${stored.path}');
-      _setInfo('Книга добавлена');
       _scheduleSync();
-      return;
+      return const _BatchImportResult(status: _BatchImportStatus.imported);
     } catch (e) {
       Log.d('Book import failed: $e');
-      _setError('Не удалось сохранить файл');
+      return _BatchImportResult(
+        status: _BatchImportStatus.failed,
+        message: 'Не удалось сохранить файл',
+      );
     }
   }
 
@@ -1847,18 +1928,19 @@ class LibraryController extends ChangeNotifier {
     });
   }
 
-  Future<String?> _pickBookFromFilePicker() async {
-    final result = await FilePicker.pickFiles(
+  Future<List<String>?> _pickBooksFromFilePicker() async {
+    final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: _supportedExtensions
           .map((ext) => ext.replaceFirst('.', ''))
           .toList(),
       withData: false,
+      allowMultiple: true,
     );
     if (result == null || result.files.isEmpty) {
       return null;
     }
-    return result.files.single.path;
+    return result.files.map((file) => file.path).whereType<String>().toList();
   }
 
   Future<String?> _validateBookPath(String path) async {
@@ -2025,7 +2107,7 @@ class LibraryController extends ChangeNotifier {
     _oauthConfig = await SyncOAuthConfig.load();
   }
 
-  Future<void> saveOAuthConfig({
+  Future<bool> saveOAuthConfig({
     required SyncProvider provider,
     required String clientId,
     required String clientSecret,
@@ -2036,12 +2118,12 @@ class LibraryController extends ChangeNotifier {
         provider == SyncProvider.synologyDrive ||
         provider == SyncProvider.smb) {
       _setAuthError('Провайдер не требует OAuth ключей');
-      return;
+      return false;
     }
     final trimmedClientId = clientId.trim();
     final trimmedClientSecret = clientSecret.trim();
     final trimmedRedirect = redirectUri.trim();
-    final requiresSecret = provider != SyncProvider.dropbox;
+    final requiresSecret = provider == SyncProvider.yandexDisk;
     if (trimmedClientId.isEmpty ||
         trimmedRedirect.isEmpty ||
         (requiresSecret && trimmedClientSecret.isEmpty)) {
@@ -2050,7 +2132,7 @@ class LibraryController extends ChangeNotifier {
             ? 'Заполни clientId, clientSecret и redirectUri'
             : 'Заполни clientId и redirectUri (clientSecret опционален)',
       );
-      return;
+      return false;
     }
 
     final current = _oauthConfig ?? const SyncOAuthConfig();
@@ -2060,7 +2142,8 @@ class LibraryController extends ChangeNotifier {
         updated = SyncOAuthConfig(
           googleDrive: GoogleDriveOAuthConfig(
             clientId: trimmedClientId,
-            clientSecret: trimmedClientSecret,
+            clientSecret:
+                trimmedClientSecret.isEmpty ? null : trimmedClientSecret,
             redirectUri: trimmedRedirect,
           ),
           dropbox: current.dropbox,
@@ -2073,7 +2156,8 @@ class LibraryController extends ChangeNotifier {
           googleDrive: current.googleDrive,
           dropbox: DropboxOAuthConfig(
             clientId: trimmedClientId,
-            clientSecret: trimmedClientSecret,
+            clientSecret:
+                trimmedClientSecret.isEmpty ? null : trimmedClientSecret,
             redirectUri: trimmedRedirect,
           ),
           oneDrive: current.oneDrive,
@@ -2086,7 +2170,8 @@ class LibraryController extends ChangeNotifier {
           dropbox: current.dropbox,
           oneDrive: OneDriveOAuthConfig(
             clientId: trimmedClientId,
-            clientSecret: trimmedClientSecret,
+            clientSecret:
+                trimmedClientSecret.isEmpty ? null : trimmedClientSecret,
             redirectUri: trimmedRedirect,
             tenant: (tenant == null || tenant.trim().isEmpty)
                 ? 'common'
@@ -2102,7 +2187,8 @@ class LibraryController extends ChangeNotifier {
           oneDrive: current.oneDrive,
           yandexDisk: YandexDiskOAuthConfig(
             clientId: trimmedClientId,
-            clientSecret: trimmedClientSecret,
+            clientSecret:
+                trimmedClientSecret.isEmpty ? null : trimmedClientSecret,
             redirectUri: trimmedRedirect,
           ),
         );
@@ -2110,7 +2196,7 @@ class LibraryController extends ChangeNotifier {
       case SyncProvider.webDav:
       case SyncProvider.synologyDrive:
       case SyncProvider.smb:
-        return;
+        return false;
     }
 
     _oauthConfig = updated;
@@ -2118,6 +2204,7 @@ class LibraryController extends ChangeNotifier {
     _authError = null;
     await _refreshSyncAdapter();
     notifyListeners();
+    return true;
   }
 
   Future<void> clearOAuthConfig(SyncProvider provider) async {
@@ -2369,15 +2456,34 @@ class LibraryController extends ChangeNotifier {
       _setAuthError('Открой подключение и введи код со страницы Яндекса.');
       return;
     }
-    final authUrl = await beginOAuthConnection();
-    if (authUrl == null) {
+    await _loadOAuthConfig();
+    if (!isSyncProviderConfigured) {
+      Log.d('Sync provider not configured: $_syncProvider');
+      _setAuthError(
+        _developerMode
+            ? _oauthNotConfiguredMessage(_syncProvider)
+            : 'Провайдер не настроен. Добавь параметры подключения.',
+      );
+      return;
+    }
+    if (isNasProvider) {
+      _setAuthError('Провайдер подключается через ручные настройки');
       return;
     }
     final loopback = _loopbackRedirect(_syncProvider);
     if (loopback != null) {
-      await _connectWithLoopback(authUrl, loopback);
+      await _connectWithLoopback(_syncProvider, loopback);
       return;
     }
+    final authUrl = _buildAuthorizationUrl(_syncProvider);
+    if (authUrl == null) {
+      Log.d('Auth URL not built for provider: $_syncProvider');
+      _setAuthError('Подключение недоступно. Проверь настройки подключения.');
+      return;
+    }
+    _authInProgress = true;
+    _authError = null;
+    notifyListeners();
     final launched = await launchUrl(
       authUrl,
       mode: LaunchMode.externalApplication,
@@ -2407,13 +2513,13 @@ class LibraryController extends ChangeNotifier {
             'Нужен блок "yandexDisk": { "clientId": "...", "clientSecret": "...", "redirectUri": "cogniread://oauth" }';
       case SyncProvider.googleDrive:
         return '$base\n$configHint\n'
-            'Нужен блок "googleDrive": { "clientId": "...", "clientSecret": "...", "redirectUri": "cogniread://oauth" }';
+            'Нужен блок "googleDrive": { "clientId": "...", "redirectUri": "cogniread://oauth", "clientSecret": "..." } (clientSecret опционален при PKCE)';
       case SyncProvider.dropbox:
         return '$base\n$configHint\n'
             'Нужен блок "dropbox": { "clientId": "...", "redirectUri": "cogniread://oauth", "clientSecret": "..." } (clientSecret опционален при PKCE)';
       case SyncProvider.oneDrive:
         return '$base\n$configHint\n'
-            'Нужен блок "oneDrive": { "clientId": "...", "clientSecret": "...", "redirectUri": "cogniread://oauth", "tenant": "common" }';
+            'Нужен блок "oneDrive": { "clientId": "...", "redirectUri": "cogniread://oauth", "tenant": "common", "clientSecret": "..." } (clientSecret опционален при PKCE)';
       case SyncProvider.webDav:
       case SyncProvider.synologyDrive:
       case SyncProvider.smb:
@@ -3519,7 +3625,10 @@ class LibraryController extends ChangeNotifier {
     return message.contains('not_found') || message.contains('NotFound');
   }
 
-  Uri? _buildAuthorizationUrl(SyncProvider provider) {
+  Uri? _buildAuthorizationUrl(
+    SyncProvider provider, {
+    Uri? redirectOverride,
+  }) {
     final config = _oauthConfig;
     if (config == null) {
       return null;
@@ -3528,14 +3637,33 @@ class LibraryController extends ChangeNotifier {
     Uri? url;
     switch (provider) {
       case SyncProvider.googleDrive:
-        final google = config.googleDrive;
+        final base = config.googleDrive;
+        final google = (base == null || redirectOverride == null)
+            ? base
+            : GoogleDriveOAuthConfig(
+                clientId: base.clientId,
+                clientSecret: base.clientSecret,
+                redirectUri: redirectOverride.toString(),
+              );
         if (google == null) {
           return null;
         }
-        url = GoogleDriveOAuthClient(google).authorizationUrl(state: state);
+        final pkce = GoogleDriveOAuthClient.createPkce();
+        _googlePkceVerifier = pkce.verifier;
+        url = GoogleDriveOAuthClient(google).authorizationUrl(
+          state: state,
+          codeChallenge: pkce.challenge,
+        );
         break;
       case SyncProvider.dropbox:
-        final dropbox = config.dropbox;
+        final base = config.dropbox;
+        final dropbox = (base == null || redirectOverride == null)
+            ? base
+            : DropboxOAuthConfig(
+                clientId: base.clientId,
+                clientSecret: base.clientSecret,
+                redirectUri: redirectOverride.toString(),
+              );
         if (dropbox == null) {
           return null;
         }
@@ -3546,14 +3674,34 @@ class LibraryController extends ChangeNotifier {
         ).authorizationUrl(state: state, codeChallenge: pkce.challenge);
         break;
       case SyncProvider.oneDrive:
-        final oneDrive = config.oneDrive;
+        final base = config.oneDrive;
+        final oneDrive = (base == null || redirectOverride == null)
+            ? base
+            : OneDriveOAuthConfig(
+                clientId: base.clientId,
+                clientSecret: base.clientSecret,
+                redirectUri: redirectOverride.toString(),
+                tenant: base.tenant,
+              );
         if (oneDrive == null) {
           return null;
         }
-        url = OneDriveOAuthClient(oneDrive).authorizationUrl(state: state);
+        final pkce = OneDriveOAuthClient.createPkce();
+        _oneDrivePkceVerifier = pkce.verifier;
+        url = OneDriveOAuthClient(oneDrive).authorizationUrl(
+          state: state,
+          codeChallenge: pkce.challenge,
+        );
         break;
       case SyncProvider.yandexDisk:
-        final yandex = config.yandexDisk;
+        final base = config.yandexDisk;
+        final yandex = (base == null || redirectOverride == null)
+            ? base
+            : YandexDiskOAuthConfig(
+                clientId: base.clientId,
+                clientSecret: base.clientSecret,
+                redirectUri: redirectOverride.toString(),
+              );
         if (yandex == null) {
           return null;
         }
@@ -3642,8 +3790,11 @@ class LibraryController extends ChangeNotifier {
       _authInProgress = false;
       _pendingAuthProvider = null;
       _authState = null;
+      _authRedirectOverride = null;
       _yandexPkceVerifier = null;
       _dropboxPkceVerifier = null;
+      _googlePkceVerifier = null;
+      _oneDrivePkceVerifier = null;
       notifyListeners();
     }
   }
@@ -3656,15 +3807,32 @@ class LibraryController extends ChangeNotifier {
     if (config == null) {
       throw SyncAuthException('OAuth config missing');
     }
+    final redirectOverride = _authRedirectOverride;
     switch (provider) {
       case SyncProvider.googleDrive:
-        final google = config.googleDrive;
+        final base = config.googleDrive;
+        final google = (base == null || redirectOverride == null)
+            ? base
+            : GoogleDriveOAuthConfig(
+                clientId: base.clientId,
+                clientSecret: base.clientSecret,
+                redirectUri: redirectOverride,
+              );
         if (google == null) {
           throw SyncAuthException('Google OAuth not configured');
         }
-        return GoogleDriveOAuthClient(google).exchangeCode(code);
+        return GoogleDriveOAuthClient(
+          google,
+        ).exchangeCode(code, codeVerifier: _googlePkceVerifier);
       case SyncProvider.dropbox:
-        final dropbox = config.dropbox;
+        final base = config.dropbox;
+        final dropbox = (base == null || redirectOverride == null)
+            ? base
+            : DropboxOAuthConfig(
+                clientId: base.clientId,
+                clientSecret: base.clientSecret,
+                redirectUri: redirectOverride,
+              );
         if (dropbox == null) {
           throw SyncAuthException('Dropbox OAuth not configured');
         }
@@ -3672,13 +3840,30 @@ class LibraryController extends ChangeNotifier {
           dropbox,
         ).exchangeCode(code, codeVerifier: _dropboxPkceVerifier);
       case SyncProvider.oneDrive:
-        final oneDrive = config.oneDrive;
+        final base = config.oneDrive;
+        final oneDrive = (base == null || redirectOverride == null)
+            ? base
+            : OneDriveOAuthConfig(
+                clientId: base.clientId,
+                clientSecret: base.clientSecret,
+                redirectUri: redirectOverride,
+                tenant: base.tenant,
+              );
         if (oneDrive == null) {
           throw SyncAuthException('OneDrive OAuth not configured');
         }
-        return OneDriveOAuthClient(oneDrive).exchangeCode(code);
+        return OneDriveOAuthClient(
+          oneDrive,
+        ).exchangeCode(code, codeVerifier: _oneDrivePkceVerifier);
       case SyncProvider.yandexDisk:
-        final yandex = config.yandexDisk;
+        final base = config.yandexDisk;
+        final yandex = (base == null || redirectOverride == null)
+            ? base
+            : YandexDiskOAuthConfig(
+                clientId: base.clientId,
+                clientSecret: base.clientSecret,
+                redirectUri: redirectOverride,
+              );
         if (yandex == null) {
           throw SyncAuthException('Yandex OAuth not configured');
         }
@@ -3754,6 +3939,7 @@ class LibraryController extends ChangeNotifier {
     _authInProgress = false;
     _authState = null;
     _pendingAuthProvider = null;
+    _authRedirectOverride = null;
     _setAuthError(message);
     notifyListeners();
   }
@@ -3768,12 +3954,15 @@ class LibraryController extends ChangeNotifier {
       return null;
     }
     if (provider != SyncProvider.dropbox &&
+        provider != SyncProvider.googleDrive &&
         provider != SyncProvider.yandexDisk) {
       return null;
     }
     final raw = provider == SyncProvider.dropbox
         ? _oauthConfig?.dropbox?.redirectUri
-        : _oauthConfig?.yandexDisk?.redirectUri;
+        : (provider == SyncProvider.googleDrive
+              ? _oauthConfig?.googleDrive?.redirectUri
+              : _oauthConfig?.yandexDisk?.redirectUri);
     if (raw == null || raw.trim().isEmpty) {
       return null;
     }
@@ -3788,18 +3977,19 @@ class LibraryController extends ChangeNotifier {
     if (host != 'localhost' && host != '127.0.0.1') {
       return null;
     }
-    if (uri.port == 0) {
-      return null;
-    }
     return uri;
   }
 
-  Future<void> _connectWithLoopback(Uri authUrl, Uri redirectUri) async {
+  Future<void> _connectWithLoopback(
+    SyncProvider provider,
+    Uri redirectUri,
+  ) async {
     HttpServer? server;
     try {
+      final bindPort = redirectUri.hasPort ? redirectUri.port : 0;
       server = await HttpServer.bind(
         InternetAddress.loopbackIPv4,
-        redirectUri.port,
+        bindPort,
       );
     } catch (error) {
       Log.d('Loopback bind failed: $error');
@@ -3808,6 +3998,28 @@ class LibraryController extends ChangeNotifier {
       );
       return;
     }
+
+    final path = redirectUri.path.isEmpty ? '/' : redirectUri.path;
+    final effectiveRedirect = Uri(
+      scheme: redirectUri.scheme,
+      host: redirectUri.host,
+      port: server.port,
+      path: path,
+      query: redirectUri.query,
+    );
+    _authRedirectOverride = effectiveRedirect.toString();
+    final authUrl = _buildAuthorizationUrl(
+      provider,
+      redirectOverride: effectiveRedirect,
+    );
+    if (authUrl == null) {
+      await server.close(force: true);
+      _finishAuthWithError('Подключение недоступно. Проверь настройки подключения.');
+      return;
+    }
+    _authInProgress = true;
+    _authError = null;
+    notifyListeners();
 
     final launched = await launchUrl(
       authUrl,
@@ -3827,15 +4039,15 @@ class LibraryController extends ChangeNotifier {
     StreamSubscription<HttpRequest>? subscription;
     subscription = server.listen((request) async {
       Log.d('Loopback auth request: ${_safeAuthUriForLogs(request.uri)}');
-      if (request.uri.path != redirectUri.path) {
+      if (request.uri.path != path) {
         request.response.statusCode = HttpStatus.notFound;
         await request.response.close();
         return;
       }
       final fullUri = Uri(
-        scheme: redirectUri.scheme,
-        host: redirectUri.host,
-        port: redirectUri.port,
+        scheme: effectiveRedirect.scheme,
+        host: effectiveRedirect.host,
+        port: effectiveRedirect.port,
         path: request.uri.path,
         query: request.uri.query,
       );

@@ -155,11 +155,57 @@ Issue ID: `M2-5`
 Checklist:
 - Решение по OAuth/UX подключения.
 - Подготовка acceptance criteria и тест-плана.
+- Инструкции по настройке провайдеров (Google + Microsoft/OneDrive).
 Ссылки: `docs/deferred_features.md`.
 
 Аудит (факт):
 - [~] OAuth для Google Drive/OneDrive реализован в коде, но решение/план в документах не зафиксированы.
 - [ ] Acceptance criteria и тест‑план для этих провайдеров не выделены.
+- [x] Google Drive sync работает на macOS, iOS, Android.
+- [ ] Осталось по ТЗ: зафиксировать статус Windows/Linux/Web (в ТЗ не обязательны — либо явно исключить, либо добавить AC/тест‑план).
+
+Решение по OAuth/UX подключения (фиксируем):
+- Публичное consumer‑приложение: OAuth‑клиенты (clientId/redirectUri) встроены в сборку, пользователь НЕ вводит ключи.
+- OAuth 2.0 Authorization Code + PKCE, запуск через системный браузер.
+- Минимальные scope: доступ только к папке приложения (Google Drive: appDataFolder или app‑specific folder; OneDrive: app folder).
+- Хранение refresh token в secure storage (Keychain/Keystore).
+- Единый UX: выбор провайдера → системный логин → подтверждение доступа → создание/выбор папки синка → статус “Connected”.
+- Явный “Disconnect” с удалением токенов и локального статуса провайдера.
+- Ошибки: показываем пользовательское сообщение + код/тип ошибки в диагностике, без утечек секретов.
+
+Acceptance Criteria:
+- Пользователь может подключить Google Drive/OneDrive без ввода ключей/JSON/технических настроек.
+- Подключение Google Drive и OneDrive через системный браузер с PKCE работает на iOS/Android.
+- После подключения создается/используется папка приложения и выполняется первый sync.
+- Refresh token сохраняется и работает при перезапуске приложения.
+- “Disconnect” удаляет токены и блокирует доступ к провайдеру до нового подключения.
+- Ошибки авторизации (revoked/expired/denied) понятны пользователю и видны в диагностике.
+
+Test Plan:
+- Убедиться, что в UI нет экранов ввода clientId/clientSecret/redirectUri для Google/OneDrive.
+- Подключить Google Drive и OneDrive на “чистом” устройстве; убедиться, что первый sync проходит.
+- Перезапустить приложение; убедиться, что повторный логин не требуется и sync доступен.
+- Отозвать доступ в настройках провайдера; проверить, что приложение показывает ошибку и предлагает переподключение.
+- Нажать “Disconnect”; убедиться, что токены удалены и sync невозможен без повторного входа.
+- Проверить, что создается только app-folder, нет доступа к “всем файлам”.
+
+Инструкции по настройке провайдеров:
+Google (Google Cloud Console):
+- Создать проект и включить Google Drive API.
+- Настроить OAuth Consent Screen (User Type: External/Internal), указать app name, support email, добавить scopes (минимальные).
+- Создать OAuth Client ID: Android/iOS/Web (в зависимости от платформы).
+- Для iOS: добавить Bundle ID и настроить URL scheme.
+- Для Android: указать package name и SHA-1/256 сертификаты подписи.
+- Перед релизом: обновить release SHA‑1/256, включить Custom URI scheme для Android‑клиента, проверить redirect URI/URL scheme во всех клиентах.
+- Включить redirect URI для desktop/system browser (если требуется библиотекой).
+
+Microsoft/OneDrive (Microsoft Entra ID / Azure Portal):
+- Создать App Registration.
+- Включить Microsoft Graph permissions (Files.ReadWrite.AppFolder минимально).
+- Добавить Redirect URI для mobile (custom scheme) и/или system browser flow.
+- Включить “Allow public client flows” (для mobile + PKCE).
+- Для iOS/Android указать bundle/package и signature hashes, если применимо.
+- Скопировать Client ID и Tenant ID; сохранить в конфиг приложения.
 
 ---
 ## Milestone M3 — Stage 2: Sync Gateway (backend)

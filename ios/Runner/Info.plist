@@ -53,6 +53,8 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>cogniread</string>
+				<string>com.googleusercontent.apps.7777649200-etuohc615na6dqrb1uq89b7m6l4tafr8</string>
+				<string>msauth.msauth.com.cogniread.cogniread</string>
 			</array>
 		</dict>
 	</array>
