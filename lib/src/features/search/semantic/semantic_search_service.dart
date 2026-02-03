@@ -147,19 +147,20 @@ class SemanticSearchService {
     }
 
     Future<void> run() async {
-      final model = _resolveEmbeddingModel(config);
-      if (!_isConfigReady(config, model: model)) {
-        throw const AiServiceException(
-          'AI не настроен. Укажите endpoint и модель эмбеддингов.',
-        );
-      }
-      final service = _buildAiService(config);
-      if (service == null) {
-        throw const AiServiceException('AI сервис недоступен.');
-      }
+      String? model;
       final cache = <String, List<double>>{};
       var processed = 0;
       try {
+        model = _resolveEmbeddingModel(config);
+        if (!_isConfigReady(config, model: model)) {
+          throw const AiServiceException(
+            'AI не настроен. Укажите endpoint и модель эмбеддингов.',
+          );
+        }
+        final service = _buildAiService(config);
+        if (service == null) {
+          throw const AiServiceException('AI сервис недоступен.');
+        }
         await _embeddingStore.clear();
         await _store.init();
         final entries = await _store.loadAll();
@@ -418,7 +419,9 @@ class SemanticSearchService {
       }
     }
 
-    unawaited(run());
+    unawaited(run().catchError((Object error) {
+      Log.d('Semantic search rebuild failed: $error');
+    }));
 
     Future<void> cancel() async {
       canceled = true;
@@ -632,6 +635,12 @@ class SemanticSearchService {
       return cached;
     }
     final result = await service.embed(input: trimmed, model: model);
+    if (result.hasError) {
+      throw AiServiceException(result.error!);
+    }
+    if (result.embedding.isEmpty) {
+      throw const AiServiceException('AI response missing embedding');
+    }
     final normalized = _normalize(result.embedding);
     cache[key] = normalized;
     return normalized;
@@ -1031,6 +1040,24 @@ String _semanticErrorMessage(Object error) {
     if (raw.contains('does not support embeddings') ||
         raw.contains('support embeddings')) {
       return 'Модель не поддерживает эмбеддинги. Укажите подходящую модель.';
+    }
+    if (raw.contains('AccessDenied.Unpurchased') ||
+        raw.contains('Access to model denied')) {
+      return 'Нет доступа к модели. Выберите другую модель или проверьте права.';
+    }
+    final match = RegExp(r'AI HTTP (\d{3})').firstMatch(raw);
+    if (match != null) {
+      final code = int.tryParse(match.group(1) ?? '');
+      switch (code) {
+        case 401:
+          return 'Доступ запрещен (HTTP 401). Проверь API ключ.';
+        case 403:
+          return 'Доступ запрещен (HTTP 403). Проверь права ключа/аккаунта.';
+        case 404:
+          return 'Endpoint не найден (HTTP 404). Проверь URL.';
+        case 429:
+          return 'Слишком много запросов (HTTP 429). Попробуй позже.';
+      }
     }
     return raw;
   }

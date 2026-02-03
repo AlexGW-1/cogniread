@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:cogniread/src/features/ai/ai_models.dart';
+import 'package:cogniread/src/core/utils/logger.dart';
 import 'package:cogniread/src/features/search/search_index_service.dart';
 import 'package:cogniread/src/features/search/search_models.dart';
 import 'package:cogniread/src/features/search/semantic/semantic_search_service.dart';
@@ -291,7 +292,9 @@ class GlobalSearchController extends ChangeNotifier {
     notifyListeners();
     final nonce = ++_nonce;
     _debounce = Timer(const Duration(milliseconds: 250), () {
-      unawaited(_runSearch(trimmed, nonce: nonce));
+      unawaited(_runSearch(trimmed, nonce: nonce).catchError((Object error) {
+        Log.d('Search failed: $error');
+      }));
     });
   }
 
@@ -425,7 +428,9 @@ class GlobalSearchController extends ChangeNotifier {
     } catch (_) {
       return;
     }
-    unawaited(rebuildIndex());
+    unawaited(rebuildIndex().catchError((Object error) {
+      Log.d('Rebuild index failed: $error');
+    }));
   }
 
   Future<void> _maybeAutoSemanticRebuild() async {
@@ -449,6 +454,8 @@ class GlobalSearchController extends ChangeNotifier {
     if (!_aiConfig.isConfigured) {
       return;
     }
-    unawaited(rebuildSemanticIndex());
+    unawaited(rebuildSemanticIndex().catchError((Object error) {
+      Log.d('Semantic rebuild failed: $error');
+    }));
   }
 }

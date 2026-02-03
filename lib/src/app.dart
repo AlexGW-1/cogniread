@@ -1,4 +1,5 @@
 import 'package:cogniread/src/core/services/storage_service.dart';
+import 'package:cogniread/src/core/utils/app_messenger.dart';
 import 'package:cogniread/src/features/library/presentation/library_screen.dart';
 import 'package:cogniread/src/features/sync/file_sync/sync_adapter.dart';
 import 'package:flutter/material.dart';
@@ -21,6 +22,7 @@ class CogniReadApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'CogniRead',
+      scaffoldMessengerKey: AppMessenger.key,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFFB3623C),

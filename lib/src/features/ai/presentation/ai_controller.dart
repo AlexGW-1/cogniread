@@ -56,13 +56,26 @@ class AiController extends ChangeNotifier {
     _summaryError = null;
     _qaError = null;
     notifyListeners();
-    await _loadScope(scope);
+    try {
+      await _loadScope(scope);
+    } catch (error) {
+      _summaryError = _errorMessage(error);
+      _summaryLoading = false;
+      _qaLoading = false;
+      notifyListeners();
+    }
   }
 
   Future<void> refreshConfig(AiConfig config, {bool reload = true}) async {
     _config = config;
     if (reload && _scope != null) {
-      await _loadScope(_scope!);
+      try {
+        await _loadScope(_scope!);
+      } catch (error) {
+        _summaryError = _errorMessage(error);
+        _summaryLoading = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -74,85 +87,108 @@ class AiController extends ChangeNotifier {
     _summary = null;
     _summaryError = null;
     notifyListeners();
-    await _requestSummary(scope, force: true);
+    try {
+      await _requestSummary(scope, force: true);
+    } catch (error) {
+      _summaryError = _errorMessage(error);
+      _summaryLoading = false;
+      notifyListeners();
+    }
   }
 
   Future<void> askQuestion(String question) async {
-    final scope = _scope;
-    if (scope == null) {
-      return;
-    }
-    final trimmed = question.trim();
-    if (trimmed.isEmpty) {
-      return;
-    }
-    if (!_config.isConfigured) {
-      _qaError = 'AI не настроен. Укажите endpoint в настройках.';
-      notifyListeners();
-      return;
-    }
-    final service = _service;
-    if (service == null) {
-      _qaError = 'AI сервис недоступен.';
-      notifyListeners();
-      return;
-    }
-    final context = _context;
-    if (context == null) {
-      _qaError = 'Контекст не загружен.';
-      notifyListeners();
-      return;
-    }
-    final normalizedContext = _limitText(context.text);
-    final inputHash = aiInputHash(
-      kind: AiKind.qa,
-      scope: scope,
-      text: normalizedContext,
-      prompt: trimmed,
-    );
-    final cached = await _store.findCached(
-      kind: AiKind.qa,
-      scopeType: scope.type,
-      scopeId: scope.id,
-      inputHash: inputHash,
-    );
-    if (cached != null) {
-      _qaItems = <AiArtifact>[cached, ..._qaItems];
-      notifyListeners();
-      return;
-    }
-    _qaLoading = true;
-    _qaError = null;
-    notifyListeners();
     try {
-      final result = await service.answer(
-        question: trimmed,
-        context: normalizedContext,
-        scopeId: scope.id,
-        scopeType: scope.type.name,
-        model: _config.model,
+      final scope = _scope;
+      if (scope == null) {
+        return;
+      }
+      final trimmed = question.trim();
+      if (trimmed.isEmpty) {
+        return;
+      }
+      if (!_config.isConfigured) {
+        _qaError = 'AI не настроен. Укажите endpoint в настройках.';
+        notifyListeners();
+        return;
+      }
+      final service = _service;
+      if (service == null) {
+        _qaError = 'AI сервис недоступен.';
+        notifyListeners();
+        return;
+      }
+      final context = _context;
+      if (context == null) {
+        _qaError = 'Контекст не загружен.';
+        notifyListeners();
+        return;
+      }
+      final normalizedContext = _limitText(context.text);
+      final inputHash = aiInputHash(
+        kind: AiKind.qa,
+        scope: scope,
+        text: normalizedContext,
+        prompt: trimmed,
       );
-      final now = DateTime.now();
-      final artifact = AiArtifact(
-        id: _makeArtifactId(),
+      final cached = await _store.findCached(
         kind: AiKind.qa,
         scopeType: scope.type,
         scopeId: scope.id,
         inputHash: inputHash,
-        status: AiStatus.ready,
-        content: result.content,
-        createdAt: now,
-        updatedAt: now,
-        prompt: trimmed,
-        model: result.model ?? _config.model,
       );
-      await _store.upsert(artifact);
-      _qaItems = <AiArtifact>[artifact, ..._qaItems];
+      if (cached != null) {
+        _qaItems = <AiArtifact>[cached, ..._qaItems];
+        notifyListeners();
+        return;
+      }
+      _qaLoading = true;
+      _qaError = null;
+      notifyListeners();
+      try {
+        final result = await service.answer(
+          question: trimmed,
+          context: normalizedContext,
+          scopeId: scope.id,
+          scopeType: scope.type.name,
+          model: _config.model,
+        );
+        if (result.hasError) {
+          _qaError = _errorMessage(AiServiceException(result.error!));
+          Log.d('AI Q&A failed: ${result.error}');
+          return;
+        }
+        if (result.content.trim().isEmpty) {
+          _qaError = 'AI ответ пустой. Проверьте настройки и модель.';
+          Log.d('AI Q&A returned empty content.');
+          return;
+        }
+        final now = DateTime.now();
+        final artifact = AiArtifact(
+          id: _makeArtifactId(),
+          kind: AiKind.qa,
+          scopeType: scope.type,
+          scopeId: scope.id,
+          inputHash: inputHash,
+          status: AiStatus.ready,
+          content: result.content,
+          createdAt: now,
+          updatedAt: now,
+          prompt: trimmed,
+          model: result.model ?? _config.model,
+        );
+        await _store.upsert(artifact);
+        _qaItems = <AiArtifact>[artifact, ..._qaItems];
+      } catch (error) {
+        _qaError = _errorMessage(error);
+        Log.d('AI Q&A failed: $error');
+      } finally {
+        _qaLoading = false;
+        notifyListeners();
+      }
     } catch (error) {
       _qaError = _errorMessage(error);
-      Log.d('AI Q&A failed: $error');
-    } finally {
       _qaLoading = false;
+      Log.d('AI Q&A failed: $error');
       notifyListeners();
     }
   }
@@ -215,56 +251,73 @@ class AiController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    final inputHash = aiInputHash(
-      kind: AiKind.summary,
-      scope: scope,
-      text: context.text,
-    );
-    if (!force) {
-      final cached = await _store.findCached(
+    try {
+      final inputHash = aiInputHash(
         kind: AiKind.summary,
-        scopeType: scope.type,
-        scopeId: scope.id,
-        inputHash: inputHash,
+        scope: scope,
+        text: context.text,
       );
-      if (cached != null) {
-        _summary = cached;
+      if (!force) {
+        final cached = await _store.findCached(
+          kind: AiKind.summary,
+          scopeType: scope.type,
+          scopeId: scope.id,
+          inputHash: inputHash,
+        );
+        if (cached != null) {
+          _summary = cached;
+          _summaryLoading = false;
+          notifyListeners();
+          return;
+        }
+      }
+      _summaryLoading = true;
+      _summaryError = null;
+      notifyListeners();
+      try {
+        final result = await service.summarize(
+          text: context.text,
+          scopeId: scope.id,
+          scopeType: scope.type.name,
+          title: context.title,
+          model: _config.model,
+        );
+        if (result.hasError) {
+          _summaryError = _errorMessage(AiServiceException(result.error!));
+          Log.d('AI summary failed: ${result.error}');
+          return;
+        }
+        if (result.content.trim().isEmpty) {
+          _summaryError = 'AI сводка пустая. Проверьте настройки и модель.';
+          Log.d('AI summary returned empty content.');
+          return;
+        }
+        final now = DateTime.now();
+        final artifact = AiArtifact(
+          id: _makeArtifactId(),
+          kind: AiKind.summary,
+          scopeType: scope.type,
+          scopeId: scope.id,
+          inputHash: inputHash,
+          status: AiStatus.ready,
+          content: result.content,
+          createdAt: now,
+          updatedAt: now,
+          model: result.model ?? _config.model,
+        );
+        await _store.upsert(artifact);
+        _summary = artifact;
+      } catch (error) {
+        _summaryError = _errorMessage(error);
+        Log.d('AI summary failed: $error');
+      } finally {
         _summaryLoading = false;
         notifyListeners();
-        return;
       }
-    }
-    _summaryLoading = true;
-    _summaryError = null;
-    notifyListeners();
-    try {
-      final result = await service.summarize(
-        text: context.text,
-        scopeId: scope.id,
-        scopeType: scope.type.name,
-        title: context.title,
-        model: _config.model,
-      );
-      final now = DateTime.now();
-      final artifact = AiArtifact(
-        id: _makeArtifactId(),
-        kind: AiKind.summary,
-        scopeType: scope.type,
-        scopeId: scope.id,
-        inputHash: inputHash,
-        status: AiStatus.ready,
-        content: result.content,
-        createdAt: now,
-        updatedAt: now,
-        model: result.model ?? _config.model,
-      );
-      await _store.upsert(artifact);
-      _summary = artifact;
     } catch (error) {
       _summaryError = _errorMessage(error);
-      Log.d('AI summary failed: $error');
-    } finally {
       _summaryLoading = false;
+      Log.d('AI summary failed: $error');
       notifyListeners();
     }
   }
@@ -294,7 +347,11 @@ class AiController extends ChangeNotifier {
 
   String _friendlyAiError(String message) {
     final trimmed = message.trim();
-    final match = RegExp(r'AI HTTP (\\d{3})').firstMatch(trimmed);
+    if (trimmed.contains('AccessDenied.Unpurchased') ||
+        trimmed.contains('Access to model denied')) {
+      return 'Нет доступа к модели. Выберите другую модель или проверьте права.';
+    }
+    final match = RegExp(r'AI HTTP (\d{3})').firstMatch(trimmed);
     if (match == null) {
       return trimmed;
     }

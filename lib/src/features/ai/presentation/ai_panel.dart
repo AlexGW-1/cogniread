@@ -76,13 +76,23 @@ class _AiPanelState extends State<AiPanel> with TickerProviderStateMixin {
   void didUpdateWidget(covariant AiPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.config != widget.config) {
-      unawaited(_controller.refreshConfig(widget.config, reload: true));
+      unawaited(
+        _controller
+            .refreshConfig(widget.config, reload: true)
+            .catchError((Object error) {
+              Log.d('AI refresh failed: $error');
+            }),
+      );
     }
     if (!_sameScopes(oldWidget.scopes, widget.scopes)) {
       final nextScope = widget.scopes.isNotEmpty ? widget.scopes.first : null;
       _activeScope = nextScope;
       if (nextScope != null) {
-        unawaited(_controller.setScope(nextScope));
+        unawaited(
+          _controller.setScope(nextScope).catchError((Object error) {
+            Log.d('AI scope update failed: $error');
+          }),
+        );
       }
     }
   }
@@ -130,114 +140,120 @@ class _AiPanelState extends State<AiPanel> with TickerProviderStateMixin {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final title = widget.title ?? 'AI';
-    return SafeArea(
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: scheme.surface,
-          borderRadius: widget.embedded
-              ? BorderRadius.circular(16)
-              : const BorderRadius.vertical(top: Radius.circular(18)),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (!widget.embedded)
-              Center(
-                child: Container(
-                  width: 36,
-                  height: 4,
-                  margin: const EdgeInsets.only(bottom: 12),
-                  decoration: BoxDecoration(
-                    color: scheme.outlineVariant,
-                    borderRadius: BorderRadius.circular(12),
+    final contentPadding = widget.embedded ? 12.0 : 16.0;
+    final sectionSpacing = widget.embedded ? 8.0 : 12.0;
+    final denseSpacing = widget.embedded ? 6.0 : 8.0;
+    final content = Container(
+      padding: EdgeInsets.all(contentPadding),
+      decoration: BoxDecoration(
+        color: scheme.surface,
+        borderRadius: widget.embedded
+            ? BorderRadius.circular(16)
+            : const BorderRadius.vertical(top: Radius.circular(18)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (!widget.embedded)
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: scheme.outlineVariant,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    title,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
+              if (!_controller.config.isConfigured)
+                Text(
+                  'не настроено',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.labelSmall?.copyWith(color: scheme.error),
+                ),
+            ],
+          ),
+          SizedBox(height: sectionSpacing),
+          if (widget.scopes.length > 1)
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: widget.scopes
+                  .map(
+                    (scope) => ChoiceChip(
+                      label: Text(scope.label),
+                      selected: _activeScope == scope,
+                      onSelected: (selected) {
+                        if (!selected) {
+                          return;
+                        }
+                        setState(() {
+                          _activeScope = scope;
+                        });
+                        unawaited(
+                          _controller.setScope(scope).catchError((Object error) {
+                            Log.d('AI scope update failed: $error');
+                          }),
+                        );
+                      },
                     ),
-                  ),
+                  )
+                  .toList(),
+            ),
+          if (widget.scopes.length > 1) SizedBox(height: sectionSpacing),
+          TabBar(
+            controller: _tabController,
+            tabs: const [
+              Tab(text: 'Сводка'),
+              Tab(text: 'Вопросы'),
+            ],
+          ),
+          SizedBox(height: denseSpacing),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: SegmentedButton<_AiRenderMode>(
+              segments: const [
+                ButtonSegment(value: _AiRenderMode.auto, label: Text('Авто')),
+                ButtonSegment(
+                  value: _AiRenderMode.markdown,
+                  label: Text('Markdown'),
                 ),
-                if (!_controller.config.isConfigured)
-                  Text(
-                    'не настроено',
-                    style: Theme.of(
-                      context,
-                    ).textTheme.labelSmall?.copyWith(color: scheme.error),
-                  ),
+                ButtonSegment(value: _AiRenderMode.text, label: Text('Текст')),
               ],
+              selected: {_renderMode},
+              onSelectionChanged: (selection) {
+                setState(() {
+                  _renderMode = selection.first;
+                });
+              },
             ),
-            const SizedBox(height: 12),
-            if (widget.scopes.length > 1)
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: widget.scopes
-                    .map(
-                      (scope) => ChoiceChip(
-                        label: Text(scope.label),
-                        selected: _activeScope == scope,
-                        onSelected: (selected) {
-                          if (!selected) {
-                            return;
-                          }
-                          setState(() {
-                            _activeScope = scope;
-                          });
-                          unawaited(_controller.setScope(scope));
-                        },
-                      ),
-                    )
-                    .toList(),
-              ),
-            if (widget.scopes.length > 1) const SizedBox(height: 12),
-            TabBar(
+          ),
+          SizedBox(height: sectionSpacing),
+          Expanded(
+            child: TabBarView(
               controller: _tabController,
-              tabs: const [
-                Tab(text: 'Сводка'),
-                Tab(text: 'Вопросы'),
-              ],
+              children: [_buildSummaryTab(context), _buildQaTab(context)],
             ),
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: SegmentedButton<_AiRenderMode>(
-                segments: const [
-                  ButtonSegment(value: _AiRenderMode.auto, label: Text('Авто')),
-                  ButtonSegment(
-                    value: _AiRenderMode.markdown,
-                    label: Text('Markdown'),
-                  ),
-                  ButtonSegment(
-                    value: _AiRenderMode.text,
-                    label: Text('Текст'),
-                  ),
-                ],
-                selected: {_renderMode},
-                onSelectionChanged: (selection) {
-                  setState(() {
-                    _renderMode = selection.first;
-                  });
-                },
-              ),
-            ),
-            const SizedBox(height: 12),
-            Expanded(
-              child: TabBarView(
-                controller: _tabController,
-                children: [_buildSummaryTab(context), _buildQaTab(context)],
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
+    if (widget.embedded) {
+      return content;
+    }
+    return SafeArea(child: content);
   }
 
   Widget _buildSummaryTab(BuildContext context) {

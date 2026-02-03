@@ -5,19 +5,35 @@ import 'dart:io';
 import 'package:cogniread/src/core/utils/logger.dart';
 
 class AiServiceResult {
-  const AiServiceResult({required this.content, this.model, this.raw});
+  const AiServiceResult({
+    required this.content,
+    this.model,
+    this.raw,
+    this.error,
+  });
 
   final String content;
   final String? model;
   final Map<String, Object?>? raw;
+  final String? error;
+
+  bool get hasError => error != null && error!.trim().isNotEmpty;
 }
 
 class AiEmbeddingResult {
-  const AiEmbeddingResult({required this.embedding, this.model, this.raw});
+  const AiEmbeddingResult({
+    required this.embedding,
+    this.model,
+    this.raw,
+    this.error,
+  });
 
   final List<double> embedding;
   final String? model;
   final Map<String, Object?>? raw;
+  final String? error;
+
+  bool get hasError => error != null && error!.trim().isNotEmpty;
 }
 
 abstract class AiService {
@@ -49,12 +65,13 @@ class AiHttpService implements AiService {
     this.apiKey,
     HttpClient? httpClient,
     Duration? timeout,
-  }) : _baseUri = baseUri,
-       _httpClient = httpClient ?? HttpClient(),
-       _timeout = timeout ?? const Duration(seconds: 60),
-       _useGemini = _isGeminiBase(baseUri),
-       _useOpenAi =
-           _isOpenAiCompatibleBase(baseUri) && !_isGeminiBase(baseUri) {
+  })  : _baseUri = _normalizeBaseUri(baseUri),
+        _httpClient = httpClient ?? HttpClient(),
+        _timeout = timeout ?? const Duration(seconds: 60),
+        _useGemini = _isGeminiBase(_normalizeBaseUri(baseUri)),
+        _useOpenAi =
+            _isOpenAiCompatibleBase(_normalizeBaseUri(baseUri)) &&
+            !_isGeminiBase(_normalizeBaseUri(baseUri)) {
     _httpClient.connectionTimeout ??= const Duration(seconds: 10);
   }
 
@@ -73,28 +90,37 @@ class AiHttpService implements AiService {
     String? title,
     String? model,
   }) async {
-    if (_useGemini) {
-      return _postGeminiGenerateContent(
-        prompt: text,
-        instructions: _summaryInstructions(title),
+    try {
+      if (_useGemini) {
+        return await _postGeminiGenerateContent(
+          prompt: text,
+          instructions: _summaryInstructions(title),
+          model: model,
+        );
+      }
+      if (_useOpenAi) {
+        return await _postOpenAiResponse(
+          input: text,
+          instructions: _summaryInstructions(title),
+          model: model,
+        );
+      }
+      final payload = <String, Object?>{
+        'text': text,
+        'scopeId': scopeId,
+        'scopeType': scopeType,
+        'title': title,
+        'model': model,
+      };
+      return await _postJson('ai/summary', payload);
+    } catch (error) {
+      return AiServiceResult(
+        content: '',
         model: model,
+        raw: null,
+        error: _errorMessage(error),
       );
     }
-    if (_useOpenAi) {
-      return _postOpenAiResponse(
-        input: text,
-        instructions: _summaryInstructions(title),
-        model: model,
-      );
-    }
-    final payload = <String, Object?>{
-      'text': text,
-      'scopeId': scopeId,
-      'scopeType': scopeType,
-      'title': title,
-      'model': model,
-    };
-    return _postJson('ai/summary', payload);
   }
 
   @override
@@ -105,30 +131,39 @@ class AiHttpService implements AiService {
     required String scopeType,
     String? model,
   }) async {
-    if (_useGemini) {
-      final prompt = _qaPrompt(context, question);
-      return _postGeminiGenerateContent(
-        prompt: prompt,
-        instructions: _qaInstructions(),
+    try {
+      if (_useGemini) {
+        final prompt = _qaPrompt(context, question);
+        return await _postGeminiGenerateContent(
+          prompt: prompt,
+          instructions: _qaInstructions(),
+          model: model,
+        );
+      }
+      if (_useOpenAi) {
+        final prompt = _qaPrompt(context, question);
+        return await _postOpenAiResponse(
+          input: prompt,
+          instructions: _qaInstructions(),
+          model: model,
+        );
+      }
+      final payload = <String, Object?>{
+        'question': question,
+        'context': context,
+        'scopeId': scopeId,
+        'scopeType': scopeType,
+        'model': model,
+      };
+      return await _postJson('ai/qa', payload);
+    } catch (error) {
+      return AiServiceResult(
+        content: '',
         model: model,
+        raw: null,
+        error: _errorMessage(error),
       );
     }
-    if (_useOpenAi) {
-      final prompt = _qaPrompt(context, question);
-      return _postOpenAiResponse(
-        input: prompt,
-        instructions: _qaInstructions(),
-        model: model,
-      );
-    }
-    final payload = <String, Object?>{
-      'question': question,
-      'context': context,
-      'scopeId': scopeId,
-      'scopeType': scopeType,
-      'model': model,
-    };
-    return _postJson('ai/qa', payload);
   }
 
   @override
@@ -136,18 +171,27 @@ class AiHttpService implements AiService {
     required String input,
     String? model,
   }) async {
-    if (_useGemini) {
-      return _postGeminiEmbedContent(input: input, model: model);
+    try {
+      if (_useGemini) {
+        return await _postGeminiEmbedContent(input: input, model: model);
+      }
+      if (_useOpenAi) {
+        return await _postOpenAiEmbedding(input: input, model: model);
+      }
+      final payload = <String, Object?>{
+        'text': input,
+        'input': input,
+        'model': model,
+      };
+      return await _postEmbeddingJson('ai/embeddings', payload);
+    } catch (error) {
+      return AiEmbeddingResult(
+        embedding: const <double>[],
+        model: model,
+        raw: null,
+        error: _errorMessage(error),
+      );
     }
-    if (_useOpenAi) {
-      return _postOpenAiEmbedding(input: input, model: model);
-    }
-    final payload = <String, Object?>{
-      'text': input,
-      'input': input,
-      'model': model,
-    };
-    return _postEmbeddingJson('ai/embeddings', payload);
   }
 
   Future<AiServiceResult> _postJson(
@@ -165,17 +209,30 @@ class AiHttpService implements AiService {
       final response = await request.close().timeout(_timeout);
       final body = await response.transform(utf8.decoder).join();
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw AiServiceException(
-          'AI HTTP ${response.statusCode}: ${_compact(body)}',
+        return _serviceErrorResult(
+          _formatHttpError(
+            statusCode: response.statusCode,
+            body: body,
+            uri: uri,
+            reasonPhrase: response.reasonPhrase,
+          ),
+          model: payload['model']?.toString(),
         );
       }
       final decoded = _tryDecode(body);
       if (decoded == null) {
-        throw AiServiceException('AI response is not JSON');
+        return _serviceErrorResult(
+          'AI response is not JSON',
+          model: payload['model']?.toString(),
+        );
       }
       final content = _extractContent(decoded);
       if (content == null || content.trim().isEmpty) {
-        throw AiServiceException('AI response missing content');
+        return _serviceErrorResult(
+          'AI response missing content',
+          model: decoded['model']?.toString() ?? payload['model']?.toString(),
+          raw: decoded,
+        );
       }
       final model = decoded['model']?.toString();
       return AiServiceResult(
@@ -184,12 +241,16 @@ class AiHttpService implements AiService {
         raw: decoded,
       );
     } on TimeoutException {
-      throw const AiServiceException(
+      return _serviceErrorResult(
         'AI timeout. Попробуйте уменьшить контекст или выбрать более быструю модель.',
+        model: payload['model']?.toString(),
       );
     } catch (error) {
       Log.d('AI request failed ($path): $error');
-      rethrow;
+      return _serviceErrorResult(
+        _errorMessage(error),
+        model: payload['model']?.toString(),
+      );
     }
   }
 
@@ -208,17 +269,30 @@ class AiHttpService implements AiService {
       final response = await request.close().timeout(_timeout);
       final body = await response.transform(utf8.decoder).join();
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw AiServiceException(
-          'AI HTTP ${response.statusCode}: ${_compact(body)}',
+        return _embeddingErrorResult(
+          _formatHttpError(
+            statusCode: response.statusCode,
+            body: body,
+            uri: uri,
+            reasonPhrase: response.reasonPhrase,
+          ),
+          model: payload['model']?.toString(),
         );
       }
       final decoded = _tryDecode(body);
       if (decoded == null) {
-        throw AiServiceException('AI response is not JSON');
+        return _embeddingErrorResult(
+          'AI response is not JSON',
+          model: payload['model']?.toString(),
+        );
       }
       final embedding = _extractEmbedding(decoded);
       if (embedding == null || embedding.isEmpty) {
-        throw AiServiceException('AI response missing embedding');
+        return _embeddingErrorResult(
+          'AI response missing embedding',
+          model: decoded['model']?.toString() ?? payload['model']?.toString(),
+          raw: decoded,
+        );
       }
       final responseModel = decoded['model']?.toString();
       return AiEmbeddingResult(
@@ -227,12 +301,16 @@ class AiHttpService implements AiService {
         raw: decoded,
       );
     } on TimeoutException {
-      throw const AiServiceException(
+      return _embeddingErrorResult(
         'AI timeout. Попробуйте уменьшить контекст или выбрать более быструю модель.',
+        model: payload['model']?.toString(),
       );
     } catch (error) {
       Log.d('AI embeddings request failed ($path): $error');
-      rethrow;
+      return _embeddingErrorResult(
+        _errorMessage(error),
+        model: payload['model']?.toString(),
+      );
     }
   }
 
@@ -240,10 +318,11 @@ class AiHttpService implements AiService {
     required String input,
     required String instructions,
     required String? model,
+    bool allowFallback = true,
   }) async {
     final resolvedModel = model?.trim() ?? '';
     if (resolvedModel.isEmpty) {
-      throw const AiServiceException(
+      return _serviceErrorResult(
         'Для OpenAI Responses API нужно указать модель.',
       );
     }
@@ -260,24 +339,45 @@ class AiHttpService implements AiService {
       final request = await _httpClient.openUrl('POST', uri).timeout(_timeout);
       request.headers.contentType = ContentType.json;
       if (apiKey == null || apiKey!.trim().isEmpty) {
-        throw const AiServiceException('API key обязателен для OpenAI.');
+        return _serviceErrorResult('API key обязателен для OpenAI.');
       }
       request.headers.set('Authorization', 'Bearer ${apiKey!.trim()}');
       request.add(utf8.encode(jsonEncode(payload)));
       final response = await request.close().timeout(_timeout);
       final body = await response.transform(utf8.decoder).join();
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw AiServiceException(
-          'AI HTTP ${response.statusCode}: ${_compact(body)}',
+        if (allowFallback &&
+            (response.statusCode == 404 || response.statusCode == 405)) {
+          return _postOpenAiChatCompletions(
+            input: input,
+            instructions: instructions,
+            model: model,
+          );
+        }
+        return _serviceErrorResult(
+          _formatHttpError(
+            statusCode: response.statusCode,
+            body: body,
+            uri: uri,
+            reasonPhrase: response.reasonPhrase,
+          ),
+          model: resolvedModel,
         );
       }
       final decoded = _tryDecode(body);
       if (decoded == null) {
-        throw AiServiceException('AI response is not JSON');
+        return _serviceErrorResult(
+          'AI response is not JSON',
+          model: resolvedModel,
+        );
       }
       final content = _extractOpenAiContent(decoded);
       if (content == null || content.trim().isEmpty) {
-        throw AiServiceException('AI response missing content');
+        return _serviceErrorResult(
+          'AI response missing content',
+          model: decoded['model']?.toString() ?? resolvedModel,
+          raw: decoded,
+        );
       }
       final responseModel = decoded['model']?.toString();
       return AiServiceResult(
@@ -286,12 +386,85 @@ class AiHttpService implements AiService {
         raw: decoded,
       );
     } on TimeoutException {
-      throw const AiServiceException(
+      return _serviceErrorResult(
         'AI timeout. Попробуйте уменьшить контекст или выбрать более быструю модель.',
+        model: resolvedModel,
       );
     } catch (error) {
       Log.d('OpenAI request failed: $error');
-      rethrow;
+      return _serviceErrorResult(_errorMessage(error), model: resolvedModel);
+    }
+  }
+
+  Future<AiServiceResult> _postOpenAiChatCompletions({
+    required String input,
+    required String instructions,
+    required String? model,
+  }) async {
+    final resolvedModel = model?.trim() ?? '';
+    if (resolvedModel.isEmpty) {
+      return _serviceErrorResult(
+        'Для OpenAI Chat Completions нужно указать модель.',
+      );
+    }
+    final payload = <String, Object?>{
+      'model': resolvedModel,
+      'messages': [
+        {'role': 'system', 'content': instructions},
+        {'role': 'user', 'content': input},
+      ],
+    };
+    final uri = _openAiChatCompletionsUri(_baseUri);
+    try {
+      final request = await _httpClient.openUrl('POST', uri).timeout(_timeout);
+      request.headers.contentType = ContentType.json;
+      if (apiKey == null || apiKey!.trim().isEmpty) {
+        return _serviceErrorResult('API key обязателен для OpenAI.');
+      }
+      request.headers.set('Authorization', 'Bearer ${apiKey!.trim()}');
+      request.add(utf8.encode(jsonEncode(payload)));
+      final response = await request.close().timeout(_timeout);
+      final body = await response.transform(utf8.decoder).join();
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        return _serviceErrorResult(
+          _formatHttpError(
+            statusCode: response.statusCode,
+            body: body,
+            uri: uri,
+            reasonPhrase: response.reasonPhrase,
+          ),
+          model: resolvedModel,
+        );
+      }
+      final decoded = _tryDecode(body);
+      if (decoded == null) {
+        return _serviceErrorResult(
+          'AI response is not JSON',
+          model: resolvedModel,
+        );
+      }
+      final content = _extractChatCompletionsContent(decoded);
+      if (content == null || content.trim().isEmpty) {
+        return _serviceErrorResult(
+          'AI response missing content',
+          model: decoded['model']?.toString() ?? resolvedModel,
+          raw: decoded,
+        );
+      }
+      final responseModel = decoded['model']?.toString();
+      return AiServiceResult(
+        content: content.trim(),
+        model: responseModel ?? resolvedModel,
+        raw: decoded,
+      );
+    } on TimeoutException {
+      return _serviceErrorResult(
+        'AI timeout. Попробуйте уменьшить контекст или выбрать более быструю модель.',
+        model: resolvedModel,
+      );
+    } catch (error) {
+      Log.d('OpenAI chat completions request failed: $error');
+      return _serviceErrorResult(_errorMessage(error), model: resolvedModel);
     }
   }
 
@@ -301,7 +474,7 @@ class AiHttpService implements AiService {
   }) async {
     final resolvedModel = model?.trim() ?? '';
     if (resolvedModel.isEmpty) {
-      throw const AiServiceException(
+      return _embeddingErrorResult(
         'Для OpenAI embeddings нужно указать модель.',
       );
     }
@@ -314,24 +487,37 @@ class AiHttpService implements AiService {
       final request = await _httpClient.openUrl('POST', uri).timeout(_timeout);
       request.headers.contentType = ContentType.json;
       if (apiKey == null || apiKey!.trim().isEmpty) {
-        throw const AiServiceException('API key обязателен для OpenAI.');
+        return _embeddingErrorResult('API key обязателен для OpenAI.');
       }
       request.headers.set('Authorization', 'Bearer ${apiKey!.trim()}');
       request.add(utf8.encode(jsonEncode(payload)));
       final response = await request.close().timeout(_timeout);
       final body = await response.transform(utf8.decoder).join();
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw AiServiceException(
-          'AI HTTP ${response.statusCode}: ${_compact(body)}',
+        return _embeddingErrorResult(
+          _formatHttpError(
+            statusCode: response.statusCode,
+            body: body,
+            uri: uri,
+            reasonPhrase: response.reasonPhrase,
+          ),
+          model: resolvedModel,
         );
       }
       final decoded = _tryDecode(body);
       if (decoded == null) {
-        throw AiServiceException('AI response is not JSON');
+        return _embeddingErrorResult(
+          'AI response is not JSON',
+          model: resolvedModel,
+        );
       }
       final embedding = _extractEmbedding(decoded);
       if (embedding == null || embedding.isEmpty) {
-        throw AiServiceException('AI response missing embedding');
+        return _embeddingErrorResult(
+          'AI response missing embedding',
+          model: decoded['model']?.toString() ?? resolvedModel,
+          raw: decoded,
+        );
       }
       final responseModel = decoded['model']?.toString();
       return AiEmbeddingResult(
@@ -340,12 +526,13 @@ class AiHttpService implements AiService {
         raw: decoded,
       );
     } on TimeoutException {
-      throw const AiServiceException(
+      return _embeddingErrorResult(
         'AI timeout. Попробуйте уменьшить контекст или выбрать более быструю модель.',
+        model: resolvedModel,
       );
     } catch (error) {
       Log.d('OpenAI embeddings request failed: $error');
-      rethrow;
+      return _embeddingErrorResult(_errorMessage(error), model: resolvedModel);
     }
   }
 
@@ -355,10 +542,10 @@ class AiHttpService implements AiService {
   }) async {
     final resolvedModel = model?.trim() ?? '';
     if (resolvedModel.isEmpty) {
-      throw const AiServiceException('Для Gemini нужно указать модель.');
+      return _embeddingErrorResult('Для Gemini нужно указать модель.');
     }
     if (apiKey == null || apiKey!.trim().isEmpty) {
-      throw const AiServiceException('API key обязателен для Gemini.');
+      return _embeddingErrorResult('API key обязателен для Gemini.');
     }
     final uri = _geminiEmbedContentUri(
       _baseUri,
@@ -379,17 +566,30 @@ class AiHttpService implements AiService {
       final response = await request.close().timeout(_timeout);
       final body = await response.transform(utf8.decoder).join();
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw AiServiceException(
-          'AI HTTP ${response.statusCode}: ${_compact(body)}',
+        return _embeddingErrorResult(
+          _formatHttpError(
+            statusCode: response.statusCode,
+            body: body,
+            uri: uri,
+            reasonPhrase: response.reasonPhrase,
+          ),
+          model: resolvedModel,
         );
       }
       final decoded = _tryDecode(body);
       if (decoded == null) {
-        throw AiServiceException('AI response is not JSON');
+        return _embeddingErrorResult(
+          'AI response is not JSON',
+          model: resolvedModel,
+        );
       }
       final embedding = _extractEmbedding(decoded);
       if (embedding == null || embedding.isEmpty) {
-        throw AiServiceException('AI response missing embedding');
+        return _embeddingErrorResult(
+          'AI response missing embedding',
+          model: resolvedModel,
+          raw: decoded,
+        );
       }
       return AiEmbeddingResult(
         embedding: embedding,
@@ -397,12 +597,13 @@ class AiHttpService implements AiService {
         raw: decoded,
       );
     } on TimeoutException {
-      throw const AiServiceException(
+      return _embeddingErrorResult(
         'AI timeout. Попробуйте уменьшить контекст или выбрать более быструю модель.',
+        model: resolvedModel,
       );
     } catch (error) {
       Log.d('Gemini embeddings request failed: $error');
-      rethrow;
+      return _embeddingErrorResult(_errorMessage(error), model: resolvedModel);
     }
   }
 
@@ -413,10 +614,10 @@ class AiHttpService implements AiService {
   }) async {
     final resolvedModel = model?.trim() ?? '';
     if (resolvedModel.isEmpty) {
-      throw const AiServiceException('Для Gemini нужно указать модель.');
+      return _serviceErrorResult('Для Gemini нужно указать модель.');
     }
     if (apiKey == null || apiKey!.trim().isEmpty) {
-      throw const AiServiceException('API key обязателен для Gemini.');
+      return _serviceErrorResult('API key обязателен для Gemini.');
     }
     final uri = _geminiGenerateContentUri(
       _baseUri,
@@ -445,17 +646,30 @@ class AiHttpService implements AiService {
       final response = await request.close().timeout(_timeout);
       final body = await response.transform(utf8.decoder).join();
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw AiServiceException(
-          'AI HTTP ${response.statusCode}: ${_compact(body)}',
+        return _serviceErrorResult(
+          _formatHttpError(
+            statusCode: response.statusCode,
+            body: body,
+            uri: uri,
+            reasonPhrase: response.reasonPhrase,
+          ),
+          model: resolvedModel,
         );
       }
       final decoded = _tryDecode(body);
       if (decoded == null) {
-        throw AiServiceException('AI response is not JSON');
+        return _serviceErrorResult(
+          'AI response is not JSON',
+          model: resolvedModel,
+        );
       }
       final content = _extractGeminiContent(decoded);
       if (content == null || content.trim().isEmpty) {
-        throw AiServiceException('AI response missing content');
+        return _serviceErrorResult(
+          'AI response missing content',
+          model: resolvedModel,
+          raw: decoded,
+        );
       }
       return AiServiceResult(
         content: content.trim(),
@@ -463,12 +677,13 @@ class AiHttpService implements AiService {
         raw: decoded,
       );
     } on TimeoutException {
-      throw const AiServiceException(
+      return _serviceErrorResult(
         'AI timeout. Попробуйте уменьшить контекст или выбрать более быструю модель.',
+        model: resolvedModel,
       );
     } catch (error) {
       Log.d('Gemini request failed: $error');
-      rethrow;
+      return _serviceErrorResult(_errorMessage(error), model: resolvedModel);
     }
   }
 
@@ -540,6 +755,27 @@ class AiHttpService implements AiService {
     return _extractContent(decoded);
   }
 
+  String? _extractChatCompletionsContent(Map<String, Object?> decoded) {
+    final choices = decoded['choices'];
+    if (choices is List && choices.isNotEmpty) {
+      final first = choices.first;
+      if (first is Map) {
+        final message = first['message'];
+        if (message is Map) {
+          final content = message['content'];
+          if (content is String && content.trim().isNotEmpty) {
+            return content;
+          }
+        }
+        final text = first['text'];
+        if (text is String && text.trim().isNotEmpty) {
+          return text;
+        }
+      }
+    }
+    return _extractContent(decoded);
+  }
+
   String? _extractGeminiContent(Map<String, Object?> decoded) {
     final candidates = decoded['candidates'];
     if (candidates is List && candidates.isNotEmpty) {
@@ -573,12 +809,102 @@ class AiServiceException implements Exception {
   String toString() => message;
 }
 
+String _errorMessage(Object error) {
+  if (error is AiServiceException) {
+    return error.message;
+  }
+  return error.toString();
+}
+
+AiServiceResult _serviceErrorResult(
+  String message, {
+  String? model,
+  Map<String, Object?>? raw,
+}) {
+  return AiServiceResult(
+    content: '',
+    model: model,
+    raw: raw,
+    error: message,
+  );
+}
+
+AiEmbeddingResult _embeddingErrorResult(
+  String message, {
+  String? model,
+  Map<String, Object?>? raw,
+}) {
+  return AiEmbeddingResult(
+    embedding: const <double>[],
+    model: model,
+    raw: raw,
+    error: message,
+  );
+}
+
 String _compact(String raw) {
   final trimmed = raw.trim();
   if (trimmed.length <= 200) {
     return trimmed;
   }
   return '${trimmed.substring(0, 200)}…';
+}
+
+String _formatHttpError({
+  required int statusCode,
+  required String body,
+  required Uri uri,
+  String? reasonPhrase,
+}) {
+  final safeUri = _stripQuery(uri);
+  final details = <String>[];
+  final reason = reasonPhrase?.trim() ?? '';
+  if (reason.isNotEmpty) {
+    details.add(reason);
+  }
+  final compactBody = _compact(body);
+  if (compactBody.isNotEmpty) {
+    details.add(compactBody);
+  }
+  if (details.isEmpty) {
+    details.add('пустой ответ');
+  }
+  return 'AI HTTP $statusCode: ${details.join(' • ')} '
+      '(endpoint ${safeUri.toString()})';
+}
+
+Uri _stripQuery(Uri uri) {
+  return Uri(
+    scheme: uri.scheme,
+    userInfo: uri.userInfo,
+    host: uri.host,
+    port: uri.hasPort ? uri.port : null,
+    path: uri.path,
+  );
+}
+
+Uri _normalizeBaseUri(Uri uri) {
+  final cleaned = uri.replace(queryParameters: const {}, fragment: null);
+  var path = cleaned.path;
+  if (path.endsWith('/')) {
+    path = path.substring(0, path.length - 1);
+  }
+  final lower = path.toLowerCase();
+  const suffixes = [
+    '/ai/summary',
+    '/ai/qa',
+    '/ai/embeddings',
+    '/responses',
+    '/chat/completions',
+    '/embeddings',
+  ];
+  for (final suffix in suffixes) {
+    if (lower.endsWith(suffix)) {
+      path = path.substring(0, path.length - suffix.length);
+      break;
+    }
+  }
+  return cleaned.replace(path: path);
 }
 
 bool _isOpenAiCompatibleBase(Uri baseUri) {
@@ -588,6 +914,9 @@ bool _isOpenAiCompatibleBase(Uri baseUri) {
   }
   final path = baseUri.path.toLowerCase();
   if (path.contains('/openai/')) {
+    return true;
+  }
+  if (path.contains('compatible-mode')) {
     return true;
   }
   return false;
@@ -641,6 +970,30 @@ Uri _openAiEmbeddingsUri(Uri baseUri) {
   }
   if (!path.endsWith('/embeddings')) {
     path = '$path/embeddings';
+  }
+  return Uri(
+    scheme: scheme,
+    host: host,
+    port: baseUri.hasPort ? baseUri.port : null,
+    path: path,
+  );
+}
+
+Uri _openAiChatCompletionsUri(Uri baseUri) {
+  final scheme = baseUri.scheme.isEmpty ? 'https' : baseUri.scheme;
+  final host = baseUri.host.isEmpty ? 'api.openai.com' : baseUri.host;
+  var path = baseUri.path.trim();
+  if (path.isEmpty) {
+    path = '/v1';
+  }
+  if (path.endsWith('/openai')) {
+    path = '$path/v1';
+  }
+  if (path.endsWith('/')) {
+    path = path.substring(0, path.length - 1);
+  }
+  if (!path.endsWith('/chat/completions')) {
+    path = '$path/chat/completions';
   }
   return Uri(
     scheme: scheme,
