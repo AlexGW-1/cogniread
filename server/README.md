@@ -44,6 +44,26 @@ $ npm run start:dev
 $ npm run start:prod
 ```
 
+## Docker
+
+Build:
+
+```bash
+$ docker build -t cogniread-api .
+```
+
+Run:
+
+```bash
+$ docker run --rm -p 3000:3000 -e PORT=3000 cogniread-api
+```
+
+Health:
+
+```bash
+$ curl -f http://localhost:3000/health
+```
+
 ## Run tests
 
 ```bash
@@ -55,6 +75,16 @@ $ npm run test:e2e
 
 # test coverage
 $ npm run test:cov
+```
+
+### E2E (Sync Gateway contract tests)
+
+Requires a running Postgres and `DATABASE_URL`.
+
+```bash
+$ export DATABASE_URL="postgresql://<user>:<pass>@localhost:5432/cogniread?schema=public"
+$ npx prisma migrate dev --name init
+$ npm run test:e2e
 ```
 
 ## Deployment
