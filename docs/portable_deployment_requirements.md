@@ -85,6 +85,15 @@
 Минусы: появляется слой Cloud Run, но перенос всё ещё возможен без переписывания кода.
 
 ---
+## 8) Текущий статус
+
+На 2026-02-04 выбран режим B в упрощённой форме:
+- Cloud Run: `api` (Sync Gateway backend)
+- Cloud SQL: managed Postgres (временно)
+
+Документация развертывания: `infra/gcp/README.md`.
+
+---
 
 ## 5) Требования к репозиторию
 
@@ -191,16 +200,26 @@
 - `NEO4J_PASSWORD=...`
 - `STORAGE_PROVIDER=...`
 - `S3_*` (если AI читает/пишет артефакты)
+- `GCS_BUCKET=...` (если используется GCS)
+- `GCS_PROJECT_ID=...` (опционально)
+- `GCS_KEYFILE=...` (опционально)
 - `REDIS_URL=...` (если AI/worker используют очередь)
+- `AI_WORKER_QUEUE=ai-tasks` (опционально)
+- `EMBEDDINGS_DIM=16` (опционально)
 - `SENTRY_DSN=...` (опционально)
 
 #### Worker (`worker`) — если есть
 - `DATABASE_URL=...`
 - `REDIS_URL=...`
+- `AI_WORKER_QUEUE=ai-tasks` (опционально)
+- `LOG_LEVEL=info` (опционально)
 - `QDRANT_URL=...`
 - `NEO4J_URI=...`
 - `STORAGE_PROVIDER=...`
 - `S3_*` (при необходимости)
+- `GCS_BUCKET=...` (если используется GCS)
+- `GCS_PROJECT_ID=...` (опционально)
+- `GCS_KEYFILE=...` (опционально)
 
 ---
 
