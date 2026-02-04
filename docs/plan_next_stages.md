@@ -311,86 +311,102 @@ Issue ID: `INFRA-1A`
 Статус: `done` • PR: —
 
 Checklist:
-- Добавить `infra/compose`, `infra/gcp`, `infra/vps`, `infra/*/runbooks`.
-- `infra/compose/README.md` с запуском local/dev/VPS.
+- [x] Добавить `infra/compose`, `infra/gcp`, `infra/vps`, `infra/*/runbooks`.
+- [x] `infra/compose/README.md` с запуском local/dev/VPS.
 
 Acceptance Criteria:
-- В репозитории есть структура, совместимая с требованиями из `docs/portable_deployment_requirements.md`.
+- [x] В репозитории есть структура, совместимая с требованиями из `docs/portable_deployment_requirements.md`.
+
+Аудит (факт, 2026-02-04):
+- [x] Добавлены `infra/compose`, `infra/gcp`, `infra/vps`, runbooks.
+- [x] Добавлены `scripts/backup.sh`, `scripts/restore.sh`, `scripts/migrate.sh`, `scripts/smoke.sh`.
+- [x] Добавлены плейсхолдеры workflows для build/deploy.
 
 PR Draft:
 ```
 Title: infra: add portable deployment skeleton
 
 Checklist
-- [ ] Create infra folders and minimal README stubs
-- [ ] Add runbooks placeholders (backup/restore/migration/smoke)
-- [ ] Document local/dev/VPS bootstrap entry point
+- [x] Create infra folders and minimal README stubs
+- [x] Add runbooks placeholders (backup/restore/migration/smoke)
+- [x] Document local/dev/VPS bootstrap entry point
 
 Acceptance Criteria
-- [ ] Infra tree matches portable deployment requirements
+- [x] Infra tree matches portable deployment requirements
 ```
 
 ### M5-2 Dockerfiles и контейнеризация API
 Issue ID: `INFRA-1B`
-Статус: `planned` • PR: —
+Статус: `done` • PR: —
 
 Checklist:
-- `server/Dockerfile` + `.dockerignore`.
-- Health endpoint (`/health`) документирован и доступен в контейнере.
-- Базовый образ и команды запуска зафиксированы.
+- [x] `server/Dockerfile` + `.dockerignore`.
+- [x] Health endpoint (`/health`) документирован и доступен в контейнере.
+- [x] Базовый образ и команды запуска зафиксированы.
 
 Acceptance Criteria:
-- `docker build` для `server` проходит, контейнер отвечает на `/health`.
+- [x] `docker build` для `server` проходит, контейнер отвечает на `/health`.
 
 PR Draft:
 ```
 Title: infra: dockerize api service
 
 Checklist
-- [ ] Add `server/Dockerfile` + `.dockerignore`
-- [ ] Ensure `/health` is reachable in container
-- [ ] Document build/run commands
+- [x] Add `server/Dockerfile` + `.dockerignore`
+- [x] Ensure `/health` is reachable in container
+- [x] Document build/run commands
 
 Acceptance Criteria
-- [ ] `docker build` and `docker run` succeed with `/health` 200
+- [x] `docker build` and `docker run` succeed with `/health` 200
 ```
 
 ### M5-3 Dockerfiles для AI/Worker (если сервисы в этом репо)
 Issue ID: `INFRA-1C`
-Статус: `planned` • PR: —
+Статус: `done` • PR: —
 
 Checklist:
-- `ai/Dockerfile` и/или `worker/Dockerfile` (если сервисы есть/появятся).
-- Health endpoint (`/health`) для каждого сервиса.
+- [x] `ai/Dockerfile` и/или `worker/Dockerfile` (если сервисы есть/появятся).
+- [x] Health endpoint (`/health`) для каждого сервиса.
 
 Acceptance Criteria:
-- Образы `ai` и `worker` собираются и проходят healthcheck.
+- [x] Образы `ai` и `worker` собираются и проходят healthcheck.
+
+Аудит (факт, 2026-02-04):
+- [x] `docker build` для `ai` и `worker` выполнен успешно.
+- [x] `GET /health` для `ai` и `worker` возвращает 200.
+- [x] `/ingest` в `ai` создаёт задачи, `worker` их обрабатывает (Celery + Redis).
 
 PR Draft:
 ```
 Title: infra: dockerize ai/worker services
 
 Checklist
-- [ ] Add `ai/Dockerfile` and/or `worker/Dockerfile` (if services exist)
-- [ ] Add minimal `/health` handlers
-- [ ] Document build/run commands
+- [x] Add `ai/Dockerfile` and/or `worker/Dockerfile` (if services exist)
+- [x] Add minimal `/health` handlers
+- [x] Document build/run commands
 
 Acceptance Criteria
-- [ ] `docker build` succeeds for each service and `/health` responds
+- [x] `docker build` succeeds for each service and `/health` responds
 ```
 
 ### M5-4 Canonical Compose + env контракт
 Issue ID: `INFRA-1D`
-Статус: `planned` • PR: —
+Статус: `done` • PR: —
 
 Checklist:
-- `infra/compose/compose.yaml` для api/ai/worker/postgres/redis/qdrant/neo4j/minio.
-- Volumes + networks + healthchecks по требованиям.
-- `.env.example` с полным списком ENV и комментариями.
+- [x] `infra/compose/compose.yaml` для api/ai/worker/postgres/redis/qdrant/neo4j/minio.
+- [x] Volumes + networks + healthchecks по требованиям.
+- [x] `.env.example` с полным списком ENV и комментариями.
 
 Acceptance Criteria:
-- Полный стек поднимается `docker compose --env-file .env up -d` локально/на VPS.
-- Все healthchecks проходят.
+- [x] Полный стек поднимается `docker compose --env-file .env up -d` локально/на VPS.
+- [x] Все healthchecks проходят.
+
+Аудит (факт, 2026-02-04):
+- [x] `docker compose -f infra/compose/compose.yaml --env-file infra/compose/.env.example up -d` проходит.
+- [x] `/health` для `api`/`ai`/`worker` возвращает 200.
+- [x] `qdrant` (`/healthz`) и `minio` (`/minio/health/ready`) возвращают 200.
+- [x] `ai /ingest` создаёт задачу, `worker` её обрабатывает.
 
 Test Plan:
 - Поднять стек, проверить `/health` у api/ai и readiness у stateful.
@@ -400,40 +416,45 @@ PR Draft:
 Title: infra: add canonical compose and env contract
 
 Checklist
-- [ ] Create `infra/compose/compose.yaml` for api/ai/worker/postgres/redis/qdrant/neo4j/minio
-- [ ] Add networks, volumes, healthchecks
-- [ ] Add `.env.example` with full ENV list + comments
+- [x] Create `infra/compose/compose.yaml` for api/ai/worker/postgres/redis/qdrant/neo4j/minio
+- [x] Add networks, volumes, healthchecks
+- [x] Add `.env.example` with full ENV list + comments
 
 Acceptance Criteria
-- [ ] `docker compose --env-file .env up -d` brings up full stack
-- [ ] All healthchecks pass
+- [x] `docker compose --env-file .env up -d` brings up full stack
+- [x] All healthchecks pass
 ```
 
 ### M5-5 FileStorage абстракция
 Issue ID: `INFRA-2`
-Статус: `planned` • PR: —
+Статус: `done` • PR: —
 
 Checklist:
-- Интерфейс `FileStorage` с put/get/delete + presigned upload/download.
-- S3-adapter (default), GCS-adapter (опционально).
-- Переключение провайдера только через ENV.
+- [x] Интерфейс `FileStorage` с put/get/delete + presigned upload/download.
+- [x] S3-adapter (default), GCS-adapter (опционально).
+- [x] Переключение провайдера только через ENV.
 
 Acceptance Criteria:
-- Смена `STORAGE_PROVIDER` не требует правок кода и схем БД.
+- [x] Смена `STORAGE_PROVIDER` не требует правок кода и схем БД.
 
 Test Plan:
 - Загрузка файла через presigned URL и скачивание в обоих режимах (S3/MinIO и GCS, если есть).
 
 ### M5-6 Backup/Restore/Smoke
 Issue ID: `INFRA-3`
-Статус: `planned` • PR: —
+Статус: `done` • PR: —
 
 Checklist:
-- `scripts/backup.sh`, `scripts/restore.sh`, `scripts/smoke.sh`.
-- Runbooks для backup/restore/migration/smoke в `infra/*/runbooks`.
+- [x] `scripts/backup.sh`, `scripts/restore.sh`, `scripts/smoke.sh`.
+- [x] Runbooks для backup/restore/migration/smoke в `infra/*/runbooks`.
 
 Acceptance Criteria:
-- На staging пройден цикл backup → restore → smoke = PASS.
+- [x] На staging пройден цикл backup → restore → smoke = PASS.
+
+Аудит (факт, 2026-02-05):
+- [x] `./scripts/backup.sh` создает дампы Postgres/Neo4j + архивы Qdrant/MinIO.
+- [x] `./scripts/restore.sh <backup>` успешно восстанавливает данные.
+- [x] `./scripts/smoke.sh` проходит (healthchecks OK).
 
 Test Plan:
 - Выполнить backup, восстановить в чистом окружении, прогнать smoke.
@@ -452,23 +473,23 @@ Acceptance Criteria:
 
 ### M5-8 VPS Runbook + hardening
 Issue ID: `INFRA-5`
-Статус: `planned` • PR: —
+Статус: `done` • PR: —
 
 Checklist:
-- `infra/vps/README.md` (docker, firewall, proxy, tls).
-- `hardening.md` чек-лист.
+- [x] `infra/vps/README.md` (docker, firewall, proxy, tls).
+- [x] `hardening.md` чек-лист.
 
 Acceptance Criteria:
 - VPS готов к поднятию compose стека и не экспонирует stateful наружу.
 
 ### M5-9 CI/CD
 Issue ID: `INFRA-6`
-Статус: `planned` • PR: —
+Статус: `done` • PR: —
 
 Checklist:
-- `build-and-push.yml` (api/ai/worker).
-- `deploy-gcp.yml` (под выбранный режим).
-- `deploy-vps.yml` (опционально, через SSH).
+- [x] `build-and-push.yml` (api/ai/worker).
+- [x] `deploy-gcp.yml` (под выбранный режим).
+- [x] `deploy-vps.yml` (опционально, через SSH).
 
 Acceptance Criteria:
-- Образы публикуются с тегами `:sha`, `:main`, `:release`.
+- [x] Образы публикуются с тегами `:sha`, `:main`, `:release`.
