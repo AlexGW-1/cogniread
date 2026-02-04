@@ -1,17 +1,20 @@
-import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  CanActivate,
+  ExecutionContext,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { extractUserIdFromAuthHeader } from './auth.util';
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest();
-    const header = request.headers?.authorization;
-    if (typeof header !== 'string' || !header.startsWith('Bearer ')) {
+    const userId = extractUserIdFromAuthHeader(request.headers?.authorization);
+    if (!userId) {
       throw new UnauthorizedException('Missing or invalid bearer token');
     }
-    const token = header.slice('Bearer '.length).trim();
-    if (!token) {
-      throw new UnauthorizedException('Missing bearer token');
-    }
+    request.userId = userId;
     return true;
   }
 }
