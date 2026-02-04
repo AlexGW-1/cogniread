@@ -1,0 +1,81 @@
+name: deploy-gcp
+
+on:
+  workflow_dispatch:
+
+env:
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'cogniread-485918' }}
+  GCP_REGION: ${{ vars.GCP_REGION || 'europe-west4' }}
+  AR_REPO: ${{ vars.GCP_AR_REPO || 'cogniread' }}
+  SERVICE_NAME: ${{ vars.GCP_RUN_SERVICE || 'cogniread-sync' }}
+  IMAGE_NAME: ${{ vars.GCP_IMAGE_NAME || 'sync' }}
+  CLOUDSQL_INSTANCE: ${{ vars.GCP_CLOUDSQL_INSTANCE || 'cogniread-485918:europe-west4:cogniread-sql' }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Auth to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure gcloud
+        run: |
+          gcloud config set project "${GCP_PROJECT_ID}"
+          gcloud config set run/region "${GCP_REGION}"
+
+      - name: Configure Docker auth
+        run: |
+          gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: server
+          file: server/Dockerfile
+          push: true
+          tags: |
+            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.AR_REPO }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.AR_REPO }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Deploy Cloud Run service
+        run: |
+          gcloud run deploy "${SERVICE_NAME}" \
+            --image="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPO}/${IMAGE_NAME}:latest" \
+            --region="${GCP_REGION}" \
+            --allow-unauthenticated \
+            --add-cloudsql-instances="${CLOUDSQL_INSTANCE}" \
+            --env-vars-file=infra/gcp/prod.env
+
+      - name: Create or update migration job
+        run: |
+          if gcloud run jobs describe "${SERVICE_NAME}-migrate" --region="${GCP_REGION}" >/dev/null 2>&1; then
+            gcloud run jobs update "${SERVICE_NAME}-migrate" \
+              --image="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPO}/${IMAGE_NAME}:latest" \
+              --region="${GCP_REGION}" \
+              --add-cloudsql-instances="${CLOUDSQL_INSTANCE}" \
+              --env-vars-file=infra/gcp/prod.env \
+              --command=npx \
+              --args=prisma,migrate,deploy
+          else
+            gcloud run jobs create "${SERVICE_NAME}-migrate" \
+              --image="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPO}/${IMAGE_NAME}:latest" \
+              --region="${GCP_REGION}" \
+              --add-cloudsql-instances="${CLOUDSQL_INSTANCE}" \
+              --env-vars-file=infra/gcp/prod.env \
+              --command=npx \
+              --args=prisma,migrate,deploy
+          fi
+
+      - name: Run migrations
+        run: |
+          gcloud run jobs execute "${SERVICE_NAME}-migrate" --region="${GCP_REGION}"
