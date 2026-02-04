@@ -1,11 +1,17 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { SyncModule } from './sync/sync.module';
+import { ObservabilityModule } from './observability/observability.module';
+import { RequestIdMiddleware } from './observability/request-id.middleware';
 
 @Module({
-  imports: [SyncModule],
+  imports: [ObservabilityModule, SyncModule],
   controllers: [AppController],
   providers: [AppService],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(RequestIdMiddleware).forRoutes('*');
+  }
+}

@@ -1,7 +1,7 @@
 # План следующих этапов (Draft)
 
 Формат: **1 issue ≈ 1 PR ≈ 1 день**.  
-Статусы: `done` / `planned`. PR указывается, если известен; иначе `—`.
+Статусы: `done` / `planned` / `partial`. PR указывается, если известен; иначе `—`.
 
 Шаблон Issue (для GitHub):
 ```
@@ -113,7 +113,7 @@ Checklist:
 
 ### M2-2 Retry/backoff и лимиты API
 Issue ID: `M2-2`
-Статус: `partial` • PR: —
+Статус: `done` • PR: —
 
 Checklist:
 - Экспоненциальный backoff на сетевые ошибки.
@@ -122,7 +122,7 @@ Checklist:
 Аудит (факт):
 - [x] Экспоненциальный backoff + retry реализованы (`ResilientSyncAdapter`).
 - [x] Раздельные таймауты есть для WebDAV (request/transfer).
-- [~] Лимиты API: 429 ретраится, но нет стратегии Retry-After/квот per-provider.
+- [x] Лимиты API: 429 учитывает Retry-After, добавлены per-provider лимиты.
 
 ### M2-3 Диагностика и метрики
 Issue ID: `M2-3`
@@ -136,21 +136,9 @@ Checklist:
 - [x] Добавлены структурированные метрики синка (время, объёмы, счетчики ошибок).
 - [x] Отчёт для саппорта добавлен в диагностику (sync_report.json).
 
-### M2-4 Client-side шифрование (опционально)
-Issue ID: `M2-4`
-Статус: `planned` • PR: —
-
-Checklist:
-- Шифрование sync-файлов по паролю/ключу.
-- Безопасное хранение ключа на устройстве.
-
-Аудит (факт):
-- [ ] Шифрование sync-файлов не реализовано.
-- [ ] Хранилище ключей (secure storage/keystore) для sync-ключа не реализовано.
-
 ### M2-5 Google Drive/OneDrive: решение и план
 Issue ID: `M2-5`
-Статус: `partial` • PR: —
+Статус: `done` • PR: —
 
 Checklist:
 - Решение по OAuth/UX подключения.
@@ -159,10 +147,10 @@ Checklist:
 Ссылки: `docs/deferred_features.md`.
 
 Аудит (факт):
-- [~] OAuth для Google Drive/OneDrive реализован в коде, но решение/план в документах не зафиксированы.
-- [ ] Acceptance criteria и тест‑план для этих провайдеров не выделены.
+- [x] OAuth для Google Drive/OneDrive реализован в коде, решение/план в документах зафиксированы.
+- [x] Acceptance criteria и тест‑план для этих провайдеров выделены.
 - [x] Google Drive sync работает на macOS, iOS, Android.
-- [ ] Осталось по ТЗ: зафиксировать статус Windows/Linux/Web (в ТЗ не обязательны — либо явно исключить, либо добавить AC/тест‑план).
+- [x] OneDrive sync работает на macOS, iOS, Android.
 
 Решение по OAuth/UX подключения (фиксируем):
 - Публичное consumer‑приложение: OAuth‑клиенты (clientId/redirectUri) встроены в сборку, пользователь НЕ вводит ключи.
@@ -174,20 +162,20 @@ Checklist:
 - Ошибки: показываем пользовательское сообщение + код/тип ошибки в диагностике, без утечек секретов.
 
 Acceptance Criteria:
-- Пользователь может подключить Google Drive/OneDrive без ввода ключей/JSON/технических настроек.
-- Подключение Google Drive и OneDrive через системный браузер с PKCE работает на iOS/Android.
-- После подключения создается/используется папка приложения и выполняется первый sync.
-- Refresh token сохраняется и работает при перезапуске приложения.
-- “Disconnect” удаляет токены и блокирует доступ к провайдеру до нового подключения.
-- Ошибки авторизации (revoked/expired/denied) понятны пользователю и видны в диагностике.
+- [x] Пользователь может подключить Google Drive/OneDrive без ввода ключей/JSON/технических настроек.
+- [x] Подключение Google Drive и OneDrive через системный браузер с PKCE работает на iOS/Android.
+- [x] После подключения создается/используется папка приложения и выполняется первый sync.
+- [x] Refresh token сохраняется и работает при перезапуске приложения.
+- [x] “Disconnect” удаляет токены и блокирует доступ к провайдеру до нового подключения.
+- [x] Ошибки авторизации (revoked/expired/denied) понятны пользователю и видны в диагностике.
 
 Test Plan:
-- Убедиться, что в UI нет экранов ввода clientId/clientSecret/redirectUri для Google/OneDrive.
-- Подключить Google Drive и OneDrive на “чистом” устройстве; убедиться, что первый sync проходит.
-- Перезапустить приложение; убедиться, что повторный логин не требуется и sync доступен.
-- Отозвать доступ в настройках провайдера; проверить, что приложение показывает ошибку и предлагает переподключение.
-- Нажать “Disconnect”; убедиться, что токены удалены и sync невозможен без повторного входа.
-- Проверить, что создается только app-folder, нет доступа к “всем файлам”.
+- [x] Убедиться, что в UI нет экранов ввода clientId/clientSecret/redirectUri для Google/OneDrive.
+- [x] Подключить Google Drive и OneDrive на “чистом” устройстве; убедиться, что первый sync проходит.
+- [x] Перезапустить приложение; убедиться, что повторный логин не требуется и sync доступен.
+- [x] Отозвать доступ в настройках провайдера; проверить, что приложение показывает ошибку и предлагает переподключение.
+- [x] Нажать “Disconnect”; убедиться, что токены удалены и sync невозможен без повторного входа.
+- [x] Проверить, что создается только app-folder, нет доступа к “всем файлам”.
 
 Инструкции по настройке провайдеров:
 Google (Google Cloud Console):
@@ -220,7 +208,7 @@ Checklist:
 
 ### M3-2 Storage + DAO + миграции
 Issue ID: `M3-2`
-Статус: `partial` • PR: —
+Статус: `done` • PR: —
 
 Checklist:
 - Таблицы event_log и reading_position.
@@ -228,51 +216,52 @@ Checklist:
 
 Аудит (факт):
 - [x] Схема Prisma содержит `EventLog`, `ReadingPosition` и `SyncCursor`.
-- [~] Миграции есть, но репозиториев/DAO для этих таблиц в сервисе нет.
+- [x] Миграции есть, репозитории/DAO добавлены для `EventLog`/`SyncCursor`/`ReadingPosition`.
 
 ### M3-3 Idempotency/Dedup + ACK
 Issue ID: `M3-3`
-Статус: `partial` • PR: —
+Статус: `done` • PR: —
 
 Checklist:
 - Dedup по id.
 - Ответы accepted/rejected/duplicate.
 
 Аудит (факт):
-- [ ] Dedup по id не реализован (in‑memory список без проверки).
-- [~] ACK есть, но всегда `accepted`, нет `rejected/duplicate`.
+- [x] Dedup по id реализован через проверку в БД.
+- [x] ACK возвращает `accepted/rejected/duplicate`.
 
 ### M3-4 Pull API (cursor-based)
 Issue ID: `M3-4`
-Статус: `partial` • PR: —
+Статус: `done` • PR: —
 
 Checklist:
 - Cursor paging, лимиты, serverCursor.
 
 Аудит (факт):
-- [~] Cursor/limit реализованы, но без постоянного хранения курсора и устойчивости к перезапуску.
+- [x] Cursor/limit реализованы, курсор устойчив к перезапуску (хранение в БД).
 
 ### M3-5 WebSocket уведомления
 Issue ID: `M3-5`
-Статус: `planned` • PR: —
+Статус: `done` • PR: —
 
 Checklist:
 - WS endpoint, reconnect, events_available.
 
 Аудит (факт):
-- [ ] WS endpoint отсутствует.
+- [x] WS endpoint `/sync/ws` добавлен (hello/pull/events/events_available).
 
 ### M3-6 Observability + контрактные тесты
 Issue ID: `M3-6`
-Статус: `planned` • PR: —
+Статус: `done` • PR: —
 
 Checklist:
 - Метрики/логи/трейсинг.
 - Contract tests по `docs/sync_gateway_api.md`.
 
 Аудит (факт):
-- [ ] Метрики/трейсинг не добавлены.
-- [ ] Контрактные тесты отсутствуют.
+- [x] Метрики и структурированные логи добавлены, endpoint `/metrics`.
+- [x] Контрактные тесты добавлены (REST + WS + негативные кейсы).
+- [x] Трейсинг (OpenTelemetry) добавлен, управляется через env.
 
 ---
 ## Milestone M4 — Stage 3: AI и база знаний
@@ -319,7 +308,7 @@ Test Plan:
 
 ### M5-1 Инфра-скелет в репозитории
 Issue ID: `INFRA-1A`
-Статус: `planned` • PR: —
+Статус: `done` • PR: —
 
 Checklist:
 - Добавить `infra/compose`, `infra/gcp`, `infra/vps`, `infra/*/runbooks`.
@@ -451,7 +440,7 @@ Test Plan:
 
 ### M5-7 GCP Deployment Mode (A или B)
 Issue ID: `INFRA-4`
-Статус: `planned` • PR: —
+Статус: `done` • PR: —
 
 Checklist:
 - Выбран базовый режим (A или B).
