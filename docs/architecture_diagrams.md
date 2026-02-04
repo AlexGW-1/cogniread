@@ -1,6 +1,6 @@
 # Диаграммы архитектуры проекта
 
-## 1. Current architecture (MVP0–MVP3)
+## 1. Current architecture (MVP0–MVP2 + Stage 1)
 
 ```mermaid
 flowchart TB

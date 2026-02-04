@@ -24,6 +24,11 @@ Use **Last-Write-Wins (LWW)** based on `updatedAt` for all entities listed below
 - LWW fields: `color`, `excerpt`, `anchor`, `endOffset`, `updatedAt`
 - Rationale: highlight changes are typically simple updates.
 
+### FreeNote
+- Conflict key: `id`
+- LWW fields: `text`, `color`, `updatedAt`
+- Rationale: free notes are edited linearly; last edit wins.
+
 ### Bookmark
 - Conflict key: `id` (book has max 1 bookmark in current model)
 - LWW fields: `anchor`, `label`, `updatedAt`

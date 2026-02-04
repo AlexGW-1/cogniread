@@ -172,6 +172,15 @@ class SyncAuthStore {
     await _requireBox.delete(_smbKey());
   }
 
+  Future<void> clearAll() async {
+    for (final provider in SyncProvider.values) {
+      await clearToken(provider);
+    }
+    await clearWebDavCredentials();
+    await clearSynologyCredentials();
+    await clearSmbCredentials();
+  }
+
   String _tokenKey(SyncProvider provider) => 'token_${provider.name}';
 
   String _webDavKey() => 'webdav_credentials';

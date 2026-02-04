@@ -32,6 +32,9 @@ void main() {
         _TestPathProviderPlatform(supportDir.path);
     store = LibraryStore();
     await store.init();
+  });
+
+  setUp(() async {
     await store.clear();
   });
 
@@ -92,5 +95,76 @@ void main() {
     final cleared = await store.getById(entry.id);
     expect(cleared, isNotNull);
     expect(cleared!.bookmarks, isEmpty);
+  });
+
+  test('add multiple bookmarks and update label', () async {
+    final entry = LibraryEntry(
+      id: 'book-2',
+      title: 'Title',
+      author: 'Author',
+      localPath: '/tmp/book.epub',
+      coverPath: null,
+      addedAt: DateTime(2026, 1, 12),
+      fingerprint: 'hash-2',
+      sourcePath: '/tmp/book.epub',
+      readingPosition: const ReadingPosition(
+        chapterHref: null,
+        anchor: null,
+        offset: null,
+        updatedAt: null,
+      ),
+      progress: const ReadingProgress(
+        percent: null,
+        chapterIndex: null,
+        totalChapters: null,
+        updatedAt: null,
+      ),
+      lastOpenedAt: null,
+      notes: const <Note>[],
+      highlights: const <Highlight>[],
+      bookmarks: const <Bookmark>[],
+      tocOfficial: const <TocNode>[],
+      tocGenerated: const <TocNode>[],
+      tocMode: TocMode.official,
+    );
+    await store.upsert(entry);
+
+    final createdAt = DateTime(2026, 1, 12, 9);
+    final first = Bookmark(
+      id: 'bookmark-1',
+      bookId: entry.id,
+      anchor: 'chapter|10',
+      label: 'Закладка 1',
+      createdAt: createdAt,
+      updatedAt: createdAt,
+    );
+    final second = Bookmark(
+      id: 'bookmark-2',
+      bookId: entry.id,
+      anchor: 'chapter|20',
+      label: 'Закладка 2',
+      createdAt: createdAt,
+      updatedAt: createdAt,
+    );
+
+    await store.addBookmark(entry.id, first);
+    await store.addBookmark(entry.id, second);
+    final withTwo = await store.getById(entry.id);
+    expect(withTwo, isNotNull);
+    expect(withTwo!.bookmarks.length, 2);
+
+    final updatedAt = DateTime(2026, 1, 12, 10);
+    await store.updateBookmark(
+      entry.id,
+      second.id,
+      'Новая закладка',
+      updatedAt,
+    );
+    final updatedEntry = await store.getById(entry.id);
+    expect(updatedEntry, isNotNull);
+    final updated = updatedEntry!.bookmarks
+        .firstWhere((item) => item.id == second.id);
+    expect(updated.label, 'Новая закладка');
+    expect(updated.updatedAt, updatedAt);
   });
 }

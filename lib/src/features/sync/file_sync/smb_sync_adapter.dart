@@ -4,11 +4,9 @@ import 'package:cogniread/src/features/sync/file_sync/sync_adapter.dart';
 import 'package:path/path.dart' as p;
 
 class SmbSyncAdapter implements SyncAdapter {
-  SmbSyncAdapter({
-    required String mountPath,
-    String basePath = 'cogniread',
-  })  : _mountPath = p.normalize(mountPath),
-        _basePath = basePath;
+  SmbSyncAdapter({required String mountPath, String basePath = 'cogniread'})
+    : _mountPath = p.normalize(mountPath),
+      _basePath = basePath;
 
   final String _mountPath;
   final String _basePath;
@@ -17,7 +15,10 @@ class SmbSyncAdapter implements SyncAdapter {
   Future<List<SyncFileRef>> listFiles() async {
     final baseDir = await _ensureBaseDir();
     final refs = <SyncFileRef>[];
-    await for (final entity in baseDir.list(recursive: true, followLinks: false)) {
+    await for (final entity in baseDir.list(
+      recursive: true,
+      followLinks: false,
+    )) {
       if (entity is! File) {
         continue;
       }
@@ -44,11 +45,7 @@ class SmbSyncAdapter implements SyncAdapter {
     final bytes = await target.readAsBytes();
     final stat = await target.stat();
     return SyncFile(
-      ref: SyncFileRef(
-        path: path,
-        updatedAt: stat.modified,
-        size: stat.size,
-      ),
+      ref: SyncFileRef(path: path, updatedAt: stat.modified, size: stat.size),
       bytes: bytes,
     );
   }
@@ -72,9 +69,15 @@ class SmbSyncAdapter implements SyncAdapter {
   @override
   Future<void> deleteFile(String path) async {
     final baseDir = await _ensureBaseDir();
-    final target = File(_resolve(path, baseDir));
-    if (await target.exists()) {
-      await target.delete();
+    final resolved = _resolve(path, baseDir);
+    final targetFile = File(resolved);
+    if (await targetFile.exists()) {
+      await targetFile.delete();
+      return;
+    }
+    final targetDir = Directory(resolved);
+    if (await targetDir.exists()) {
+      await targetDir.delete(recursive: true);
     }
   }
 

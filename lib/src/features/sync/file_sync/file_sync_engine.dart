@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:cogniread/src/features/library/data/free_notes_store.dart';
 import 'package:cogniread/src/features/library/data/library_store.dart';
 import 'package:cogniread/src/core/types/toc.dart';
 import 'package:cogniread/src/features/sync/data/event_log_store.dart';
@@ -14,27 +15,34 @@ class FileSyncEngine {
   FileSyncEngine({
     required SyncAdapter adapter,
     required LibraryStore libraryStore,
+    FreeNotesStore? freeNotesStore,
     required EventLogStore eventLogStore,
     required String deviceId,
     required StorageService storageService,
     this.basePath = '',
+    this.maxConcurrentBookUploads = 2,
   })  : _adapter = adapter,
         _libraryStore = libraryStore,
+        _freeNotesStore = freeNotesStore,
         _eventLogStore = eventLogStore,
         _deviceId = deviceId,
         _storageService = storageService;
 
   final SyncAdapter _adapter;
   final LibraryStore _libraryStore;
+  final FreeNotesStore? _freeNotesStore;
   final EventLogStore _eventLogStore;
   final String _deviceId;
   final StorageService _storageService;
   final String basePath;
+  final int maxConcurrentBookUploads;
+  _SyncMetricsTracker? _metrics;
 
   Future<FileSyncResult> sync() async {
     final stopwatch = Stopwatch()..start();
     Log.d('FileSyncEngine: sync started');
     final now = DateTime.now().toUtc();
+    _metrics = _SyncMetricsTracker();
     try {
       final remoteEvents = await _readEventLog();
       final remoteState = await _readState();
@@ -109,6 +117,11 @@ class FileSyncEngine {
         uploadedAt: now,
         booksUploaded: booksSync.uploaded,
         booksDownloaded: booksSync.downloaded,
+        durationMs: stopwatch.elapsedMilliseconds,
+        bytesUploaded: _metrics?.bytesUploaded ?? 0,
+        bytesDownloaded: _metrics?.bytesDownloaded ?? 0,
+        filesUploaded: _metrics?.filesUploaded ?? 0,
+        filesDownloaded: _metrics?.filesDownloaded ?? 0,
       );
       Log.d(
         'FileSyncEngine: sync finished in ${stopwatch.elapsedMilliseconds} ms',
@@ -119,13 +132,25 @@ class FileSyncEngine {
       return FileSyncResult.error(
         error: error,
         uploadedAt: now,
+        durationMs: stopwatch.elapsedMilliseconds,
+        bytesUploaded: _metrics?.bytesUploaded ?? 0,
+        bytesDownloaded: _metrics?.bytesDownloaded ?? 0,
+        filesUploaded: _metrics?.filesUploaded ?? 0,
+        filesDownloaded: _metrics?.filesDownloaded ?? 0,
       );
     } catch (error) {
       Log.d('FileSyncEngine: sync failed: $error');
       return FileSyncResult.error(
         error: SyncAdapterException(error.toString(), code: 'sync_error'),
         uploadedAt: now,
+        durationMs: stopwatch.elapsedMilliseconds,
+        bytesUploaded: _metrics?.bytesUploaded ?? 0,
+        bytesDownloaded: _metrics?.bytesDownloaded ?? 0,
+        filesUploaded: _metrics?.filesUploaded ?? 0,
+        filesDownloaded: _metrics?.filesDownloaded ?? 0,
       );
+    } finally {
+      _metrics = null;
     }
   }
 
@@ -134,13 +159,19 @@ class FileSyncEngine {
       final remoteIndex = await _readBooksIndex();
       final localEntries = await _libraryStore.loadAll();
       final now = DateTime.now().toUtc();
-      final result = await _mergeBooks(remoteIndex, localEntries, now);
+      final deletedByFingerprint = _collectLocalBookDeletions();
+      final result = await _mergeBooks(
+        remoteIndex,
+        localEntries,
+        now,
+        deletedByFingerprint,
+      );
       final nextIndex = SyncBooksIndexFile(
         schemaVersion: 1,
         generatedAt: now,
         books: result.nextIndex.values.toList(),
       );
-      await _adapter.putFile(
+      await _putFile(
         _booksIndexPath(),
         nextIndex.toJsonBytes(),
         contentType: 'application/json',
@@ -165,6 +196,7 @@ class FileSyncEngine {
     SyncBooksIndexFile remoteIndex,
     List<LibraryEntry> localEntries,
     DateTime now,
+    Map<String, DateTime> deletedByFingerprint,
   ) async {
     final remoteByFp = <String, SyncBookDescriptor>{
       for (final book in remoteIndex.books) book.fingerprint: book,
@@ -177,7 +209,8 @@ class FileSyncEngine {
     var uploaded = 0;
     var downloaded = 0;
 
-    // Upload or keep local books.
+    // Upload or keep local books. Uploads may be parallel, but are capped.
+    final uploadJobs = <Future<void> Function()>[];
     for (final entry in localEntries) {
       final file = File(entry.localPath);
       if (!await file.exists()) {
@@ -186,40 +219,67 @@ class FileSyncEngine {
       final stat = await file.stat();
       final localDesc = _descriptorFromEntry(entry, stat);
       final remote = remoteByFp[entry.fingerprint];
-      final shouldUpload = remote == null ||
-          remote.deleted ||
+      final shouldUpload =
+          remote == null ||
           _isNewer(localDesc.updatedAt, remote.updatedAt) ||
           remote.size != localDesc.size;
-      if (shouldUpload) {
+
+      if (remote != null && remote.deleted) {
+        if (_isNewer(localDesc.updatedAt, remote.updatedAt)) {
+          // Resurrect locally modified file after a remote tombstone.
+        } else {
+          // Remote tombstone wins: remove local copy and keep deletion in index.
+          await _removeLocalBook(entry);
+          nextIndex[remote.fingerprint] = remote;
+          continue;
+        }
+      }
+      if (!shouldUpload) {
+        nextIndex[localDesc.fingerprint] = remote;
+        continue;
+      }
+      uploadJobs.add(() async {
         final bytes = await file.readAsBytes();
-        await _adapter.putFile(
+        await _putFile(
           _bookPath(localDesc),
           bytes,
           contentType: _contentTypeForExt(localDesc.extension),
         );
         uploaded += 1;
         nextIndex[localDesc.fingerprint] = localDesc;
-      } else {
-        nextIndex[localDesc.fingerprint] = remote;
-      }
+      });
     }
+    await _runJobs(uploadJobs, maxConcurrentBookUploads);
 
     // Handle remote-only or deleted books.
     for (final remote in remoteIndex.books) {
       if (nextIndex.containsKey(remote.fingerprint)) {
         continue;
       }
+      final deletedAt = deletedByFingerprint[remote.fingerprint];
       final local = localByFp[remote.fingerprint];
+      if (deletedAt != null &&
+          !remote.deleted &&
+          _isNewer(deletedAt, remote.updatedAt)) {
+        final tombstone = _tombstoneFromRemote(remote, deletedAt);
+        await _deleteRemoteBookFile(remote);
+        if (local != null) {
+          await _removeLocalBook(local);
+        }
+        nextIndex[remote.fingerprint] = tombstone;
+        continue;
+      }
       if (remote.deleted) {
         if (local != null) {
           await _removeLocalBook(local);
         }
+        await _deleteRemoteBookFile(remote);
         nextIndex[remote.fingerprint] = remote;
         continue;
       }
       // Download missing book.
       final remotePath = remote.path ?? _defaultBookPath(remote);
-      final file = await _adapter.getFile(remotePath);
+      final file = await _getFile(remotePath);
       if (file == null) {
         nextIndex[remote.fingerprint] = remote;
         continue;
@@ -242,10 +302,96 @@ class FileSyncEngine {
     );
   }
 
+  Map<String, DateTime> _collectLocalBookDeletions() {
+    final deletedByFingerprint = <String, DateTime>{};
+    final events = _eventLogStore.listEvents();
+    for (final event in events) {
+      if (event.entityType != 'book' || event.op != 'delete') {
+        continue;
+      }
+      final payload = _coerceMap(event.payload);
+      final fingerprint =
+          (payload['fingerprint'] as String?) ??
+          (payload['hash'] as String?) ??
+          event.entityId;
+      if (fingerprint.isEmpty) {
+        continue;
+      }
+      final deletedAt = _extractUpdatedAt(payload) ?? event.createdAt.toUtc();
+      final existing = deletedByFingerprint[fingerprint];
+      if (existing == null || deletedAt.isAfter(existing)) {
+        deletedByFingerprint[fingerprint] = deletedAt;
+      }
+    }
+    return deletedByFingerprint;
+  }
+
+  SyncBookDescriptor _tombstoneFromRemote(
+    SyncBookDescriptor remote,
+    DateTime deletedAt,
+  ) {
+    return SyncBookDescriptor(
+      id: remote.id,
+      title: remote.title,
+      author: remote.author,
+      fingerprint: remote.fingerprint,
+      size: remote.size,
+      updatedAt: deletedAt.toUtc(),
+      extension: remote.extension,
+      path: remote.path,
+      deleted: true,
+    );
+  }
+
+  Future<void> _deleteRemoteBookFile(SyncBookDescriptor remote) async {
+    final remotePath = remote.path ?? _defaultBookPath(remote);
+    try {
+      await _adapter.deleteFile(remotePath);
+    } on SyncAdapterException catch (error) {
+      if (_isNotFound(error)) {
+        return;
+      }
+      Log.d('FileSyncEngine: failed to delete remote book $remotePath: $error');
+      if (_isClientError(error)) {
+        rethrow;
+      }
+    } catch (error) {
+      Log.d('FileSyncEngine: failed to delete remote book $remotePath: $error');
+    }
+  }
+
+  Future<void> _runJobs(
+    List<Future<void> Function()> jobs,
+    int maxConcurrent,
+  ) async {
+    if (jobs.isEmpty) {
+      return;
+    }
+    final concurrency = maxConcurrent <= 0 ? 1 : maxConcurrent;
+    var index = 0;
+    Future<void> worker() async {
+      while (true) {
+        if (index >= jobs.length) {
+          return;
+        }
+        final job = jobs[index];
+        index += 1;
+        await job();
+      }
+    }
+
+    await Future.wait(
+      List<Future<void>>.generate(
+        concurrency > jobs.length ? jobs.length : concurrency,
+        (_) => worker(),
+      ),
+    );
+  }
+
   Future<SyncBooksIndexFile> _readBooksIndex() async {
     Log.d('FileSyncEngine: reading ${_booksIndexPath()}');
     try {
-      final file = await _adapter.getFile(_booksIndexPath());
+      final file = await _getFile(_booksIndexPath());
       if (file == null) {
         Log.d('FileSyncEngine: books_index.json not found, using empty');
         return SyncBooksIndexFile(
@@ -390,7 +536,7 @@ class FileSyncEngine {
   Future<SyncEventLogFile> _readEventLog() async {
     Log.d('FileSyncEngine: reading ${_path('event_log.json')}');
     try {
-      final file = await _adapter.getFile(_path('event_log.json'));
+      final file = await _getFile(_path('event_log.json'));
       if (file == null) {
         Log.d('FileSyncEngine: event_log.json not found, using empty');
         return SyncEventLogFile(
@@ -428,7 +574,7 @@ class FileSyncEngine {
   Future<SyncStateFile> _readState() async {
     Log.d('FileSyncEngine: reading ${_path('state.json')}');
     try {
-      final file = await _adapter.getFile(_path('state.json'));
+      final file = await _getFile(_path('state.json'));
       if (file == null) {
         Log.d('FileSyncEngine: state.json not found, using empty');
         return SyncStateFile(
@@ -519,17 +665,34 @@ class FileSyncEngine {
     String? contentType,
   }) async {
     try {
-      await _adapter.putFile(
-        path,
-        bytes,
-        contentType: contentType,
-      );
+      await _putFile(path, bytes, contentType: contentType);
     } on SyncAdapterException catch (error) {
       Log.d('FileSyncEngine: failed to upload $path: $error');
       if (_isClientError(error)) {
         rethrow;
       }
     }
+  }
+
+  Future<void> _putFile(
+    String path,
+    List<int> bytes, {
+    String? contentType,
+  }) async {
+    await _adapter.putFile(
+      path,
+      bytes,
+      contentType: contentType,
+    );
+    _metrics?.addUpload(bytes.length);
+  }
+
+  Future<SyncFile?> _getFile(String path) async {
+    final file = await _adapter.getFile(path);
+    if (file != null) {
+      _metrics?.addDownload(file.bytes.length);
+    }
+    return file;
   }
 
   bool _isClientError(SyncAdapterException error) {
@@ -575,9 +738,41 @@ class FileSyncEngine {
         return _applyBookmarkEvent(event, payload);
       case 'reading_position':
         return _applyReadingPositionEvent(event, payload);
+      case 'free_note':
+        return _applyFreeNoteEvent(event, payload);
       default:
         return false;
     }
+  }
+
+  Future<bool> _applyFreeNoteEvent(
+    EventLogEntry event,
+    Map<String, Object?> payload,
+  ) async {
+    final store = _freeNotesStore;
+    if (store == null) {
+      return false;
+    }
+    final incomingAt = _extractUpdatedAt(payload) ?? event.createdAt;
+    final noteId = payload['id'] as String? ?? event.entityId;
+    if (noteId.trim().isEmpty) {
+      return false;
+    }
+    final current = await store.getById(noteId);
+    final currentAt = _effectiveUpdatedAt(current?.updatedAt, current?.createdAt);
+    if (event.op == 'delete') {
+      if (!_isNewer(incomingAt, currentAt)) {
+        return false;
+      }
+      await store.removeRaw(noteId);
+      return true;
+    }
+    if (!_isNewer(incomingAt, currentAt) && current != null) {
+      return false;
+    }
+    final note = FreeNote.fromMap(payload);
+    await store.upsert(note);
+    return true;
   }
 
   Future<bool> _applyNoteEvent(
@@ -770,12 +965,22 @@ class FileSyncResult {
     required this.uploadedAt,
     required this.booksUploaded,
     required this.booksDownloaded,
+    required this.durationMs,
+    required this.bytesUploaded,
+    required this.bytesDownloaded,
+    required this.filesUploaded,
+    required this.filesDownloaded,
     this.error,
   });
 
   const FileSyncResult.error({
     required this.error,
     required this.uploadedAt,
+    required this.durationMs,
+    required this.bytesUploaded,
+    required this.bytesDownloaded,
+    required this.filesUploaded,
+    required this.filesDownloaded,
   })  : appliedEvents = 0,
         appliedState = 0,
         uploadedEvents = 0,
@@ -788,7 +993,29 @@ class FileSyncResult {
   final DateTime uploadedAt;
   final int booksUploaded;
   final int booksDownloaded;
+  final int durationMs;
+  final int bytesUploaded;
+  final int bytesDownloaded;
+  final int filesUploaded;
+  final int filesDownloaded;
   final SyncAdapterException? error;
+}
+
+class _SyncMetricsTracker {
+  int bytesUploaded = 0;
+  int bytesDownloaded = 0;
+  int filesUploaded = 0;
+  int filesDownloaded = 0;
+
+  void addUpload(int bytes) {
+    filesUploaded += 1;
+    bytesUploaded += bytes;
+  }
+
+  void addDownload(int bytes) {
+    filesDownloaded += 1;
+    bytesDownloaded += bytes;
+  }
 }
 
 class _MergeBooksResult {

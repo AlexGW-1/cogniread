@@ -126,16 +126,38 @@ class HttpWebDavApiClient implements WebDavApiClient {
   </prop>
 </propfind>
 ''');
-    final bytes = await _request(
+    final response = await _requestRaw(
       'PROPFIND',
       uri,
       body: body,
       contentType: 'text/xml',
       headers: const <String, String>{'Depth': '1'},
-      allowMultiStatus: true,
       timeout: _requestTimeout,
     );
-    return _parsePropfind(bytes, uri);
+    final ok = response.statusCode < 400 || response.statusCode == 207;
+    if (!ok) {
+      if (response.statusCode == 405) {
+        final normalizedPath = path.trim();
+        final isRoot =
+            normalizedPath.isEmpty || normalizedPath == '/' || normalizedPath == '.';
+        if (isRoot) {
+          final options = await _tryOptions(uri);
+          if (options != null && !options.hasDav && !options.allowsPropfind) {
+            final safeUri = _safeUriForLogs(uri);
+            throw SyncAdapterException(
+              'WebDAV endpoint not found: $safeUri',
+              code: 'webdav_endpoint_not_found',
+            );
+          }
+        }
+      }
+      final safeUri = _safeUriForLogs(uri);
+      throw SyncAdapterException(
+        'WebDAV error ${response.statusCode}: PROPFIND $safeUri',
+        code: 'webdav_${response.statusCode}',
+      );
+    }
+    return _parsePropfind(response.bytes, uri);
   }
 
   Future<WebDavRawResponse> propfindRaw(
@@ -240,8 +262,98 @@ class HttpWebDavApiClient implements WebDavApiClient {
 
   @override
   Future<void> delete(String path) async {
+    final candidates = <String>{path};
+    if (path.endsWith('/') && path.length > 1) {
+      candidates.add(path.substring(0, path.length - 1));
+    } else {
+      candidates.add('$path/');
+    }
+    SyncAdapterException? lastError;
+    for (final candidate in candidates) {
+      final uri = _resolve(candidate);
+      final response = await _requestRaw('DELETE', uri, timeout: _requestTimeout);
+      if (response.statusCode < 400 || response.statusCode == 404) {
+        return;
+      }
+      if (response.statusCode == 405) {
+        final exists = await _exists(candidate);
+        if (!exists) {
+          return;
+        }
+        final safeUri = _safeUriForLogs(uri);
+        lastError = SyncAdapterException(
+          'WebDAV DELETE not allowed: $safeUri',
+          code: 'webdav_405',
+        );
+        continue;
+      }
+      final safeUri = _safeUriForLogs(uri);
+      throw SyncAdapterException(
+        'WebDAV error ${response.statusCode}: DELETE $safeUri',
+        code: 'webdav_${response.statusCode}',
+      );
+    }
+    if (lastError != null) {
+      throw lastError;
+    }
+  }
+
+  Future<bool> _exists(String path) async {
     final uri = _resolve(path);
-    await _request('DELETE', uri, timeout: _requestTimeout);
+    final body = utf8.encode('''
+<?xml version="1.0" encoding="utf-8" ?>
+<propfind xmlns="DAV:">
+  <prop>
+    <resourcetype />
+  </prop>
+</propfind>
+''');
+
+    // Prefer a proper DAV existence check first.
+    final propfind = await _requestRaw(
+      'PROPFIND',
+      uri,
+      body: body,
+      contentType: 'text/xml',
+      headers: const <String, String>{'Depth': '0'},
+      timeout: _requestTimeout,
+    );
+    if (propfind.statusCode == 404) {
+      return false;
+    }
+    if (propfind.statusCode < 400 || propfind.statusCode == 207) {
+      return true;
+    }
+
+    // Some servers/paths return 405 for PROPFIND even though the resource is
+    // accessible via regular HTTP methods. Fallback to HEAD/GET to distinguish
+    // between "missing" and "exists but not deletable".
+    if (propfind.statusCode == 405) {
+      final head = await _requestRaw('HEAD', uri, timeout: _requestTimeout);
+      if (head.statusCode == 404) {
+        return false;
+      }
+      if (head.statusCode < 400) {
+        return true;
+      }
+      if (head.statusCode == 405) {
+        final get = await _requestRaw(
+          'GET',
+          uri,
+          headers: const <String, String>{'Range': 'bytes=0-0'},
+          timeout: _requestTimeout,
+        );
+        if (get.statusCode == 404) {
+          return false;
+        }
+        if (get.statusCode < 400 || get.statusCode == 416) {
+          return true;
+        }
+      }
+    }
+
+    // Can't confirm existence, but avoid silently ignoring delete errors.
+    return true;
   }
 
   Future<List<int>> _request(
@@ -264,8 +376,9 @@ class HttpWebDavApiClient implements WebDavApiClient {
     final ok = response.statusCode < 400 ||
         (allowMultiStatus && response.statusCode == 207);
     if (!ok) {
+      final safeUri = _safeUriForLogs(uri);
       throw SyncAdapterException(
-        'WebDAV error ${response.statusCode}',
+        'WebDAV error ${response.statusCode}: $method $safeUri',
         code: 'webdav_${response.statusCode}',
       );
     }
@@ -282,7 +395,8 @@ class HttpWebDavApiClient implements WebDavApiClient {
   }) async {
     final effectiveTimeout = timeout ?? _requestTimeout;
     final stopwatch = Stopwatch()..start();
-    Log.d('WebDAV request: $method $uri');
+    final safeUri = _safeUriForLogs(uri);
+    Log.d('WebDAV request: $method $safeUri');
     try {
       final request =
           await _httpClient.openUrl(method, uri).timeout(effectiveTimeout);
@@ -302,7 +416,7 @@ class HttpWebDavApiClient implements WebDavApiClient {
           )
           .timeout(effectiveTimeout);
       Log.d(
-        'WebDAV response: $method $uri -> ${response.statusCode} '
+        'WebDAV response: $method $safeUri -> ${response.statusCode} '
         '(${bytes.length} bytes, ${stopwatch.elapsedMilliseconds} ms)',
       );
       return WebDavRawResponse(
@@ -311,7 +425,7 @@ class HttpWebDavApiClient implements WebDavApiClient {
       );
     } on TimeoutException {
       Log.d(
-        'WebDAV timeout: $method $uri after '
+        'WebDAV timeout: $method $safeUri after '
         '${effectiveTimeout.inSeconds}s',
       );
       throw SyncAdapterException(
@@ -319,19 +433,19 @@ class HttpWebDavApiClient implements WebDavApiClient {
         code: 'webdav_timeout',
       );
     } on HandshakeException catch (error) {
-      Log.d('WebDAV SSL error: $method $uri -> $error');
+      Log.d('WebDAV SSL error: $method $safeUri -> $error');
       throw SyncAdapterException(
         'WebDAV SSL error',
         code: 'webdav_ssl',
       );
     } on SocketException catch (error) {
-      Log.d('WebDAV network error: $method $uri -> $error');
+      Log.d('WebDAV network error: $method $safeUri -> $error');
       throw SyncAdapterException(
         'WebDAV network error: ${error.message}',
         code: 'webdav_socket',
       );
     } on HttpException catch (error) {
-      Log.d('WebDAV HTTP error: $method $uri -> $error');
+      Log.d('WebDAV HTTP error: $method $safeUri -> $error');
       throw SyncAdapterException(
         'WebDAV HTTP error: ${error.message}',
         code: 'webdav_http',
@@ -345,7 +459,8 @@ class HttpWebDavApiClient implements WebDavApiClient {
   }) async {
     final effectiveTimeout = timeout ?? _requestTimeout;
     final stopwatch = Stopwatch()..start();
-    Log.d('WebDAV request: OPTIONS $uri');
+    final safeUri = _safeUriForLogs(uri);
+    Log.d('WebDAV request: OPTIONS $safeUri');
     try {
       final request =
           await _httpClient.openUrl('OPTIONS', uri).timeout(effectiveTimeout);
@@ -359,7 +474,7 @@ class HttpWebDavApiClient implements WebDavApiClient {
           .timeout(effectiveTimeout);
       final ok = response.statusCode < 400;
       Log.d(
-        'WebDAV response: OPTIONS $uri -> ${response.statusCode} '
+        'WebDAV response: OPTIONS $safeUri -> ${response.statusCode} '
         '(${bytes.length} bytes, ${stopwatch.elapsedMilliseconds} ms)',
       );
       if (!ok) {
@@ -384,7 +499,7 @@ class HttpWebDavApiClient implements WebDavApiClient {
       );
     } on TimeoutException {
       Log.d(
-        'WebDAV timeout: OPTIONS $uri after '
+        'WebDAV timeout: OPTIONS $safeUri after '
         '${effectiveTimeout.inSeconds}s',
       );
       throw SyncAdapterException(
@@ -392,19 +507,19 @@ class HttpWebDavApiClient implements WebDavApiClient {
         code: 'webdav_timeout',
       );
     } on HandshakeException catch (error) {
-      Log.d('WebDAV SSL error: OPTIONS $uri -> $error');
+      Log.d('WebDAV SSL error: OPTIONS $safeUri -> $error');
       throw SyncAdapterException(
         'WebDAV SSL error',
         code: 'webdav_ssl',
       );
     } on SocketException catch (error) {
-      Log.d('WebDAV network error: OPTIONS $uri -> $error');
+      Log.d('WebDAV network error: OPTIONS $safeUri -> $error');
       throw SyncAdapterException(
         'WebDAV network error: ${error.message}',
         code: 'webdav_socket',
       );
     } on HttpException catch (error) {
-      Log.d('WebDAV HTTP error: OPTIONS $uri -> $error');
+      Log.d('WebDAV HTTP error: OPTIONS $safeUri -> $error');
       throw SyncAdapterException(
         'WebDAV HTTP error: ${error.message}',
         code: 'webdav_http',
@@ -419,7 +534,8 @@ class HttpWebDavApiClient implements WebDavApiClient {
   }) async {
     final effectiveTimeout = timeout ?? _requestTimeout;
     final stopwatch = Stopwatch()..start();
-    Log.d('WebDAV request: GET $uri');
+    final safeUri = _safeUriForLogs(uri);
+    Log.d('WebDAV request: GET $safeUri');
     try {
       final request =
           await _httpClient.openUrl('GET', uri).timeout(effectiveTimeout);
@@ -432,7 +548,7 @@ class HttpWebDavApiClient implements WebDavApiClient {
           )
           .timeout(effectiveTimeout);
       Log.d(
-        'WebDAV response: GET $uri -> ${response.statusCode} '
+        'WebDAV response: GET $safeUri -> ${response.statusCode} '
         '(${bytes.length} bytes, ${stopwatch.elapsedMilliseconds} ms)',
       );
       if (allowNotFound && response.statusCode == 404) {
@@ -448,30 +564,38 @@ class HttpWebDavApiClient implements WebDavApiClient {
       return bytes;
     } on TimeoutException {
       Log.d(
-        'WebDAV timeout: GET $uri after ${effectiveTimeout.inSeconds}s',
+        'WebDAV timeout: GET $safeUri after ${effectiveTimeout.inSeconds}s',
       );
       throw SyncAdapterException(
         'WebDAV timeout',
         code: 'webdav_timeout',
       );
     } on HandshakeException catch (error) {
-      Log.d('WebDAV SSL error: GET $uri -> $error');
+      Log.d('WebDAV SSL error: GET $safeUri -> $error');
       throw SyncAdapterException(
         'WebDAV SSL error',
         code: 'webdav_ssl',
       );
     } on SocketException catch (error) {
-      Log.d('WebDAV network error: GET $uri -> $error');
+      Log.d('WebDAV network error: GET $safeUri -> $error');
       throw SyncAdapterException(
         'WebDAV network error: ${error.message}',
         code: 'webdav_socket',
       );
     } on HttpException catch (error) {
-      Log.d('WebDAV HTTP error: GET $uri -> $error');
+      Log.d('WebDAV HTTP error: GET $safeUri -> $error');
       throw SyncAdapterException(
         'WebDAV HTTP error: ${error.message}',
         code: 'webdav_http',
       );
+    }
+  }
+
+  Future<WebDavOptionsResult?> _tryOptions(Uri uri) async {
+    try {
+      return await _requestOptions(uri, timeout: _requestTimeout);
+    } on SyncAdapterException {
+      return null;
     }
   }
 
@@ -511,6 +635,13 @@ class HttpWebDavApiClient implements WebDavApiClient {
       return uri;
     }
     return uri.replace(path: '$path/');
+  }
+
+  static String _safeUriForLogs(Uri uri) {
+    if (uri.userInfo.isEmpty) {
+      return uri.toString();
+    }
+    return uri.replace(userInfo: '').toString();
   }
 
   List<WebDavItem> _parsePropfind(List<int> bytes, Uri baseUri) {

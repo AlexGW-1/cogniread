@@ -2,7 +2,7 @@
 
 Этот документ фиксирует утверждённый финальный технологический стек (Target) и текущий фактический стек (Current).
 
-## Current (MVP0–MVP3)
+## Current (MVP0–MVP2 + Stage 1)
 
 | Компонент | Технология |
 | --- | --- |
@@ -10,7 +10,7 @@
 | Локальная БД | Hive |
 | Локальное хранилище файлов | app‑managed storage (path_provider) |
 | Рендер книги | нативный Flutter (ScrollablePositionedList + SelectableRegion) |
-| Синхронизация | отсутствует (только локальный event log) |
+| Синхронизация | Stage 1 (server‑less file-based sync): единый client adapter + облачные диски/NAS (Dropbox, Yandex Disk, WebDAV/SMB). Google Drive/OneDrive — отложены. |
 | Backend API | отсутствует |
 | AI‑сервисы | отсутствуют |
 

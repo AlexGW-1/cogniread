@@ -1,0 +1,91 @@
+{
+  "uid": "cogniread-sync",
+  "title": "Cogniread Sync",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "tags": ["cogniread", "sync"],
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "HTTP Requests / 5m",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (status) (rate(http_requests_total[5m]))",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "req/s" }, "overrides": [] },
+      "options": { "legend": { "showLegend": true } }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "HTTP Latency p95",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_ms_bucket[5m])) by (le))",
+          "legendFormat": "p95",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "options": { "legend": { "showLegend": true } }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Sync Events Accepted / 5m",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(sync_events_accepted_total[5m])",
+          "legendFormat": "accepted",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "events/s" }, "overrides": [] },
+      "options": { "legend": { "showLegend": true } }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Sync Events Rejected / 5m",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(sync_events_rejected_total[5m])",
+          "legendFormat": "rejected",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "events/s" }, "overrides": [] },
+      "options": { "legend": { "showLegend": true } }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "WS Connections / 5m",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(sync_ws_connected_total[5m])",
+          "legendFormat": "connected",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(sync_ws_disconnects_total[5m])",
+          "legendFormat": "disconnects",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "events/s" }, "overrides": [] },
+      "options": { "legend": { "showLegend": true } }
+    }
+  ]
+}

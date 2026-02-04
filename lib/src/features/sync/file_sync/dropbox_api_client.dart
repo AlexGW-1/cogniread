@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -40,11 +41,17 @@ abstract class DropboxApiClient {
 class HttpDropboxApiClient implements DropboxApiClient {
   HttpDropboxApiClient({
     required this.tokenProvider,
+    Duration requestTimeout = const Duration(seconds: 20),
+    Duration transferTimeout = const Duration(minutes: 2),
     HttpClient? httpClient,
-  }) : _httpClient = httpClient ?? HttpClient();
+  })  : _httpClient = httpClient ?? HttpClient(),
+        _requestTimeout = requestTimeout,
+        _transferTimeout = transferTimeout;
 
   final OAuthTokenProvider tokenProvider;
   final HttpClient _httpClient;
+  final Duration _requestTimeout;
+  final Duration _transferTimeout;
 
   @override
   Future<List<DropboxApiFile>> listFolder(String path) async {
@@ -155,6 +162,7 @@ class HttpDropboxApiClient implements DropboxApiClient {
       uri,
       body: utf8.encode(body),
       contentType: 'application/json',
+      allowNotFound: true,
     );
   }
 
@@ -229,7 +237,8 @@ class HttpDropboxApiClient implements DropboxApiClient {
       final message = error.message;
       Log.d('Dropbox API error caught: code=$code message=$message');
       if (code.startsWith('dropbox_409') &&
-          message.contains('path/not_found')) {
+          (message.contains('path/not_found') ||
+              message.contains('path_lookup/not_found'))) {
         Log.d('Dropbox API path not found: returning empty response');
         return const <String, Object?>{};
       }
@@ -245,47 +254,87 @@ class HttpDropboxApiClient implements DropboxApiClient {
     bool allowConflict = false,
     bool allowNotFound = false,
   }) async {
-    final token = await tokenProvider.getToken();
-    final valid = requireValidToken(token);
-    final request = await _httpClient.postUrl(uri);
-    request.headers.set(
-      HttpHeaders.authorizationHeader,
-      '${valid.tokenType} ${valid.accessToken}',
-    );
-    if (contentType != null) {
-      request.headers.set(HttpHeaders.contentTypeHeader, contentType);
-    }
-    if (apiArg != null) {
-      request.headers.set('Dropbox-API-Arg', apiArg);
-    }
-    if (body != null) {
-      request.add(body);
-    }
-    final response = await request.close();
-    final bytes = await response.fold<List<int>>(
-      <int>[],
-      (buffer, chunk) => buffer..addAll(chunk),
-    );
-    if (response.statusCode >= 400) {
-      final bodyText = bytes.isEmpty ? '' : utf8.decode(bytes);
-      final baseCode = 'dropbox_${response.statusCode}';
-      final isNotFound = bodyText.contains('path/not_found');
-      final code = isNotFound ? '${baseCode}_path_not_found' : baseCode;
-      if (allowConflict && response.statusCode == 409) {
-        Log.d('Dropbox HTTP 409 ignored uri=$uri body=$bodyText');
-        return const <int>[];
+    final stopwatch = Stopwatch()..start();
+    final effectiveTimeout =
+        uri.host == 'content.dropboxapi.com' ? _transferTimeout : _requestTimeout;
+    Log.d('Dropbox request: POST $uri');
+    try {
+      final token = await tokenProvider.getToken();
+      final valid = requireValidToken(token);
+      final request =
+          await _httpClient.postUrl(uri).timeout(effectiveTimeout);
+      request.headers.set(
+        HttpHeaders.authorizationHeader,
+        '${valid.tokenType} ${valid.accessToken}',
+      );
+      if (contentType != null) {
+        request.headers.set(HttpHeaders.contentTypeHeader, contentType);
       }
-      if (allowNotFound && isNotFound) {
-        Log.d('Dropbox HTTP 409 not_found ignored uri=$uri');
-        return const <int>[];
+      if (apiArg != null) {
+        request.headers.set('Dropbox-API-Arg', apiArg);
       }
-      Log.d('Dropbox HTTP error ${response.statusCode} uri=$uri body=$bodyText');
+      if (body != null) {
+        request.add(body);
+      }
+      final response = await request.close().timeout(effectiveTimeout);
+      final bytes = await response
+          .fold<List<int>>(
+            <int>[],
+            (buffer, chunk) => buffer..addAll(chunk),
+          )
+          .timeout(effectiveTimeout);
+      Log.d(
+        'Dropbox response: POST $uri -> ${response.statusCode} '
+        '(${bytes.length} bytes, ${stopwatch.elapsedMilliseconds} ms)',
+      );
+      if (response.statusCode >= 400) {
+        final bodyText = bytes.isEmpty ? '' : utf8.decode(bytes);
+        final baseCode = 'dropbox_${response.statusCode}';
+        final isNotFound = bodyText.contains('path/not_found') ||
+            bodyText.contains('path_lookup/not_found');
+        final code = isNotFound ? '${baseCode}_path_not_found' : baseCode;
+        if (allowConflict && response.statusCode == 409) {
+          Log.d('Dropbox HTTP 409 ignored uri=$uri');
+          return const <int>[];
+        }
+        if (allowNotFound && isNotFound) {
+          Log.d('Dropbox HTTP 409 not_found ignored uri=$uri');
+          return const <int>[];
+        }
+        Log.d('Dropbox HTTP error ${response.statusCode} uri=$uri');
+        throw SyncAdapterException(
+          'Dropbox API error ${response.statusCode}${bodyText.isEmpty ? '' : ': $bodyText'}',
+          code: code,
+        );
+      }
+      return bytes;
+    } on TimeoutException {
+      Log.d(
+        'Dropbox timeout: POST $uri after ${effectiveTimeout.inSeconds}s',
+      );
       throw SyncAdapterException(
-        'Dropbox API error ${response.statusCode}${bodyText.isEmpty ? '' : ': $bodyText'}',
-        code: code,
+        'Dropbox timeout',
+        code: 'dropbox_timeout',
+      );
+    } on HandshakeException catch (error) {
+      Log.d('Dropbox SSL error: POST $uri -> $error');
+      throw SyncAdapterException(
+        'Dropbox SSL error',
+        code: 'dropbox_ssl',
+      );
+    } on SocketException catch (error) {
+      Log.d('Dropbox network error: POST $uri -> $error');
+      throw SyncAdapterException(
+        'Dropbox network error: ${error.message}',
+        code: 'dropbox_socket',
+      );
+    } on HttpException catch (error) {
+      Log.d('Dropbox HTTP error: POST $uri -> $error');
+      throw SyncAdapterException(
+        'Dropbox HTTP error: ${error.message}',
+        code: 'dropbox_http',
       );
     }
-    return bytes;
   }
 
   DropboxApiFile _parseFile(Map<String, Object?> map) {

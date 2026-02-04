@@ -76,6 +76,18 @@
 | createdAt | String (ISO-8601) | yes | Дата создания. |
 | updatedAt | String (ISO-8601) | yes | Дата обновления. |
 
+## FreeNote (note без книги)
+
+Отдельная сущность, не привязанная к `LibraryEntry`.
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| id | String | yes | Уникальный ID заметки. |
+| text | String | yes | Текст заметки. |
+| color | String | yes | Цвет заметки (строка). |
+| createdAt | String (ISO-8601) | yes | Дата создания. |
+| updatedAt | String (ISO-8601) | yes | Дата обновления. |
+
 ## Bookmark
 
 | Field | Type | Required | Notes |

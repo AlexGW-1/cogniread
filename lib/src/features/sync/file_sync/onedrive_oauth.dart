@@ -2,18 +2,19 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:cogniread/src/features/sync/file_sync/oauth.dart';
+import 'package:cogniread/src/features/sync/file_sync/oauth_pkce.dart';
 import 'package:cogniread/src/features/sync/file_sync/sync_errors.dart';
 
 class OneDriveOAuthConfig {
   const OneDriveOAuthConfig({
     required this.clientId,
-    required this.clientSecret,
+    this.clientSecret,
     required this.redirectUri,
     this.tenant = 'common',
   });
 
   final String clientId;
-  final String clientSecret;
+  final String? clientSecret;
   final String redirectUri;
   final String tenant;
 }
@@ -25,6 +26,10 @@ class OneDriveOAuthClient {
   final OneDriveOAuthConfig config;
   final HttpClient _httpClient;
 
+  static OAuthPkcePair createPkce() {
+    return OAuthPkce.create();
+  }
+
   Uri authorizationUrl({
     required String state,
     List<String> scopes = const <String>[
@@ -32,32 +37,48 @@ class OneDriveOAuthClient {
       'Files.ReadWrite.AppFolder',
     ],
     String responseType = 'code',
+    String? codeChallenge,
+    String codeChallengeMethod = 'S256',
   }) {
+    final params = <String, String>{
+      'client_id': config.clientId,
+      'redirect_uri': config.redirectUri,
+      'response_type': responseType,
+      'scope': scopes.join(' '),
+      'state': state,
+    };
+    if (codeChallenge != null && codeChallenge.isNotEmpty) {
+      params['code_challenge'] = codeChallenge;
+      params['code_challenge_method'] = codeChallengeMethod;
+    }
     return Uri.https(
       'login.microsoftonline.com',
       '/${config.tenant}/oauth2/v2.0/authorize',
-      <String, String>{
-        'client_id': config.clientId,
-        'redirect_uri': config.redirectUri,
-        'response_type': responseType,
-        'scope': scopes.join(' '),
-        'state': state,
-      },
+      params,
     );
   }
 
-  Future<OAuthToken> exchangeCode(String code) async {
+  Future<OAuthToken> exchangeCode(
+    String code, {
+    String? codeVerifier,
+  }) async {
     final uri = Uri.https(
       'login.microsoftonline.com',
       '/${config.tenant}/oauth2/v2.0/token',
     );
     final payload = <String, String>{
       'client_id': config.clientId,
-      'client_secret': config.clientSecret,
       'redirect_uri': config.redirectUri,
       'grant_type': 'authorization_code',
       'code': code,
     };
+    final secret = config.clientSecret;
+    if (secret != null && secret.trim().isNotEmpty) {
+      payload['client_secret'] = secret.trim();
+    }
+    if (codeVerifier != null && codeVerifier.trim().isNotEmpty) {
+      payload['code_verifier'] = codeVerifier.trim();
+    }
     final body = payload.entries
         .map((entry) => '${entry.key}=${Uri.encodeComponent(entry.value)}')
         .join('&');
@@ -105,10 +126,13 @@ class OneDriveOAuthClient {
     );
     final payload = <String, String>{
       'client_id': config.clientId,
-      'client_secret': config.clientSecret,
       'refresh_token': refreshToken,
       'grant_type': 'refresh_token',
     };
+    final secret = config.clientSecret;
+    if (secret != null && secret.trim().isNotEmpty) {
+      payload['client_secret'] = secret.trim();
+    }
     final body = payload.entries
         .map((entry) => '${entry.key}=${Uri.encodeComponent(entry.value)}')
         .join('&');

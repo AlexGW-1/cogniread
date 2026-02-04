@@ -199,30 +199,30 @@ class SyncOAuthConfig {
     );
 
     final google = (googleClientId.isEmpty ||
-            googleClientSecret.isEmpty ||
             googleRedirectUri.isEmpty)
         ? null
         : GoogleDriveOAuthConfig(
             clientId: googleClientId,
-            clientSecret: googleClientSecret,
+            clientSecret:
+                googleClientSecret.isEmpty ? null : googleClientSecret,
             redirectUri: googleRedirectUri,
           );
     final dropbox = (dropboxClientId.isEmpty ||
-            dropboxClientSecret.isEmpty ||
             dropboxRedirectUri.isEmpty)
         ? null
         : DropboxOAuthConfig(
             clientId: dropboxClientId,
-            clientSecret: dropboxClientSecret,
+            clientSecret:
+                dropboxClientSecret.isEmpty ? null : dropboxClientSecret,
             redirectUri: dropboxRedirectUri,
           );
     final oneDrive = (oneDriveClientId.isEmpty ||
-            oneDriveClientSecret.isEmpty ||
             oneDriveRedirectUri.isEmpty)
         ? null
         : OneDriveOAuthConfig(
             clientId: oneDriveClientId,
-            clientSecret: oneDriveClientSecret,
+            clientSecret:
+                oneDriveClientSecret.isEmpty ? null : oneDriveClientSecret,
             redirectUri: oneDriveRedirectUri,
             tenant: oneDriveTenant.isEmpty ? 'common' : oneDriveTenant,
           );
@@ -362,12 +362,14 @@ class SyncOAuthConfig {
     if (map == null) {
       return null;
     }
-    final clientId = _string(map, 'clientId') ?? _string(map, 'client_id');
+    final selected = _selectPlatformConfig(map) ?? map;
+    final clientId =
+        _string(selected, 'clientId') ?? _string(selected, 'client_id');
     final clientSecret =
-        _string(map, 'clientSecret') ?? _string(map, 'client_secret');
+        _string(selected, 'clientSecret') ?? _string(selected, 'client_secret');
     final redirectUri =
-        _string(map, 'redirectUri') ?? _string(map, 'redirect_uri');
-    if (clientId == null || clientSecret == null || redirectUri == null) {
+        _string(selected, 'redirectUri') ?? _string(selected, 'redirect_uri');
+    if (clientId == null || redirectUri == null) {
       return null;
     }
     return GoogleDriveOAuthConfig(
@@ -387,7 +389,7 @@ class SyncOAuthConfig {
         _string(map, 'clientSecret') ?? _string(map, 'client_secret');
     final redirectUri =
         _string(map, 'redirectUri') ?? _string(map, 'redirect_uri');
-    if (clientId == null || clientSecret == null || redirectUri == null) {
+    if (clientId == null || redirectUri == null) {
       return null;
     }
     return DropboxOAuthConfig(
@@ -402,15 +404,19 @@ class SyncOAuthConfig {
     if (map == null) {
       return null;
     }
-    final clientId = _string(map, 'clientId') ?? _string(map, 'client_id');
+    final selected = _selectPlatformConfig(map) ?? map;
+    final clientId =
+        _string(selected, 'clientId') ?? _string(selected, 'client_id');
     final clientSecret =
-        _string(map, 'clientSecret') ?? _string(map, 'client_secret');
+        _string(selected, 'clientSecret') ??
+        _string(selected, 'client_secret');
     final redirectUri =
-        _string(map, 'redirectUri') ?? _string(map, 'redirect_uri');
-    if (clientId == null || clientSecret == null || redirectUri == null) {
+        _string(selected, 'redirectUri') ?? _string(selected, 'redirect_uri');
+    if (clientId == null || redirectUri == null) {
       return null;
     }
-    final tenant = _string(map, 'tenant') ?? _string(map, 'TENANT') ?? 'common';
+    final tenant =
+        _string(selected, 'tenant') ?? _string(selected, 'TENANT') ?? 'common';
     return OneDriveOAuthConfig(
       clientId: clientId,
       clientSecret: clientSecret,
@@ -453,28 +459,62 @@ class SyncOAuthConfig {
   }
 
   static Map<String, Object?> _encodeGoogle(GoogleDriveOAuthConfig config) {
-    return <String, Object?>{
+    final map = <String, Object?>{
       'clientId': config.clientId,
-      'clientSecret': config.clientSecret,
       'redirectUri': config.redirectUri,
     };
+    final secret = config.clientSecret;
+    if (secret != null && secret.trim().isNotEmpty) {
+      map['clientSecret'] = secret;
+    }
+    return map;
+  }
+
+  static Map<String, Object?>? _selectPlatformConfig(
+    Map<String, Object?> map,
+  ) {
+    if (Platform.isIOS && map['ios'] is Map) {
+      return _coerceMap(map['ios'] as Map);
+    }
+    if (Platform.isAndroid && map['android'] is Map) {
+      return _coerceMap(map['android'] as Map);
+    }
+    if (Platform.isMacOS && map['macos'] is Map) {
+      return _coerceMap(map['macos'] as Map);
+    }
+    if ((Platform.isMacOS || Platform.isWindows || Platform.isLinux) &&
+        map['desktop'] is Map) {
+      return _coerceMap(map['desktop'] as Map);
+    }
+    if (map['default'] is Map) {
+      return _coerceMap(map['default'] as Map);
+    }
+    return null;
   }
 
   static Map<String, Object?> _encodeDropbox(DropboxOAuthConfig config) {
-    return <String, Object?>{
+    final map = <String, Object?>{
       'clientId': config.clientId,
-      'clientSecret': config.clientSecret,
       'redirectUri': config.redirectUri,
     };
+    final secret = config.clientSecret;
+    if (secret != null && secret.trim().isNotEmpty) {
+      map['clientSecret'] = secret;
+    }
+    return map;
   }
 
   static Map<String, Object?> _encodeOneDrive(OneDriveOAuthConfig config) {
-    return <String, Object?>{
+    final map = <String, Object?>{
       'clientId': config.clientId,
-      'clientSecret': config.clientSecret,
       'redirectUri': config.redirectUri,
       'tenant': config.tenant,
     };
+    final secret = config.clientSecret;
+    if (secret != null && secret.trim().isNotEmpty) {
+      map['clientSecret'] = secret;
+    }
+    return map;
   }
 
   static Map<String, Object?> _encodeYandex(YandexDiskOAuthConfig config) {

@@ -1,0 +1,26 @@
+name: deploy-vps
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script: |
+            set -e
+            cd ${{ secrets.VPS_APP_DIR }}
+            git pull
+            docker compose -f infra/compose/compose.yaml --env-file infra/compose/.env pull
+            docker compose -f infra/compose/compose.yaml --env-file infra/compose/.env up -d
+            ./scripts/smoke.sh

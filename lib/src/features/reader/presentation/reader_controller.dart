@@ -8,6 +8,7 @@ import 'package:cogniread/src/core/types/toc.dart';
 import 'package:cogniread/src/core/utils/logger.dart';
 import 'package:cogniread/src/core/types/anchor.dart';
 import 'package:cogniread/src/features/library/data/library_store.dart';
+import 'package:cogniread/src/features/search/search_index_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:xml/xml.dart';
@@ -60,10 +61,13 @@ class _ReaderLoadException implements Exception {
 class ReaderController extends ChangeNotifier {
   ReaderController({LibraryStore? store, bool? perfLogsEnabled})
       : _store = store ?? LibraryStore(),
-        _perfLogsEnabled = perfLogsEnabled ?? kDebugMode;
+        _perfLogsEnabled = perfLogsEnabled ?? kDebugMode {
+    _searchIndex = SearchIndexService(store: _store);
+  }
 
   final LibraryStore _store;
   final bool _perfLogsEnabled;
+  late final SearchIndexService _searchIndex;
 
   static const int _cacheLimit = 3;
   static final Map<String, List<ReaderChapter>> _chapterCache =
@@ -215,6 +219,7 @@ class ReaderController extends ChangeNotifier {
   @override
   void dispose() {
     _searchDebounce?.cancel();
+    _searchIndex.close();
     super.dispose();
   }
 
@@ -320,6 +325,7 @@ class ReaderController extends ChangeNotifier {
     await _store.addHighlight(bookId, highlight);
     _highlights = [..._highlights, highlight];
     notifyListeners();
+    unawaited(_searchIndex.indexMarksForBook(bookId));
     return true;
   }
 
@@ -349,6 +355,7 @@ class ReaderController extends ChangeNotifier {
         )
         .toList();
     notifyListeners();
+    unawaited(_searchIndex.indexMarksForBook(bookId));
     return true;
   }
 
@@ -363,18 +370,13 @@ class ReaderController extends ChangeNotifier {
       return false;
     }
     await _store.init();
-    if (_bookmarks.isNotEmpty) {
-      final toRemove = _bookmarks.first;
-      await _store.removeBookmark(bookId, toRemove.id);
-      _bookmarks = const <Bookmark>[];
-      _bookmark = null;
-      notifyListeners();
-      return true;
-    }
     final anchor = Anchor(
       chapterHref: chapterHref,
       offset: offset,
     ).toString();
+    if (_bookmarks.any((item) => item.anchor == anchor)) {
+      return false;
+    }
     final now = DateTime.now();
     final bookmark = Bookmark(
       id: _makeId(),
@@ -384,9 +386,8 @@ class ReaderController extends ChangeNotifier {
       createdAt: now,
       updatedAt: now,
     );
-    await _store.setBookmark(bookId, bookmark);
-    _bookmarks = <Bookmark>[bookmark];
-    _bookmark = bookmark;
+    await _store.addBookmark(bookId, bookmark);
+    _bookmarks = <Bookmark>[..._bookmarks, bookmark];
     notifyListeners();
     return true;
   }
@@ -400,6 +401,42 @@ class ReaderController extends ChangeNotifier {
     await _store.removeBookmark(bookId, bookmarkId);
     _bookmarks = _bookmarks.where((item) => item.id != bookmarkId).toList();
     _bookmark = _bookmarks.isEmpty ? null : _bookmarks.first;
+    notifyListeners();
+    return true;
+  }
+
+  Future<bool> updateBookmarkLabel(String bookmarkId, String label) async {
+    final bookId = _activeBookId;
+    if (bookId == null) {
+      return false;
+    }
+    final trimmed = label.trim();
+    if (trimmed.isEmpty) {
+      return false;
+    }
+    await _store.init();
+    final now = DateTime.now();
+    await _store.updateBookmark(bookId, bookmarkId, trimmed, now);
+    _bookmarks = _bookmarks
+        .map(
+          (bookmark) => bookmark.id == bookmarkId
+              ? Bookmark(
+                  id: bookmark.id,
+                  bookId: bookmark.bookId,
+                  anchor: bookmark.anchor,
+                  label: trimmed,
+                  createdAt: bookmark.createdAt,
+                  updatedAt: now,
+                )
+              : bookmark,
+        )
+        .toList();
+    if (_bookmark?.id == bookmarkId) {
+      _bookmark = _bookmarks.firstWhere(
+        (item) => item.id == bookmarkId,
+        orElse: () => _bookmark!,
+      );
+    }
     notifyListeners();
     return true;
   }
@@ -444,6 +481,7 @@ class ReaderController extends ChangeNotifier {
     await _store.addNote(bookId, note);
     _notes = [..._notes, note];
     notifyListeners();
+    unawaited(_searchIndex.indexMarksForBook(bookId));
     return true;
   }
 
@@ -456,6 +494,7 @@ class ReaderController extends ChangeNotifier {
     await _store.removeNote(bookId, noteId);
     _notes = _notes.where((item) => item.id != noteId).toList();
     notifyListeners();
+    unawaited(_searchIndex.indexMarksForBook(bookId));
   }
 
   Future<void> removeHighlight(String highlightId) async {
@@ -467,6 +506,7 @@ class ReaderController extends ChangeNotifier {
     await _store.removeHighlight(bookId, highlightId);
     _highlights = _highlights.where((item) => item.id != highlightId).toList();
     notifyListeners();
+    unawaited(_searchIndex.indexMarksForBook(bookId));
   }
 
   void _setLoading() {
@@ -629,6 +669,55 @@ class ReaderController extends ChangeNotifier {
   ) async {
     await _store.init();
     await _store.updateReadingPosition(bookId, position);
+    if (_chapters.isEmpty) {
+      return;
+    }
+    final entry = await _store.getById(bookId);
+    if (entry == null) {
+      return;
+    }
+    final totalChapters = _chapters.length;
+    final chapterIndex = _resolveChapterIndex(position, totalChapters);
+    if (chapterIndex == null) {
+      return;
+    }
+    final currentPercent = ((chapterIndex + 1) / totalChapters) * 100;
+    final storedRaw = entry.progress.percent ?? 0;
+    final storedPercent = storedRaw <= 1 ? storedRaw * 100 : storedRaw;
+    final nextPercent = max(storedPercent, currentPercent).clamp(0, 100);
+    await _store.updateProgress(
+      bookId,
+      ReadingProgress(
+        percent: nextPercent.toDouble(),
+        chapterIndex: chapterIndex,
+        totalChapters: totalChapters,
+        updatedAt: DateTime.now(),
+      ),
+    );
+  }
+
+  int? _resolveChapterIndex(
+    ReadingPosition position,
+    int totalChapters,
+  ) {
+    final href = position.chapterHref;
+    if (href == null) {
+      return null;
+    }
+    if (href.startsWith('index:')) {
+      final raw = href.substring('index:'.length);
+      final parsed = int.tryParse(raw);
+      if (parsed == null || parsed < 0 || parsed >= totalChapters) {
+        return null;
+      }
+      return parsed;
+    }
+    for (var i = 0; i < _chapters.length; i += 1) {
+      if (_chapters[i].href == href) {
+        return i;
+      }
+    }
+    return null;
   }
 
   Future<List<_ChapterSource>> _extractChapters(

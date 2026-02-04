@@ -1,15 +1,3 @@
-# Test Plan — MVP0 (local-only)
+# Test Plan — MVP0 (local-only) — архив
 
-## Минимальный набор тестов
-
-### Widget tests
-- Стартовый экран Library отображает пустое состояние.
-- Нажатие "Импортировать EPUB (заглушка)" добавляет запись в список.
-- Тап по записи открывает Reader и показывает заголовок книги.
-
-### Unit tests
-- Result обрабатывает успех/ошибку корректно.
-- BookRepositoryImpl оборачивает исключения в Result.
-
-### Smoke
-- `flutter test` проходит на macOS в CI.
+Этот документ перенесен в архив: `docs/archive.md` (раздел `docs/test_plan.md`).

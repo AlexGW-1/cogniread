@@ -1,12 +1,18 @@
 # Документы проекта
 
-В этой папке лежат утверждённые документы (DOCX):
-- `final_tech_stack.docx` — финальный техностек
-- `solution_architecture_doc.docx` — solution architecture (v1.0, 2025-12-16)
-- `architecture_diagrams.docx` — диаграммы
+Markdown-документы — **основной источник истины** для проекта. Диаграммы хранятся в `docs/assets`.
 
-Следующий шаг — перенести ключевые выдержки в markdown для удобства просмотра в репозитории.
+## Ключевые документы
+- `STATE.md` — актуальный статус продукта.
+- `docs/spec_mvp.md` — исторический scope по MVP/этапам.
+- `docs/plan_next_stages.md` — план следующих этапов.
+- `docs/deferred_features.md` — отложенный функционал, требующий отдельного решения.
+- `docs/archive.md` — архив исторических документов.
+- `docs/release_plan_stage1.md` — критерии и статус file-based sync.
+- `docs/solution_architecture.md` — архитектура решения.
+- `docs/final_tech_stack.md` — финальный техностек.
+- `docs/architecture_diagrams.md` — список диаграмм + ссылки на изображения.
 
-## Артефакты в репозитории
-- Актуальные требования и соглашения в markdown (`docs/*.md`).
-- Диаграммы архитектуры в `docs/` (docx или экспорт в png/svg при наличии).
+## Архив/история
+- `docs/history.md` — история этапов и ключевых изменений.
+- `docs/archive.md` — консолидированный архив исторических документов.

@@ -3,6 +3,8 @@
 Этот архив — **чистый старт**: в репозитории лежат утверждённые документы и подготовленная структура Flutter-приложения
 в стиле Clean Architecture (с заглушками под Phase 1: импорт EPUB + чтение).
 
+[![server-e2e](https://github.com/estron/cogniread/actions/workflows/server-e2e.yml/badge.svg)](https://github.com/estron/cogniread/actions/workflows/server-e2e.yml)
+
 ## Структура
 - `docs/` — проектные документы (DOCX)
 - `lib/` — код Flutter-приложения (Clean Architecture, Phase 1 skeleton)
@@ -20,3 +22,10 @@
 ## Примечание
 Этот скелет специально минимальный: без сторонних зависимостей (bloc, DI, file picker, epub parser и т.п.).
 На следующем шаге мы подключим нужные пакеты и реализуем «Импорт EPUB (mac-устойчивый)».
+
+## Sync Gateway (backend)
+- E2E runbook: `docs/sync_gateway_e2e.md`
+
+## Локальные конфиги
+- Инструкция: `docs/local_env_setup.md`
+- Быстрый старт: `./scripts/bootstrap_local_env.sh`

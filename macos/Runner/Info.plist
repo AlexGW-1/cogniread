@@ -36,6 +36,7 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>cogniread</string>
+				<string>msauth.msauth.com.cogniread.cogniread</string>
 			</array>
 		</dict>
 	</array>

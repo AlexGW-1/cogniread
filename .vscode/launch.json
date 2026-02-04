@@ -6,6 +6,12 @@
       "request": "launch",
       "type": "dart",
       "deviceId": "macos"
+    },
+    {
+      "name": "Flutter (Android emulator-5556)",
+      "request": "launch",
+      "type": "dart",
+      "deviceId": "emulator-5556"
     }
   ]
 }
