@@ -1,4 +1,5 @@
 import { Readable } from 'node:stream';
+import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import {
   DeleteObjectCommand,
   GetObjectCommand,
@@ -65,11 +66,19 @@ export class S3FileStorage implements FileStorage {
     if (body instanceof Readable) {
       return body;
     }
-    const maybeWebStream = body as { transformToWebStream?: () => ReadableStream };
+    const maybeWebStream = body as {
+      transformToWebStream?: () => WebReadableStream;
+      arrayBuffer?: () => Promise<ArrayBuffer>;
+    };
     if (typeof maybeWebStream.transformToWebStream === 'function') {
-      return Readable.fromWeb(maybeWebStream.transformToWebStream());
+      const stream = maybeWebStream.transformToWebStream();
+      return Readable.fromWeb(stream as WebReadableStream);
     }
-    return Readable.from(body as Iterable<Uint8Array>);
+    if (typeof maybeWebStream.arrayBuffer === 'function') {
+      const buffer = Buffer.from(await maybeWebStream.arrayBuffer());
+      return Readable.from(buffer);
+    }
+    return Readable.from(body as unknown as Iterable<Uint8Array>);
   }
 
   async deleteObject(key: string): Promise<void> {
