@@ -1,6 +1,9 @@
 import {
   ArrayMaxSize,
+  ArrayMinSize,
   IsArray,
+  IsNotEmpty,
+  IsIn,
   IsOptional,
   IsString,
   ValidateNested,
@@ -9,6 +12,7 @@ import { Type } from 'class-transformer';
 import { EventLogEntryDto } from './event-log-entry.dto';
 
 export class UploadEventsRequestDto {
+  @IsNotEmpty()
   @IsString()
   deviceId: string;
 
@@ -17,6 +21,7 @@ export class UploadEventsRequestDto {
   cursor?: string | null;
 
   @IsArray()
+  @ArrayMinSize(1)
   @ArrayMaxSize(200)
   @ValidateNested({ each: true })
   @Type(() => EventLogEntryDto)
@@ -27,7 +32,7 @@ export class AckDto {
   @IsString()
   id: string;
 
-  @IsString()
+  @IsIn(['accepted', 'rejected', 'duplicate'])
   status: string;
 
   @IsOptional()
