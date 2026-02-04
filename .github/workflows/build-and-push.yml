@@ -27,7 +27,7 @@ jobs:
         include:
           - service: api
             context: server
-            dockerfile: server/Dockerfile
+            dockerfile: Dockerfile
           - service: ai
             context: ai
             dockerfile: ai/Dockerfile
