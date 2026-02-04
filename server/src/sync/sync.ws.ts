@@ -1,9 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  OnModuleDestroy,
-  OnModuleInit,
-} from '@nestjs/common';
+import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { HttpAdapterHost } from '@nestjs/core';
 import { IncomingMessage } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -56,7 +51,6 @@ const decodeRaw = (raw: RawData): string => {
 
 @Injectable()
 export class SyncWsGateway implements OnModuleInit, OnModuleDestroy {
-  private readonly logger = new Logger(SyncWsGateway.name);
   private wss?: WebSocketServer;
   private unsubscribe?: () => void;
   private readonly clientsByUser = new Map<string, Set<WebSocket>>();
@@ -67,7 +61,7 @@ export class SyncWsGateway implements OnModuleInit, OnModuleDestroy {
     private readonly syncService: SyncService,
     private readonly eventsBus: SyncEventsBus,
     private readonly metrics: MetricsService,
-    private readonly logger: JsonLogger,
+    private readonly jsonLogger: JsonLogger,
   ) {}
 
   onModuleInit(): void {
@@ -79,7 +73,7 @@ export class SyncWsGateway implements OnModuleInit, OnModuleDestroy {
     this.unsubscribe = this.eventsBus.onEventsAvailable((payload) =>
       this.broadcastEventsAvailable(payload),
     );
-    this.logger.log('Sync WS server initialized on /sync/ws');
+    this.jsonLogger.log('Sync WS server initialized on /sync/ws');
   }
 
   onModuleDestroy(): void {
@@ -140,7 +134,7 @@ export class SyncWsGateway implements OnModuleInit, OnModuleDestroy {
       tracer.startActiveSpan('sync.ws.hello', (span) => {
         state.deviceId = hello.deviceId;
         state.lastSeenCursor = hello.lastSeenCursor ?? null;
-        this.logger.log('sync.ws.hello', {
+        this.jsonLogger.log('sync.ws.hello', {
           userId: state.userId,
           deviceId: hello.deviceId,
           lastSeenCursor: hello.lastSeenCursor ?? null,
@@ -161,7 +155,7 @@ export class SyncWsGateway implements OnModuleInit, OnModuleDestroy {
             pull.cursor,
             MAX_LIMIT,
           );
-          this.logger.log('sync.ws.pull', {
+          this.jsonLogger.log('sync.ws.pull', {
             userId: state.userId,
             cursor: pull.cursor ?? null,
             limit: MAX_LIMIT,
@@ -197,7 +191,7 @@ export class SyncWsGateway implements OnModuleInit, OnModuleDestroy {
     }
     const tracer = trace.getTracer('sync-ws');
     tracer.startActiveSpan('sync.ws.events_available', (span) => {
-      this.logger.log('sync.ws.events_available', {
+      this.jsonLogger.log('sync.ws.events_available', {
         userId: payload.userId,
         serverCursor: payload.serverCursor,
         recipients: sockets.size,
