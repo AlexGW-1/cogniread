@@ -78,6 +78,39 @@ cp infra/gcp/prod.env.example infra/gcp/prod.env
 ```
 DATABASE_URL=postgresql://cogniread_app:CHANGE_ME@localhost/cogniread?host=/cloudsql/PROJECT:REGION:INSTANCE
 ```
+Заполни `JWT_SECRET` (случайная строка, 32+ байта).
+
+Хранилище обязательно для старта сервиса: либо заполнить `S3_*`, либо
+переключить `STORAGE_PROVIDER=gcs` и заполнить `GCS_*`.
+
+### GCS (рекомендуемый вариант)
+Создать bucket:
+```bash
+gcloud storage buckets create gs://<bucket> --location=europe-west4 --project=cogniread-485918
+```
+
+Дать Cloud Run service account доступ к bucket:
+```bash
+gcloud run services describe cogniread-sync --region=europe-west4 --format="value(spec.template.spec.serviceAccountName)"
+gcloud storage buckets add-iam-policy-binding gs://<bucket> \
+  --member="serviceAccount:<service-account>" \
+  --role="roles/storage.objectAdmin"
+```
+
+Для presigned URL сервисному аккаунту нужен `signBlob`:
+```bash
+gcloud iam service-accounts add-iam-policy-binding <service-account> \
+  --member="serviceAccount:<service-account>" \
+  --role="roles/iam.serviceAccountTokenCreator"
+```
+
+ENV для GCS:
+```
+STORAGE_PROVIDER=gcs
+GCS_BUCKET=<bucket>
+GCS_PROJECT_ID=cogniread-485918
+GCS_KEYFILE=
+```
 
 ---
 ## 5) Деплой Cloud Run
@@ -142,6 +175,14 @@ SERVICE_URL="$(gcloud run services describe cogniread-sync --region=europe-west4
 curl -i "${SERVICE_URL}/health"
 ```
 
+Проверка факта синхронизации (по запросам Cloud Run):
+```bash
+gcloud logging read \
+'logName="projects/cogniread-485918/logs/run.googleapis.com%2Frequests" resource.labels.service_name="cogniread-sync"' \
+--freshness=10m --limit=20 --format='value(httpRequest.requestMethod,httpRequest.requestUrl,httpRequest.status)'
+```
+Ожидаем `POST /sync/events` и `POST /sync/state` со статусом `201`, `GET /sync/events` со статусом `200`,
+а также `GET /sync/ws` со статусом `101`.
 ---
 ## 8) Tracing (OpenTelemetry)
 
