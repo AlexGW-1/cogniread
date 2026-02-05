@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../sync/sync.guard';
 import type { FileStorage } from './file-storage';
-import { FILE_STORAGE } from './storage.module';
+import { FILE_STORAGE } from './storage.tokens';
 
 type PresignRequest = {
   key?: string;

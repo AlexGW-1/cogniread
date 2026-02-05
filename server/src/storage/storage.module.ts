@@ -3,8 +3,7 @@ import { FileStorage } from './file-storage';
 import { GcsFileStorage } from './gcs-file-storage';
 import { S3FileStorage } from './s3-file-storage';
 import { StorageController } from './storage.controller';
-
-export const FILE_STORAGE = Symbol('FILE_STORAGE');
+import { FILE_STORAGE } from './storage.tokens';
 
 const requireEnv = (name: string): string => {
   const value = process.env[name];
