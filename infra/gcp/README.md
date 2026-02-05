@@ -81,13 +81,27 @@ DATABASE_URL=postgresql://cogniread_app:CHANGE_ME@localhost/cogniread?host=/clou
 
 ---
 ## 5) Деплой Cloud Run
+Рекомендуемый подход — деплоить **конкретный тег**, а не `latest`.
+
+Получить тег (SHA коммита):
+```bash
+git rev-parse --short HEAD
+```
+
 ```bash
 gcloud run deploy cogniread-sync \
-  --image=europe-west4-docker.pkg.dev/cogniread-485918/cogniread/sync:latest \
+  --image=europe-west4-docker.pkg.dev/cogniread-485918/cogniread/sync:TAG \
   --region=europe-west4 \
   --allow-unauthenticated \
   --add-cloudsql-instances=PROJECT:REGION:INSTANCE \
   --env-vars-file=infra/gcp/prod.env
+```
+
+Проверить, какой образ реально запущен:
+```bash
+gcloud run services describe cogniread-sync \
+  --region=europe-west4 \
+  --format="value(status.traffic[0].revisionName,spec.template.spec.containers[0].image)"
 ```
 
 ---
@@ -97,7 +111,7 @@ gcloud run deploy cogniread-sync \
 Создать job для миграций:
 ```bash
 gcloud run jobs create cogniread-sync-migrate \
-  --image=europe-west4-docker.pkg.dev/cogniread-485918/cogniread/sync:latest \
+  --image=europe-west4-docker.pkg.dev/cogniread-485918/cogniread/sync:TAG \
   --region=europe-west4 \
   --add-cloudsql-instances=PROJECT:REGION:INSTANCE \
   --env-vars-file=infra/gcp/prod.env \
@@ -121,6 +135,12 @@ gcloud run jobs delete cogniread-sync-migrate --region=europe-west4
 - `POST /sync/events` → `accepted`
 - `GET /sync/events` → `200`
 - WS `/sync/ws` → события
+
+Быстрая проверка:
+```bash
+SERVICE_URL="$(gcloud run services describe cogniread-sync --region=europe-west4 --format='value(status.url)')"
+curl -i "${SERVICE_URL}/health"
+```
 
 ---
 ## 8) Tracing (OpenTelemetry)
