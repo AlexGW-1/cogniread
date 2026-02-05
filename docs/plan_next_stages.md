@@ -262,6 +262,7 @@ Checklist:
 - [x] Метрики и структурированные логи добавлены, endpoint `/metrics`.
 - [x] Контрактные тесты добавлены (REST + WS + негативные кейсы).
 - [x] Трейсинг (OpenTelemetry) добавлен, управляется через env.
+- [x] Runbook проверки синка добавлен: `infra/gcp/runbooks/sync-check.md`.
 
 ---
 ## Milestone M4 — Stage 3: AI и база знаний
