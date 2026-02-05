@@ -7,7 +7,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../sync/sync.guard';
-import { FileStorage } from './file-storage';
+import type { FileStorage } from './file-storage';
 import { FILE_STORAGE } from './storage.module';
 
 type PresignRequest = {
