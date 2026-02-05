@@ -26,7 +26,7 @@ jobs:
             echo "Missing GCP_PROD_ENV secret" >&2
             exit 1
           fi
-          printf '%s' "${{ secrets.GCP_PROD_ENV }}" > infra/gcp/prod.env
+          printf '%s' "${{ secrets.GCP_PROD_ENV }}" | grep -v '^PORT=' > infra/gcp/prod.env
 
       - name: Auth to GCP
         uses: google-github-actions/auth@v2
