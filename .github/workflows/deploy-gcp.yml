@@ -20,6 +20,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Prepare env file
+        run: |
+          if [ -z "${{ secrets.GCP_PROD_ENV }}" ]; then
+            echo "Missing GCP_PROD_ENV secret" >&2
+            exit 1
+          fi
+          printf '%s' "${{ secrets.GCP_PROD_ENV }}" > infra/gcp/prod.env
+
       - name: Auth to GCP
         uses: google-github-actions/auth@v2
         with:
