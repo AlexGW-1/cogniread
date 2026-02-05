@@ -408,6 +408,11 @@ Acceptance Criteria:
 - [x] `qdrant` (`/healthz`) и `minio` (`/minio/health/ready`) возвращают 200.
 - [x] `ai /ingest` создаёт задачу, `worker` её обрабатывает.
 
+Аудит (дополнение, 2026-02-05):
+- [x] `redis` отвечает `PONG`.
+- [x] `postgres` отвечает на `select 1`.
+- [x] `neo4j` отвечает на `RETURN 1`.
+
 Test Plan:
 - Поднять стек, проверить `/health` у api/ai и readiness у stateful.
 
@@ -461,6 +466,9 @@ Acceptance Criteria:
 
 Test Plan:
 - Выполнить backup, восстановить в чистом окружении, прогнать smoke.
+
+### Перед релизом
+- [ ] Удалить локальную ветку `feature/search-index-rebuild-isolate` после переноса/разбора `stash@{0}`.
 
 ### M5-7 GCP Deployment Mode (A или B)
 Issue ID: `INFRA-4`
